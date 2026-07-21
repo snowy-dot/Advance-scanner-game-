@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED BATCH GAME SCANNER
+-- ADVANCED BATCH GAME SCANNER (LINE CAP)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -41,7 +41,7 @@ State.Batches = {}
 -- BATCH SCANNER LOGIC
 -- ============================================
 local MAX_BATCHES = 10
-local MAX_BATCH_CHARS = 3000
+local MAX_BATCH_LINES = 3500 -- Capped at 3500 lines per batch
 
 local function copyBatchToClipboard(batchName)
     if batchName == "None" then
@@ -71,6 +71,7 @@ end
 local function scanGameForScripts()
     State.Batches = {}
     local currentBatch = ""
+    local currentBatchLines = 0
     local currentBatchCount = 1
     local scanFailed = false
 
@@ -98,23 +99,34 @@ local function scanGameForScripts()
             if success and source then
                 local scriptEntry = "=== " .. obj:GetFullName() .. " ===\n" .. source .. "\n\n"
                 
-                if string.len(currentBatch) + string.len(scriptEntry) > MAX_BATCH_CHARS then
+                -- Calculate lines in this specific script
+                local lines = #string.split(scriptEntry, "\n")
+                
+                -- Check if adding this script exceeds the line limit for the current batch
+                if currentBatchLines + lines > MAX_BATCH_LINES then
+                    -- Save the current batch
                     State.Batches[currentBatchCount] = currentBatch
                     currentBatchCount = currentBatchCount + 1
                     
+                    -- Check if we exceeded the 10 batch limit
                     if currentBatchCount > MAX_BATCHES then
                         scanFailed = true
                         break
                     end
                     
+                    -- Start a new batch with the current script
                     currentBatch = scriptEntry
+                    currentBatchLines = lines
                 else
+                    -- Add script to current batch and increase line count
                     currentBatch = currentBatch .. scriptEntry
+                    currentBatchLines = currentBatchLines + lines
                 end
             end
         end
     end
 
+    -- If scan failed due to size
     if scanFailed then
         State.Batches = {}
         if State.Scanner_Dropdown then
@@ -129,18 +141,21 @@ local function scanGameForScripts()
         return
     end
 
+    -- Save the final remaining batch if it has content
     if string.len(currentBatch) > 0 then
         State.Batches[currentBatchCount] = currentBatch
     end
 
+    -- Build dropdown options for the UI
     local batchOptions = {"None"}
     for i = 1, #State.Batches do
         local batchName = "Batch " .. tostring(i)
-        local charCount = string.len(State.Batches[i])
-        local optionName = batchName .. " (" .. tostring(charCount) .. " chars)"
+        local lineCount = #string.split(State.Batches[i], "\n")
+        local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
         table.insert(batchOptions, optionName)
     end
 
+    -- Update the Dropdown
     if State.Scanner_Dropdown then
         State.Scanner_Dropdown:Refresh(batchOptions)
     end
@@ -158,7 +173,7 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Batch System",
+    LoadingSubtitle = "Line Cap System",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
