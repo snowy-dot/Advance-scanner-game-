@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED BATCH GAME SCANNER (LINE CAP)
+-- ADVANCED UNLIMITED BATCH GAME SCANNER
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -36,12 +36,13 @@ end
 local State = {}
 State.Scanner_Dropdown = nil
 State.Batches = {}
+State.ScanCoreScripts = false
+State.IsScanning = false
 
 -- ============================================
 -- BATCH SCANNER LOGIC
 -- ============================================
-local MAX_BATCHES = 10
-local MAX_BATCH_LINES = 3500 -- Capped at 3500 lines per batch
+local MAX_BATCH_LINES = 3500
 
 local function copyBatchToClipboard(batchName)
     if batchName == "None" then
@@ -52,28 +53,36 @@ local function copyBatchToClipboard(batchName)
     if batchNum and State.Batches[batchNum] then
         if setclipboard then
             setclipboard(State.Batches[batchNum])
-            Rayfield:Notify({
+            local notifyConfig = {
                 Title = "Copied",
                 Content = batchName .. " copied to clipboard!",
                 Duration = 3
-            })
+            }
+            Rayfield:Notify(notifyConfig)
         else
             print(State.Batches[batchNum])
-            Rayfield:Notify({
+            local notifyConfig = {
                 Title = "Error",
                 Content = "setclipboard not supported. Printed to F9.",
                 Duration = 3
-            })
+            }
+            Rayfield:Notify(notifyConfig)
         end
     end
 end
 
 local function scanGameForScripts()
+    if State.IsScanning then
+        return
+    end
+    State.IsScanning = true
+    
     State.Batches = {}
     local currentBatch = ""
     local currentBatchLines = 0
     local currentBatchCount = 1
-    local scanFailed = false
+    local totalScriptsScanned = 0
+    local yieldCounter = 0
 
     if not decompile then
         Rayfield:Notify({
@@ -81,38 +90,51 @@ local function scanGameForScripts()
             Content = "Your executor does not support decompile()",
             Duration = 3
         })
+        State.IsScanning = false
         return
     end
 
     Rayfield:Notify({
         Title = "Scanning",
-        Content = "Scanning all client scripts into batches...",
+        Content = "Scanning game into unlimited batches...",
         Duration = 3
     })
 
-    for _, obj in pairs(game:GetDescendants()) do
+    local descendants = game:GetDescendants()
+    for _, obj in pairs(descendants) do
+        -- Yield every 50 scripts to prevent game freeze/crash
+        yieldCounter = yieldCounter + 1
+        if yieldCounter % 50 == 0 then
+            task.wait()
+        end
+
+        -- Strictly scan LocalScripts and ModuleScripts (Ignores Server Scripts completely)
         if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+            local fullName = obj:GetFullName()
+            
+            -- Filter out CoreScripts if the toggle is off
+            local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
+            if isCore and not State.ScanCoreScripts then
+                continue
+            end
+
             local success, source = pcall(function()
                 return decompile(obj)
             end)
             
             if success and source then
-                local scriptEntry = "=== " .. obj:GetFullName() .. " ===\n" .. source .. "\n\n"
+                totalScriptsScanned = totalScriptsScanned + 1
+                local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
                 
-                -- Calculate lines in this specific script
-                local lines = #string.split(scriptEntry, "\n")
+                -- Fast line counting
+                local _, lines = string.gsub(scriptEntry, "\n", "")
+                lines = lines + 1
                 
                 -- Check if adding this script exceeds the line limit for the current batch
                 if currentBatchLines + lines > MAX_BATCH_LINES then
                     -- Save the current batch
                     State.Batches[currentBatchCount] = currentBatch
                     currentBatchCount = currentBatchCount + 1
-                    
-                    -- Check if we exceeded the 10 batch limit
-                    if currentBatchCount > MAX_BATCHES then
-                        scanFailed = true
-                        break
-                    end
                     
                     -- Start a new batch with the current script
                     currentBatch = scriptEntry
@@ -124,21 +146,6 @@ local function scanGameForScripts()
                 end
             end
         end
-    end
-
-    -- If scan failed due to size
-    if scanFailed then
-        State.Batches = {}
-        if State.Scanner_Dropdown then
-            State.Scanner_Dropdown:Refresh({"None"})
-        end
-
-        Rayfield:Notify({
-            Title = "Scan Failed",
-            Content = "game files is too big, cannot be scanned",
-            Duration = 5
-        })
-        return
     end
 
     -- Save the final remaining batch if it has content
@@ -162,8 +169,45 @@ local function scanGameForScripts()
     
     Rayfield:Notify({
         Title = "Scan Complete",
-        Content = "Found " .. #State.Batches .. " batches. Select one to copy.",
-        Duration = 4
+        Content = "Scanned " .. totalScriptsScanned .. " scripts into " .. #State.Batches .. " batches.",
+        Duration = 5
+    })
+    
+    State.IsScanning = false
+end
+
+local function saveBatchesToFiles()
+    if #State.Batches == 0 then
+        Rayfield:Notify({
+            Title = "Error",
+            Content = "No batches found. Scan the game first.",
+            Duration = 3
+        })
+        return
+    end
+
+    if not writefile then
+        Rayfield:Notify({
+            Title = "Error",
+            Content = "Your executor does not support writefile()",
+            Duration = 3
+        })
+        return
+    end
+
+    local folderName = "GameScan_" .. tostring(os.time())
+    for i = 1, #State.Batches do
+        local fileName = folderName .. "/Batch_" .. tostring(i) .. ".txt"
+        -- writefile automatically creates folders if they don't exist in the workspace folder
+        pcall(function()
+            writefile(fileName, State.Batches[i])
+        end)
+    end
+
+    Rayfield:Notify({
+        Title = "Saved",
+        Content = "Saved " .. #State.Batches .. " batches to workspace folder.",
+        Duration = 5
     })
 end
 
@@ -173,14 +217,25 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Line Cap System",
+    LoadingSubtitle = "Unlimited Batch System",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
-TabScanner:CreateSection("Batch Scanning System")
+TabScanner:CreateSection("Scanner Settings")
+
+TabScanner:CreateToggle({
+    Name = "Scan Roblox CoreScripts",
+    CurrentValue = false,
+    Flag = "ScanCore",
+    Callback = function(Value)
+        State.ScanCoreScripts = Value
+    end
+})
+
+TabScanner:CreateSection("Scanning Tools")
 
 TabScanner:CreateButton({
     Name = "Scan All Client Scripts",
@@ -188,6 +243,8 @@ TabScanner:CreateButton({
         scanGameForScripts()
     end
 })
+
+TabScanner:CreateSection("Batch Export System")
 
 State.Scanner_Dropdown = TabScanner:CreateDropdown({
     Name = "Select Batch",
@@ -200,15 +257,13 @@ State.Scanner_Dropdown = TabScanner:CreateDropdown({
 })
 
 TabScanner:CreateButton({
-    Name = "Copy Selected Batch to Clipboard",
+    Name = "Save All Batches to Files (PC)",
     Callback = function()
-        Rayfield:Notify({
-            Title = "Info",
-            Content = "Select a batch from the dropdown above to copy it.",
-            Duration = 3
-        })
+        saveBatchesToFiles()
     end
 })
+
+TabScanner:CreateSection("System")
 
 TabScanner:CreateButton({
     Name = "Unload Script",
