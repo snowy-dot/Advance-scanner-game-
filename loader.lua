@@ -41,32 +41,29 @@ State.Batches = {}
 -- BATCH SCANNER LOGIC
 -- ============================================
 local MAX_BATCHES = 10
-local MAX_BATCH_CHARS = 3000 -- Capped between 2500 and 3500
+local MAX_BATCH_CHARS = 3000
 
 local function copyBatchToClipboard(batchName)
     if batchName == "None" then
         return
     end
     
-    -- Extract batch number from string (e.g., "Batch 3" -> 3)
     local batchNum = tonumber(string.match(batchName, "%d+"))
     if batchNum and State.Batches[batchNum] then
         if setclipboard then
             setclipboard(State.Batches[batchNum])
-            local notifyConfig = {
+            Rayfield:Notify({
                 Title = "Copied",
                 Content = batchName .. " copied to clipboard!",
                 Duration = 3
-            }
-            Rayfield:Notify(notifyConfig)
+            })
         else
             print(State.Batches[batchNum])
-            local notifyConfig = {
+            Rayfield:Notify({
                 Title = "Error",
                 Content = "setclipboard not supported. Printed to F9.",
                 Duration = 3
-            }
-            Rayfield:Notify(notifyConfig)
+            })
         end
     end
 end
@@ -78,24 +75,21 @@ local function scanGameForScripts()
     local scanFailed = false
 
     if not decompile then
-        local notifyConfig = {
+        Rayfield:Notify({
             Title = "Error",
             Content = "Your executor does not support decompile()",
             Duration = 3
-        }
-        Rayfield:Notify(notifyConfig)
+        })
         return
     end
 
-    local scanNotifyConfig = {
+    Rayfield:Notify({
         Title = "Scanning",
         Content = "Scanning all client scripts into batches...",
         Duration = 3
-    }
-    Rayfield:Notify(scanNotifyConfig)
+    })
 
     for _, obj in pairs(game:GetDescendants()) do
-        -- Strictly scan LocalScripts and ModuleScripts (Ignores Server Scripts completely)
         if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
             local success, source = pcall(function()
                 return decompile(obj)
@@ -104,58 +98,41 @@ local function scanGameForScripts()
             if success and source then
                 local scriptEntry = "=== " .. obj:GetFullName() .. " ===\n" .. source .. "\n\n"
                 
-                -- Check if adding this script exceeds the character limit for the current batch
                 if string.len(currentBatch) + string.len(scriptEntry) > MAX_BATCH_CHARS then
-                    -- Save the current batch
                     State.Batches[currentBatchCount] = currentBatch
                     currentBatchCount = currentBatchCount + 1
                     
-                    -- Check if we exceeded the 10 batch limit
                     if currentBatchCount > MAX_BATCHES then
                         scanFailed = true
                         break
                     end
                     
-                    -- Start a new batch with the current script
                     currentBatch = scriptEntry
                 else
-                    -- Add script to current batch
                     currentBatch = currentBatch .. scriptEntry
                 end
             end
         end
     end
 
-    -- If scan failed due to size
     if scanFailed then
         State.Batches = {}
-        local dropdownConfig = {
-            Options = {"None"},
-            CurrentOption = "None",
-            Flag = "BatchDropdown",
-            Callback = function(Value)
-                copyBatchToClipboard(Value)
-            end
-        }
         if State.Scanner_Dropdown then
-            State.Scanner_Dropdown:Refresh(dropdownConfig.Options)
+            State.Scanner_Dropdown:Refresh({"None"})
         end
 
-        local errorConfig = {
+        Rayfield:Notify({
             Title = "Scan Failed",
             Content = "game files is too big, cannot be scanned",
             Duration = 5
-        }
-        Rayfield:Notify(errorConfig)
+        })
         return
     end
 
-    -- Save the final remaining batch if it has content
     if string.len(currentBatch) > 0 then
         State.Batches[currentBatchCount] = currentBatch
     end
 
-    -- Build dropdown options for the UI
     local batchOptions = {"None"}
     for i = 1, #State.Batches do
         local batchName = "Batch " .. tostring(i)
@@ -164,47 +141,40 @@ local function scanGameForScripts()
         table.insert(batchOptions, optionName)
     end
 
-    -- Update the Dropdown
     if State.Scanner_Dropdown then
         State.Scanner_Dropdown:Refresh(batchOptions)
     end
     
-    local completeConfig = {
+    Rayfield:Notify({
         Title = "Scan Complete",
         Content = "Found " .. #State.Batches .. " batches. Select one to copy.",
         Duration = 4
-    }
-    Rayfield:Notify(completeConfig)
+    })
 end
 
 -- ============================================
 -- UI SETUP
 -- ============================================
-local WindowConfig = {
+local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
     LoadingSubtitle = "Batch System",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
-}
-local Window = Rayfield:CreateWindow(WindowConfig)
+})
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
-local SectionConfig = {
-    Name = "Batch Scanning System"
-}
-TabScanner:CreateSection(SectionConfig)
+TabScanner:CreateSection("Batch Scanning System")
 
-local ScanButtonConfig = {
+TabScanner:CreateButton({
     Name = "Scan All Client Scripts",
     Callback = function()
         scanGameForScripts()
     end
-}
-TabScanner:CreateButton(ScanButtonConfig)
+})
 
-local ScannerDropdownConfig = {
+State.Scanner_Dropdown = TabScanner:CreateDropdown({
     Name = "Select Batch",
     Options = {"None"},
     CurrentOption = "None",
@@ -212,35 +182,28 @@ local ScannerDropdownConfig = {
     Callback = function(Value)
         copyBatchToClipboard(Value)
     end
-}
-State.Scanner_Dropdown = TabScanner:CreateDropdown(ScannerDropdownConfig)
+})
 
-local CopySelectedConfig = {
+TabScanner:CreateButton({
     Name = "Copy Selected Batch to Clipboard",
     Callback = function()
-        -- Rayfield Dropdowns don't always have a getter, so the callback handles the copy.
-        -- This button is here for UI clarity.
-        local notifyConfig = {
+        Rayfield:Notify({
             Title = "Info",
             Content = "Select a batch from the dropdown above to copy it.",
             Duration = 3
-        }
-        Rayfield:Notify(notifyConfig)
+        })
     end
-}
-TabScanner:CreateButton(CopySelectedConfig)
+})
 
-local UnloadConfig = {
+TabScanner:CreateButton({
     Name = "Unload Script",
     Callback = function()
         Rayfield:Destroy()
     end
-}
-TabScanner:CreateButton(UnloadConfig)
+})
 
-local NotifyConfig = {
+Rayfield:Notify({
     Title = "Game Scanner",
     Content = "Loaded successfully! Press RightCtrl to toggle UI.",
     Duration = 3
-}
-Rayfield:Notify(NotifyConfig)
+})
