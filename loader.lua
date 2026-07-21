@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED GAME SCANNER ONLY
+-- FULL CLIENT GAME SCANNER
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -78,7 +78,7 @@ local function scanGameForScripts()
 
     Rayfield:Notify({
         Title = "Scanning",
-        Content = "Scanning Local/Module scripts... UI may freeze briefly.",
+        Content = "Scanning all client scripts... UI may freeze briefly.",
         Duration = 3
     })
 
@@ -89,24 +89,13 @@ local function scanGameForScripts()
                 return decompile(obj)
             end)
             
+            -- If it successfully decompiles, add it to the list
             if success and source then
-                local lowerSrc = string.lower(source)
-                local isGunScript = false
-                
-                if string.find(lowerSrc, "raycast") then isGunScript = true end
-                if string.find(lowerSrc, "firearm") then isGunScript = true end
-                if string.find(lowerSrc, "bullet") then isGunScript = true end
-                if string.find(lowerSrc, "shoot") then isGunScript = true end
-                if string.find(lowerSrc, "fireserver") then isGunScript = true end
-                if string.find(lowerSrc, "weapon") then isGunScript = true end
-                
-                if isGunScript then
-                    table.insert(State.FoundScripts, {
-                        Name = obj:GetFullName(),
-                        Source = source
-                    })
-                    table.insert(scriptNames, obj:GetFullName())
-                end
+                table.insert(State.FoundScripts, {
+                    Name = obj:GetFullName(),
+                    Source = source
+                })
+                table.insert(scriptNames, obj:GetFullName())
             end
         end
     end
@@ -117,7 +106,7 @@ local function scanGameForScripts()
     
     Rayfield:Notify({
         Title = "Scan Complete",
-        Content = "Found " .. #State.FoundScripts .. " potential scripts.",
+        Content = "Found " .. #State.FoundScripts .. " client scripts.",
         Duration = 3
     })
 end
@@ -128,7 +117,7 @@ end
 local WindowConfig = {
     Name = "Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "by Rayfield",
+    LoadingSubtitle = "Full Client Scan",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 }
@@ -137,7 +126,7 @@ local Window = Rayfield:CreateWindow(WindowConfig)
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
 local ScanButtonConfig = {
-    Name = "Scan Game for Gun/Combat Scripts",
+    Name = "Scan All Client Scripts",
     Callback = function()
         scanGameForScripts()
     end
