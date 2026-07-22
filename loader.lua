@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED UNLIMITED BATCH GAME SCANNER (V2)
+-- ADVANCED SCANNER + ANTI-CHEAT (V3)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -40,16 +40,45 @@ State.Batches = {}
 State.ScanCoreScripts = false
 State.IsScanning = false
 State.GameName = "UnknownGame"
+State.AntiCheatEnabled = false
 
 -- Get Game Name
 pcall(function()
     local info = MarketplaceService:GetProductInfo(game.PlaceId)
     if info and info.Name then
         State.GameName = info.Name
-        -- Remove invalid characters for file names
         State.GameName = string.gsub(State.GameName, "[\\/:*?\"<>|]", "_")
     end
 end)
+
+-- ============================================
+-- ADVANCED ANTI-CHEAT SYSTEM
+-- ============================================
+local function EnableAntiCheat()
+    if State.AntiCheatEnabled then return end
+    State.AntiCheatEnabled = true
+
+    pcall(function()
+        local mt = getrawmetatable(game)
+        local oldIndex = mt.__index
+        setreadonly(mt, false)
+        
+        mt.__index = newcclosure(function(self, key)
+            if not checkcaller() and (key == "FindFirstChild" or key == "WaitForChild") then
+                return function(self, name)
+                    local child = oldIndex(self, key)(self, name)
+                    if child and (child.Name == "UniversalVisuals" or string.find(child.Name, "Rayfield")) then
+                        return nil
+                    end
+                    return child
+                end
+            end
+            return oldIndex(self, key)
+        end)
+        
+        setreadonly(mt, true)
+    end)
+end
 
 -- ============================================
 -- BATCH SCANNER LOGIC
@@ -87,47 +116,39 @@ local function scanGameForScripts()
     end
     State.IsScanning = true
     
-    task.spawn(function()
+    -- Wrap in pcall to prevent UI crash if an error occurs
+    local success, err = pcall(function()
         State.Batches = {}
         local currentBatch = ""
         local currentBatchLines = 0
         local currentBatchCount = 1
         local totalScriptsScanned = 0
-        local yieldCounter = 0
 
         if not decompile then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Your executor does not support decompile()",
-                Duration = 3
-            })
-            State.IsScanning = false
-            return
+            error("Your executor does not support decompile()")
         end
 
         Rayfield:Notify({
             Title = "Scanning",
-            Content = "Scanning game into unlimited batches...",
+            Content = "Scanning game safely to prevent crashes...",
             Duration = 3
         })
 
         local descendants = game:GetDescendants()
         for _, obj in pairs(descendants) do
-            yieldCounter = yieldCounter + 1
-            if yieldCounter % 50 == 0 then
-                task.wait()
-            end
-
+            -- CRITICAL: Yield after EVERY script to prevent UI thread crash
+            task.wait()
+            
             if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
                 local fullName = obj:GetFullName()
                 local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
                 
                 if not (isCore and not State.ScanCoreScripts) then
-                    local success, source = pcall(function()
+                    local decompSuccess, source = pcall(function()
                         return decompile(obj)
                     end)
                     
-                    if success and source then
+                    if decompSuccess and source then
                         totalScriptsScanned = totalScriptsScanned + 1
                         local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
                         
@@ -151,30 +172,38 @@ local function scanGameForScripts()
         if string.len(currentBatch) > 0 then
             State.Batches[currentBatchCount] = currentBatch
         end
+    end)
 
-        local batchOptions = {"None"}
-        for i = 1, #State.Batches do
-            local batchName = "Batch " .. tostring(i)
-            local lineCount = #string.split(State.Batches[i], "\n")
-            local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
-            table.insert(batchOptions, optionName)
-        end
-
-        -- Safely update the Dropdown (Fixed Syntax)
-        pcall(function()
-            if State.Scanner_Dropdown then
-                State.Scanner_Dropdown:Refresh(batchOptions, true)
-            end
-        end)
-        
+    if not success then
+        print("Scan Error: " .. tostring(err))
         Rayfield:Notify({
-            Title = "Scan Complete",
-            Content = "Scanned " .. totalScriptsScanned .. " scripts into " .. #State.Batches .. " batches.",
+            Title = "Error",
+            Content = "Scan failed: " .. tostring(err),
             Duration = 5
         })
-        
-        State.IsScanning = false
+    end
+
+    local batchOptions = {"None"}
+    for i = 1, #State.Batches do
+        local batchName = "Batch " .. tostring(i)
+        local lineCount = #string.split(State.Batches[i], "\n")
+        local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
+        table.insert(batchOptions, optionName)
+    end
+
+    pcall(function()
+        if State.Scanner_Dropdown then
+            State.Scanner_Dropdown:Refresh(batchOptions)
+        end
     end)
+    
+    Rayfield:Notify({
+        Title = "Scan Complete",
+        Content = "Scanned into " .. #State.Batches .. " batches.",
+        Duration = 5
+    })
+    
+    State.IsScanning = false
 end
 
 local function saveBatchesToFiles()
@@ -216,12 +245,30 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Unlimited Batch System",
+    LoadingSubtitle = "Anti-Cheat Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
+
+TabScanner:CreateSection("Anti-Cheat Protection")
+
+TabScanner:CreateToggle({
+    Name = "Enable Advanced Anti-Cheat (Hides UI)",
+    CurrentValue = false,
+    Flag = "AntiCheat",
+    Callback = function(Value)
+        if Value then
+            EnableAntiCheat()
+            Rayfield:Notify({
+                Title = "Protected",
+                Content = "UI is now invisible to game anti-cheats.",
+                Duration = 3
+            })
+        end
+    end
+})
 
 TabScanner:CreateSection("Scanner Settings")
 
