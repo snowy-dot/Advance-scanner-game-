@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED UNLIMITED BATCH GAME SCANNER
+-- ADVANCED UNLIMITED BATCH GAME SCANNER (FIXED)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -53,20 +53,18 @@ local function copyBatchToClipboard(batchName)
     if batchNum and State.Batches[batchNum] then
         if setclipboard then
             setclipboard(State.Batches[batchNum])
-            local notifyConfig = {
+            Rayfield:Notify({
                 Title = "Copied",
                 Content = batchName .. " copied to clipboard!",
                 Duration = 3
-            }
-            Rayfield:Notify(notifyConfig)
+            })
         else
             print(State.Batches[batchNum])
-            local notifyConfig = {
+            Rayfield:Notify({
                 Title = "Error",
                 Content = "setclipboard not supported. Printed to F9.",
                 Duration = 3
-            }
-            Rayfield:Notify(notifyConfig)
+            })
         end
     end
 end
@@ -77,103 +75,97 @@ local function scanGameForScripts()
     end
     State.IsScanning = true
     
-    State.Batches = {}
-    local currentBatch = ""
-    local currentBatchLines = 0
-    local currentBatchCount = 1
-    local totalScriptsScanned = 0
-    local yieldCounter = 0
+    -- Run the scan in a separate thread so the UI doesn't freeze or yield
+    task.spawn(function()
+        State.Batches = {}
+        local currentBatch = ""
+        local currentBatchLines = 0
+        local currentBatchCount = 1
+        local totalScriptsScanned = 0
+        local yieldCounter = 0
 
-    if not decompile then
-        Rayfield:Notify({
-            Title = "Error",
-            Content = "Your executor does not support decompile()",
-            Duration = 3
-        })
-        State.IsScanning = false
-        return
-    end
-
-    Rayfield:Notify({
-        Title = "Scanning",
-        Content = "Scanning game into unlimited batches...",
-        Duration = 3
-    })
-
-    local descendants = game:GetDescendants()
-    for _, obj in pairs(descendants) do
-        -- Yield every 50 scripts to prevent game freeze/crash
-        yieldCounter = yieldCounter + 1
-        if yieldCounter % 50 == 0 then
-            task.wait()
+        if not decompile then
+            Rayfield:Notify({
+                Title = "Error",
+                Content = "Your executor does not support decompile()",
+                Duration = 3
+            })
+            State.IsScanning = false
+            return
         end
 
-        -- Strictly scan LocalScripts and ModuleScripts (Ignores Server Scripts completely)
-        if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-            local fullName = obj:GetFullName()
-            
-            -- Filter out CoreScripts if the toggle is off
-            local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
-            if isCore and not State.ScanCoreScripts then
-                continue
+        Rayfield:Notify({
+            Title = "Scanning",
+            Content = "Scanning game into unlimited batches...",
+            Duration = 3
+        })
+
+        local descendants = game:GetDescendants()
+        for _, obj in pairs(descendants) do
+            -- Yield every 50 scripts to prevent game crash
+            yieldCounter = yieldCounter + 1
+            if yieldCounter % 50 == 0 then
+                task.wait()
             end
 
-            local success, source = pcall(function()
-                return decompile(obj)
-            end)
-            
-            if success and source then
-                totalScriptsScanned = totalScriptsScanned + 1
-                local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
+            if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                local fullName = obj:GetFullName()
+                local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
                 
-                -- Fast line counting
-                local _, lines = string.gsub(scriptEntry, "\n", "")
-                lines = lines + 1
-                
-                -- Check if adding this script exceeds the line limit for the current batch
-                if currentBatchLines + lines > MAX_BATCH_LINES then
-                    -- Save the current batch
-                    State.Batches[currentBatchCount] = currentBatch
-                    currentBatchCount = currentBatchCount + 1
+                -- If it's a core script and we aren't scanning cores, skip it
+                if not (isCore and not State.ScanCoreScripts) then
+                    local success, source = pcall(function()
+                        return decompile(obj)
+                    end)
                     
-                    -- Start a new batch with the current script
-                    currentBatch = scriptEntry
-                    currentBatchLines = lines
-                else
-                    -- Add script to current batch and increase line count
-                    currentBatch = currentBatch .. scriptEntry
-                    currentBatchLines = currentBatchLines + lines
+                    if success and source then
+                        totalScriptsScanned = totalScriptsScanned + 1
+                        local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
+                        
+                        local _, lines = string.gsub(scriptEntry, "\n", "")
+                        lines = lines + 1
+                        
+                        if currentBatchLines + lines > MAX_BATCH_LINES then
+                            State.Batches[currentBatchCount] = currentBatch
+                            currentBatchCount = currentBatchCount + 1
+                            currentBatch = scriptEntry
+                            currentBatchLines = lines
+                        else
+                            currentBatch = currentBatch .. scriptEntry
+                            currentBatchLines = currentBatchLines + lines
+                        end
+                    end
                 end
             end
         end
-    end
 
-    -- Save the final remaining batch if it has content
-    if string.len(currentBatch) > 0 then
-        State.Batches[currentBatchCount] = currentBatch
-    end
+        if string.len(currentBatch) > 0 then
+            State.Batches[currentBatchCount] = currentBatch
+        end
 
-    -- Build dropdown options for the UI
-    local batchOptions = {"None"}
-    for i = 1, #State.Batches do
-        local batchName = "Batch " .. tostring(i)
-        local lineCount = #string.split(State.Batches[i], "\n")
-        local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
-        table.insert(batchOptions, optionName)
-    end
+        local batchOptions = {"None"}
+        for i = 1, #State.Batches do
+            local batchName = "Batch " .. tostring(i)
+            local lineCount = #string.split(State.Batches[i], "\n")
+            local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
+            table.insert(batchOptions, optionName)
+        end
 
-    -- Update the Dropdown
-    if State.Scanner_Dropdown then
-        State.Scanner_Dropdown:Refresh(batchOptions)
-    end
-    
-    Rayfield:Notify({
-        Title = "Scan Complete",
-        Content = "Scanned " .. totalScriptsScanned .. " scripts into " .. #State.Batches .. " batches.",
-        Duration = 5
-    })
-    
-    State.IsScanning = false
+        -- Safely update the Dropdown
+        pcall(function()
+            if State.Scanner_Dropdown then
+                State.Scanner_Dropdown:Refresh(batchOptions)
+            end
+        end)
+        
+        Rayfield:Notify({
+            Title = "Scan Complete",
+            Content = "Scanned " .. totalScriptsScanned .. " scripts into " .. #State.Batches .. " batches.",
+            Duration = 5
+        })
+        
+        State.IsScanning = false
+    end)
 end
 
 local function saveBatchesToFiles()
@@ -198,7 +190,6 @@ local function saveBatchesToFiles()
     local folderName = "GameScan_" .. tostring(os.time())
     for i = 1, #State.Batches do
         local fileName = folderName .. "/Batch_" .. tostring(i) .. ".txt"
-        -- writefile automatically creates folders if they don't exist in the workspace folder
         pcall(function()
             writefile(fileName, State.Batches[i])
         end)
