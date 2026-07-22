@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + SINGLE FILE EXPORT (V7 - CRASH PROOF)
+-- ADVANCED SCANNER + SMART YIELD (V8 - TIMEOUT PROOF)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -39,6 +39,7 @@ State.Scanner_Dropdown = nil
 State.ProgressParagraph = nil
 State.Batches = {}
 State.ScanCoreScripts = false
+State.FastScan = false
 State.IsScanning = false
 State.GameName = "UnknownGame"
 State.AntiCheatEnabled = false
@@ -82,7 +83,7 @@ local function EnableAntiCheat()
 end
 
 -- ============================================
--- BATCH SCANNER LOGIC (CRASH PROOF)
+-- BATCH SCANNER LOGIC (SMART YIELD)
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -117,7 +118,6 @@ local function scanGameForScripts()
     end
     State.IsScanning = true
     
-    -- Run in a separate thread and wrap in pcall to prevent UI crashes
     task.spawn(function()
         local success, err = pcall(function()
             State.Batches = {}
@@ -149,9 +149,17 @@ local function scanGameForScripts()
                 Duration = 3
             })
 
+            local startTime = os.clock()
+
             for i, obj in ipairs(scriptList) do
-                -- CRITICAL: Yield EVERY single script to prevent executor thread crash
-                task.wait()
+                -- SMART YIELD: Only yield if 50ms have passed to prevent timeout crash
+                -- This makes it blazing fast without disappearing the UI
+                if not State.FastScan then
+                    if os.clock() - startTime > 0.05 then
+                        task.wait()
+                        startTime = os.clock()
+                    end
+                end
                 
                 local decompSuccess, source = pcall(function()
                     return decompile(obj)
@@ -177,8 +185,8 @@ local function scanGameForScripts()
                     end
                 end
                 
-                -- Update Progress UI every 5 scripts
-                if i % 5 == 0 and State.ProgressParagraph then
+                -- Update Progress UI every 10 scripts
+                if i % 10 == 0 and State.ProgressParagraph then
                     local pct = math.floor((i / totalScripts) * 100)
                     pcall(function()
                         State.ProgressParagraph:Set({
@@ -281,7 +289,7 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Crash Proof Edition",
+    LoadingSubtitle = "Smart Yield Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -321,6 +329,15 @@ TabScanner:CreateToggle({
     Flag = "ScanCore",
     Callback = function(Value)
         State.ScanCoreScripts = Value
+    end
+})
+
+TabScanner:CreateToggle({
+    Name = "Fast Scan (Freezes game, but prevents UI deletion)",
+    CurrentValue = false,
+    Flag = "FastScan",
+    Callback = function(Value)
+        State.FastScan = Value
     end
 })
 
