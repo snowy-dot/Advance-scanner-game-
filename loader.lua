@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + ANTI-CHEAT (V4 - MEMORY SAFE)
+-- ADVANCED SCANNER + SINGLE FILE EXPORT (V5)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -82,7 +82,7 @@ local function EnableAntiCheat()
 end
 
 -- ============================================
--- BATCH SCANNER LOGIC (MEMORY SAFE)
+-- BATCH SCANNER LOGIC
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -139,17 +139,17 @@ local function scanGameForScripts()
 
         Rayfield:Notify({
             Title = "Scanning",
-            Content = "Scanning game safely to prevent crashes...",
+            Content = "Gathering scripts safely...",
             Duration = 3
         })
 
         for i, obj in ipairs(descendants) do
-            -- Yield every 15 scripts to prevent game freeze without taking hours
+            -- Yield every 15 scripts to prevent game freeze
             if i % 15 == 0 then
                 task.wait()
             end
 
-            -- Update Progress UI every 30 scripts
+            -- Update Progress UI
             if i % 30 == 0 and State.ProgressParagraph then
                 local pct = math.floor((i / totalDescendants) * 100)
                 pcall(function()
@@ -177,7 +177,6 @@ local function scanGameForScripts()
                         lines = lines + 1
                         
                         if currentBatchLines + lines > MAX_BATCH_LINES then
-                            -- Use table.concat to save the batch safely
                             State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
                             currentBatchCount = currentBatchCount + 1
                             currentBatchArray = {}
@@ -186,7 +185,6 @@ local function scanGameForScripts()
                             table.insert(currentBatchArray, scriptEntry)
                             currentBatchLines = lines
                         else
-                            -- Insert into table array (very memory efficient)
                             table.insert(currentBatchArray, scriptEntry)
                             currentBatchLines = currentBatchLines + lines
                         end
@@ -235,11 +233,11 @@ local function scanGameForScripts()
     end)
 end
 
-local function saveBatchesToFiles()
+local function saveAllToSingleFile()
     if #State.Batches == 0 then
         Rayfield:Notify({
             Title = "Error",
-            Content = "No batches found. Scan the game first.",
+            Content = "No scripts found. Scan the game first.",
             Duration = 3
         })
         return
@@ -254,16 +252,25 @@ local function saveBatchesToFiles()
         return
     end
 
+    -- Gather all batches into one large table array
+    local fullFileArray = {}
     for i = 1, #State.Batches do
-        local fileName = "[" .. State.GameName .. "] Batch_" .. tostring(i) .. ".txt"
-        pcall(function()
-            writefile(fileName, State.Batches[i])
-        end)
+        table.insert(fullFileArray, State.Batches[i])
     end
+
+    -- Combine them all safely using table.concat
+    local fullContent = table.concat(fullFileArray, "\n\n--- BATCH BREAK ---\n\n")
+    
+    -- Name the file based on the game name
+    local fileName = State.GameName .. ".txt"
+    
+    pcall(function()
+        writefile(fileName, fullContent)
+    end)
 
     Rayfield:Notify({
         Title = "Saved",
-        Content = "Saved " .. #State.Batches .. " files to executor workspace folder.",
+        Content = "Saved all scripts to " .. fileName .. " in workspace folder.",
         Duration = 6
     })
 end
@@ -274,12 +281,19 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Anti-Cheat Edition",
+    LoadingSubtitle = "Single File Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
+
+TabScanner:CreateSection("Scan Time Reminder")
+
+TabScanner:CreateParagraph({
+    Title = "Please Read Before Scanning",
+    Content = "fast loading = not that much script\nslow loading = decent amount of loading\nhella slow loading = tons of script inside of the game to decompile"
+})
 
 TabScanner:CreateSection("Anti-Cheat Protection")
 
@@ -324,7 +338,21 @@ State.ProgressParagraph = TabScanner:CreateParagraph({
     Content = "Scan Progress: 0%"
 })
 
-TabScanner:CreateSection("Batch Export System")
+TabScanner:CreateSection("Export System")
+
+TabScanner:CreateButton({
+    Name = "Save Game to Single File (PC)",
+    Callback = function()
+        saveAllToSingleFile()
+    end
+})
+
+TabScanner:CreateParagraph({
+    Title = "Where are my files?",
+    Content = "Files are saved to your Executor's 'workspace' folder. (Usually located in %localappdata%/[ExecutorName]/workspace)"
+})
+
+TabScanner:CreateSection("Optional: Copy Batches to Clipboard")
 
 State.Scanner_Dropdown = TabScanner:CreateDropdown({
     Name = "Select Batch",
@@ -334,18 +362,6 @@ State.Scanner_Dropdown = TabScanner:CreateDropdown({
     Callback = function(Value)
         copyBatchToClipboard(Value)
     end
-})
-
-TabScanner:CreateButton({
-    Name = "Save All Batches to Files (PC)",
-    Callback = function()
-        saveBatchesToFiles()
-    end
-})
-
-TabScanner:CreateParagraph({
-    Title = "Where are my files?",
-    Content = "Files are saved to your Executor's 'workspace' folder. (Usually located in %localappdata%/[ExecutorName]/workspace)"
 })
 
 TabScanner:CreateSection("System")
