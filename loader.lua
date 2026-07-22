@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + AUTO-SAVE 50MB FILES
+-- ADVANCED SCANNER + ANTI-CRASH AUTO-SAVE
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -23,8 +23,87 @@ State.Batches = {}
 State.ScanCoreScripts = false
 State.IsScanning = false
 
+-- Get Game Name for File Saving
+local GameName = "UnknownGame"
+pcall(function()
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+    if info and info.Name then
+        GameName = string.gsub(info.Name, "[^%w_]", "_")
+    end
+end)
+
 -- ============================================
--- BATCH SCANNER LOGIC (Standard 3500 lines)
+-- UI ELEMENTS (Declared early to update progress)
+-- ============================================
+local Window = Rayfield:CreateWindow({
+    Name = "Advanced Game Scanner",
+    LoadingTitle = "Scanner",
+    LoadingSubtitle = "Anti-Crash Edition",
+    ConfigurationSaving = { Enabled = false },
+    KeySystem = false
+})
+
+local TabScanner = Window:CreateTab("Scanner", 4483362458)
+
+TabScanner:CreateSection("Auto-Save Full Decompile")
+local ScanButton = TabScanner:CreateButton({
+    Name = "Scan Everything (Auto-Save 50MB Files)",
+    Callback = function() end -- Callback set later
+})
+
+local ProgressLabel = TabScanner:CreateParagraph({
+    Name = "Progress",
+    Content = "Progress: 0%"
+})
+
+TabScanner:CreateSection("Standard Batch Scan (3500 lines)")
+local BatchButton = TabScanner:CreateButton({
+    Name = "Scan Client Scripts (Batches)",
+    Callback = function() end
+})
+
+State.Scanner_Dropdown = TabScanner:CreateDropdown({
+    Name = "Select Batch",
+    Options = {"None"},
+    CurrentOption = "None",
+    Flag = "BatchDropdown",
+    Callback = function(Value) end
+})
+
+TabScanner:CreateButton({
+    Name = "Save Batches to Single File",
+    Callback = function()
+        if #State.Batches == 0 then return end
+        if not writefile then return end
+        local fullContent = ""
+        for i = 1, #State.Batches do
+            fullContent = fullContent .. State.Batches[i] .. "\n\n--- BATCH BREAK ---\n\n"
+        end
+        pcall(function() writefile("Game_Scan_Batches.txt", fullContent) end)
+        Rayfield:Notify({Title = "Saved", Content = "Saved to workspace folder.", Duration = 5})
+    end
+})
+
+TabScanner:CreateSection("Scanner Settings")
+TabScanner:CreateToggle({
+    Name = "Scan Roblox CoreScripts",
+    CurrentValue = false,
+    Flag = "ScanCore",
+    Callback = function(Value)
+        State.ScanCoreScripts = Value
+    end
+})
+
+TabScanner:CreateSection("System")
+TabScanner:CreateButton({
+    Name = "Unload Script",
+    Callback = function()
+        Rayfield:Destroy()
+    end
+})
+
+-- ============================================
+-- BATCH SCANNER LOGIC
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -40,6 +119,7 @@ local function copyBatchToClipboard(batchName)
         end
     end
 end
+State.Scanner_Dropdown.Callback = copyBatchToClipboard
 
 local function scanGameForScripts()
     if State.IsScanning then return end
@@ -52,6 +132,8 @@ local function scanGameForScripts()
         local currentBatchCount = 1
         local totalScriptsScanned = 0
         local yieldCounter = 0
+        local totalItems = #game:GetDescendants()
+        local currentIndex = 0
 
         if not decompile then
             Rayfield:Notify({Title = "Error", Content = "No decompile()", Duration = 3})
@@ -63,8 +145,13 @@ local function scanGameForScripts()
 
         local descendants = game:GetDescendants()
         for _, obj in ipairs(descendants) do
+            currentIndex = currentIndex + 1
             yieldCounter = yieldCounter + 1
-            if yieldCounter % 50 == 0 then task.wait() end
+            if yieldCounter % 50 == 0 then
+                task.wait()
+                local percent = math.floor((currentIndex / totalItems) * 100)
+                ProgressLabel:Set({Title = "Progress", Content = "Progress: " .. percent .. "%"})
+            end
 
             if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
                 local fullName = obj:GetFullName()
@@ -107,27 +194,18 @@ local function scanGameForScripts()
             end
         end)
         
+        ProgressLabel:Set({Title = "Progress", Content = "Progress: 100%"})
         print("done")
         Rayfield:Notify({Title = "Done", Content = "Scanned " .. totalScriptsScanned .. " scripts.", Duration = 5})
         State.IsScanning = false
     end)
 end
-
-local function saveBatchesToFile()
-    if #State.Batches == 0 then return end
-    if not writefile then return end
-    local fullContent = ""
-    for i = 1, #State.Batches do
-        fullContent = fullContent .. State.Batches[i] .. "\n\n--- BATCH BREAK ---\n\n"
-    end
-    pcall(function() writefile("Game_Scan_Batches.txt", fullContent) end)
-    Rayfield:Notify({Title = "Saved", Content = "Saved to workspace folder.", Duration = 5})
-end
+BatchButton.Callback = scanGameForScripts
 
 -- ============================================
 -- AUTO-SAVE 50MB FILES LOGIC
 -- ============================================
-local MAX_FILE_CHARS = 50000000 -- 50MB
+local MAX_FILE_CHARS = 50000000 -- 50MB in characters
 
 local function scanAndAutoSave()
     if State.IsScanning then return end
@@ -137,7 +215,8 @@ local function scanAndAutoSave()
         local currentArray = {}
         local currentSize = 0
         local fileCount = 1
-        local totalItems = 0
+        local totalItems = #game:GetDescendants()
+        local currentIndex = 0
         local yieldCounter = 0
 
         if not decompile then
@@ -153,13 +232,18 @@ local function scanAndAutoSave()
         end
 
         Rayfield:Notify({Title = "Scanning", Content = "Auto-saving 50MB files. Do not close the game.", Duration = 5})
+        ProgressLabel:Set({Title = "Progress", Content = "Progress: 0%"})
 
         local descendants = game:GetDescendants()
         for _, obj in ipairs(descendants) do
+            currentIndex = currentIndex + 1
             yieldCounter = yieldCounter + 1
-            -- Yield every 25 items to prevent UI from freezing
+            
+            -- Aggressive yielding to prevent UI crash
             if yieldCounter % 25 == 0 then
-                task.wait()
+                task.wait(0.05)
+                local percent = math.floor((currentIndex / totalItems) * 100)
+                ProgressLabel:Set({Title = "Progress", Content = "Progress: " .. percent .. "%"})
             end
 
             local fullName = obj:GetFullName()
@@ -172,13 +256,11 @@ local function scanAndAutoSave()
                 if not (isCore and not State.ScanCoreScripts) then
                     local decompSuccess, source = pcall(function() return decompile(obj) end)
                     if decompSuccess and source then
-                        totalItems = totalItems + 1
                         entry = "--- SCRIPT: " .. fullName .. " (" .. className .. ") ---\n" .. source .. "\n\n"
                     end
                 end
             -- 2. If it's an Instance, dump its properties
             else
-                totalItems = totalItems + 1
                 local props = {}
                 
                 if obj:IsA("BasePart") then
@@ -201,19 +283,21 @@ local function scanAndAutoSave()
                 entry = "--- INSTANCE: " .. fullName .. " (" .. className .. ")" .. propString .. " ---\n"
             end
             
-            -- Check if adding this entry exceeds 50MB
+            -- Add to 50MB File
             if entry ~= "" then
                 local entryLength = #entry
                 
                 if currentSize + entryLength > MAX_FILE_CHARS then
-                    -- Save current file
+                    -- Save current 50MB file
                     local fileData = table.concat(currentArray, "")
-                    pcall(function() writefile("Scan_Part_" .. tostring(fileCount) .. ".txt", fileData) end)
+                    local fileName = GameName .. "_" .. tostring(fileCount) .. ".txt"
+                    pcall(function() writefile(fileName, fileData) end)
                     
-                    -- Reset for next file
+                    -- Clear memory to prevent crash
                     currentArray = {}
                     currentSize = 0
                     fileCount = fileCount + 1
+                    collectgarbage("collect")
                 end
                 
                 table.insert(currentArray, entry)
@@ -224,78 +308,17 @@ local function scanAndAutoSave()
         -- Save the final remaining file
         if #currentArray > 0 then
             local fileData = table.concat(currentArray, "")
-            pcall(function() writefile("Scan_Part_" .. tostring(fileCount) .. ".txt", fileData) end)
+            local fileName = GameName .. "_" .. tostring(fileCount) .. ".txt"
+            pcall(function() writefile(fileName, fileData) end)
         end
 
+        ProgressLabel:Set({Title = "Progress", Content = "Progress: 100%"})
         print("done")
         Rayfield:Notify({Title = "Done", Content = "Scan complete! Saved " .. fileCount .. " 50MB files to workspace.", Duration = 5})
         State.IsScanning = false
     end)
 end
-
--- ============================================
--- UI SETUP
--- ============================================
-local Window = Rayfield:CreateWindow({
-    Name = "Advanced Game Scanner",
-    LoadingTitle = "Scanner",
-    LoadingSubtitle = "Auto-Save Edition",
-    ConfigurationSaving = { Enabled = false },
-    KeySystem = false
-})
-
-local TabScanner = Window:CreateTab("Scanner", 4483362458)
-
-TabScanner:CreateSection("Auto-Save Full Decompile")
-TabScanner:CreateButton({
-    Name = "Scan Everything (Auto-Save 50MB Files)",
-    Callback = function()
-        scanAndAutoSave()
-    end
-})
-
-TabScanner:CreateSection("Standard Batch Scan (3500 lines)")
-TabScanner:CreateButton({
-    Name = "Scan Client Scripts (Batches)",
-    Callback = function()
-        scanGameForScripts()
-    end
-})
-
-State.Scanner_Dropdown = TabScanner:CreateDropdown({
-    Name = "Select Batch",
-    Options = {"None"},
-    CurrentOption = "None",
-    Flag = "BatchDropdown",
-    Callback = function(Value)
-        copyBatchToClipboard(Value)
-    end
-})
-
-TabScanner:CreateButton({
-    Name = "Save Batches to Single File",
-    Callback = function()
-        saveBatchesToFile()
-    end
-})
-
-TabScanner:CreateSection("Scanner Settings")
-TabScanner:CreateToggle({
-    Name = "Scan Roblox CoreScripts",
-    CurrentValue = false,
-    Flag = "ScanCore",
-    Callback = function(Value)
-        State.ScanCoreScripts = Value
-    end
-})
-
-TabScanner:CreateSection("System")
-TabScanner:CreateButton({
-    Name = "Unload Script",
-    Callback = function()
-        Rayfield:Destroy()
-    end
-})
+ScanButton.Callback = scanAndAutoSave
 
 Rayfield:Notify({
     Title = "Game Scanner",
