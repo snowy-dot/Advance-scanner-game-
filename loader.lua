@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + FULL GAME DECOMPILE (FIXED UI)
+-- ADVANCED SCANNER + 50MB DIVISIONS
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -23,8 +23,15 @@ State.Batches = {}
 State.ScanCoreScripts = false
 State.IsScanning = false
 
+-- 50MB Division State
+local MAX_DIV_CHARS = 50000000 -- 50MB in characters
+State.Divisions = {} -- Will hold the final 50MB strings
+State.DivisionArrays = {} -- Will hold the arrays before joining
+State.CurrentDiv = 1
+State.CurrentDivSize = 0
+
 -- ============================================
--- FULL GAME DECOMPILE & BATCH LOGIC
+-- BATCH SCANNER LOGIC (3500 lines)
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -42,7 +49,7 @@ local function copyBatchToClipboard(batchName)
     end
 end
 
-local function scanFullGame()
+local function scanGameForScripts()
     if State.IsScanning then return end
     State.IsScanning = true
     
@@ -51,6 +58,98 @@ local function scanFullGame()
         local currentBatchArray = {}
         local currentBatchLines = 0
         local currentBatchCount = 1
+        local totalScriptsScanned = 0
+        local yieldCounter = 0
+
+        if not decompile then
+            Rayfield:Notify({Title = "Error", Content = "Your executor does not support decompile()", Duration = 3})
+            State.IsScanning = false
+            return
+        end
+
+        Rayfield:Notify({Title = "Scanning", Content = "Scanning scripts into batches...", Duration = 3})
+
+        local descendants = game:GetDescendants()
+        for _, obj in ipairs(descendants) do
+            yieldCounter = yieldCounter + 1
+            if yieldCounter % 50 == 0 then task.wait() end
+
+            if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                local fullName = obj:GetFullName()
+                local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
+                if not (isCore and not State.ScanCoreScripts) then
+                    local decompSuccess, source = pcall(function() return decompile(obj) end)
+                    if decompSuccess and source then
+                        totalScriptsScanned = totalScriptsScanned + 1
+                        local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
+                        local _, lines = string.gsub(scriptEntry, "\n", "")
+                        lines = lines + 1
+                        
+                        if currentBatchLines + lines > MAX_BATCH_LINES then
+                            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+                            currentBatchCount = currentBatchCount + 1
+                            currentBatchArray = {}
+                            currentBatchLines = 0
+                        end
+                        table.insert(currentBatchArray, scriptEntry)
+                        currentBatchLines = currentBatchLines + lines
+                    end
+                end
+            end
+        end
+
+        if #currentBatchArray > 0 then
+            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+        end
+
+        local batchOptions = {"None"}
+        for i = 1, #State.Batches do
+            local batchName = "Batch " .. tostring(i)
+            local lineCount = #string.split(State.Batches[i], "\n")
+            local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
+            table.insert(batchOptions, optionName)
+        end
+
+        pcall(function()
+            if State.Scanner_Dropdown then
+                State.Scanner_Dropdown:Refresh(batchOptions, true)
+            end
+        end)
+        
+        print("done")
+        Rayfield:Notify({Title = "Done", Content = "Scanned " .. totalScriptsScanned .. " scripts.", Duration = 5})
+        State.IsScanning = false
+    end)
+end
+
+local function saveBatchesToFile()
+    if #State.Batches == 0 then
+        Rayfield:Notify({Title = "Error", Content = "No data found. Scan first.", Duration = 3})
+        return
+    end
+    if not writefile then return end
+    local fullContent = ""
+    for i = 1, #State.Batches do
+        fullContent = fullContent .. State.Batches[i] .. "\n\n--- BATCH BREAK ---\n\n"
+    end
+    pcall(function() writefile("Game_Scan_Batches.txt", fullContent) end)
+    Rayfield:Notify({Title = "Saved", Content = "Saved to workspace folder.", Duration = 5})
+end
+
+-- ============================================
+-- 50MB DIVISION SCAN LOGIC
+-- ============================================
+local function scanFullGame50MB()
+    if State.IsScanning then return end
+    State.IsScanning = true
+    
+    task.spawn(function()
+        -- Reset Division State
+        State.Divisions = {}
+        State.DivisionArrays = {{}}
+        State.CurrentDiv = 1
+        State.CurrentDivSize = 0
+        
         local totalItemsScanned = 0
         local yieldCounter = 0
 
@@ -60,13 +159,13 @@ local function scanFullGame()
             return
         end
 
-        Rayfield:Notify({Title = "Scanning", Content = "Decompiling full game. This may take a minute...", Duration = 5})
+        Rayfield:Notify({Title = "Scanning", Content = "Decompiling EVERYTHING into 50MB Divisions. Please wait...", Duration = 5})
 
         local descendants = game:GetDescendants()
         for _, obj in ipairs(descendants) do
             yieldCounter = yieldCounter + 1
-            -- Yield every 50 items to prevent UI from freezing/disappearing
-            if yieldCounter % 50 == 0 then
+            -- Yield every 25 items to prevent freezing
+            if yieldCounter % 25 == 0 then
                 task.wait()
             end
 
@@ -89,7 +188,6 @@ local function scanFullGame()
                 totalItemsScanned = totalItemsScanned + 1
                 local props = {}
                 
-                -- Gather key properties based on class (Optimized for memory)
                 if obj:IsA("BasePart") then
                     table.insert(props, "Pos: " .. tostring(obj.Position))
                     table.insert(props, "Size: " .. tostring(obj.Size))
@@ -107,67 +205,72 @@ local function scanFullGame()
                 if #props > 0 then
                     propString = " | " .. table.concat(props, " | ")
                 end
-                
                 entry = "--- INSTANCE: " .. fullName .. " (" .. className .. ")" .. propString .. " ---\n"
             end
             
-            -- Add to batch
+            -- Add to 50MB Division
             if entry ~= "" then
-                local _, lines = string.gsub(entry, "\n", "")
-                lines = lines + 1
+                local entryLength = #entry
                 
-                if currentBatchLines + lines > MAX_BATCH_LINES then
-                    State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
-                    currentBatchCount = currentBatchCount + 1
-                    currentBatchArray = {}
-                    currentBatchLines = 0
+                -- If adding this exceeds 50MB, finalize current division and move to next
+                if State.CurrentDivSize + entryLength > MAX_DIV_CHARS then
+                    State.Divisions[State.CurrentDiv] = table.concat(State.DivisionArrays[State.CurrentDiv], "")
+                    State.CurrentDiv = State.CurrentDiv + 1
+                    State.DivisionArrays[State.CurrentDiv] = {}
+                    State.CurrentDivSize = 0
                 end
                 
-                table.insert(currentBatchArray, entry)
-                currentBatchLines = currentBatchLines + lines
+                table.insert(State.DivisionArrays[State.CurrentDiv], entry)
+                State.CurrentDivSize = State.CurrentDivSize + entryLength
             end
         end
 
-        if #currentBatchArray > 0 then
-            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+        -- Finalize the last division
+        if #State.DivisionArrays[State.CurrentDiv] > 0 then
+            State.Divisions[State.CurrentDiv] = table.concat(State.DivisionArrays[State.CurrentDiv], "")
         end
 
-        local batchOptions = {"None"}
-        for i = 1, #State.Batches do
-            local batchName = "Batch " .. tostring(i)
-            local lineCount = #string.split(State.Batches[i], "\n")
-            local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
-            table.insert(batchOptions, optionName)
+        -- Update the Division Dropdown
+        local divOptions = {"None"}
+        for i = 1, #State.Divisions do
+            local sizeMB = math.floor((#State.Divisions[i] / 1024) / 1024)
+            table.insert(divOptions, "Division " .. tostring(i) .. " (" .. tostring(sizeMB) .. " MB)")
         end
-
         pcall(function()
-            if State.Scanner_Dropdown then
-                State.Scanner_Dropdown:Refresh(batchOptions, true)
+            if State.DivisionDropdown then
+                State.DivisionDropdown:Refresh(divOptions, true)
             end
         end)
-        
-        Rayfield:Notify({Title = "Scan Complete", Content = "Decompiled " .. totalItemsScanned .. " items into " .. #State.Batches .. " batches.", Duration = 5})
+
+        print("done")
+        Rayfield:Notify({Title = "Done", Content = "Scan complete! " .. totalItemsScanned .. " items in " .. #State.Divisions .. " Divisions.", Duration = 5})
         State.IsScanning = false
     end)
 end
 
-local function saveAllToSingleFile()
-    if #State.Batches == 0 then
-        Rayfield:Notify({Title = "Error", Content = "No data found. Scan the game first.", Duration = 3})
+local function copyDivisionToClipboard(divName)
+    if divName == "None" then return end
+    local divNum = tonumber(string.match(divName, "%d+"))
+    if divNum and State.Divisions[divNum] then
+        if setclipboard then
+            setclipboard(State.Divisions[divNum])
+            Rayfield:Notify({Title = "Copied", Content = divName .. " copied to clipboard!", Duration = 3})
+        else
+            print(State.Divisions[divNum])
+        end
+    end
+end
+
+local function saveDivisionsToFile()
+    if #State.Divisions == 0 then
+        Rayfield:Notify({Title = "Error", Content = "No data found. Run 50MB Scan first.", Duration = 3})
         return
     end
-    if not writefile then
-        Rayfield:Notify({Title = "Error", Content = "Your executor does not support writefile()", Duration = 3})
-        return
+    if not writefile then return end
+    for i = 1, #State.Divisions do
+        pcall(function() writefile("Division_" .. tostring(i) .. "_50MB.txt", State.Divisions[i]) end)
     end
-    local fullFileArray = {}
-    for i = 1, #State.Batches do
-        table.insert(fullFileArray, State.Batches[i])
-    end
-    local fullContent = table.concat(fullFileArray, "\n\n--- BATCH BREAK ---\n\n")
-    local fileName = "💀💀Full_Game_Decompile💀💀.txt"
-    pcall(function() writefile(fileName, fullContent) end)
-    Rayfield:Notify({Title = "Saved", Content = "Saved all data to " .. fileName, Duration = 6})
+    Rayfield:Notify({Title = "Saved", Content = "All Divisions saved to workspace folder.", Duration = 5})
 end
 
 -- ============================================
@@ -176,18 +279,43 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Full Decompile Edition",
+    LoadingSubtitle = "50MB Division Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
-TabScanner:CreateSection("Full Game Decompile")
+TabScanner:CreateSection("50MB Full Game Decompile")
 TabScanner:CreateButton({
-    Name = "Scan Full Game (Scripts + Everything)",
+    Name = "Scan Full Game (50MB Divisions)",
     Callback = function()
-        scanFullGame()
+        scanFullGame50MB()
+    end
+})
+
+State.DivisionDropdown = TabScanner:CreateDropdown({
+    Name = "Select Division (Up to 50MB)",
+    Options = {"None"},
+    CurrentOption = "None",
+    Flag = "DivDropdown",
+    Callback = function(Value)
+        copyDivisionToClipboard(Value)
+    end
+})
+
+TabScanner:CreateButton({
+    Name = "Save All Divisions to Files",
+    Callback = function()
+        saveDivisionsToFile()
+    end
+})
+
+TabScanner:CreateSection("Standard Batch Scan (3500 lines)")
+TabScanner:CreateButton({
+    Name = "Scan Client Scripts (Batches)",
+    Callback = function()
+        scanGameForScripts()
     end
 })
 
@@ -202,9 +330,9 @@ State.Scanner_Dropdown = TabScanner:CreateDropdown({
 })
 
 TabScanner:CreateButton({
-    Name = "Save All Batches to Single File",
+    Name = "Save Batches to Single File",
     Callback = function()
-        saveAllToSingleFile()
+        saveBatchesToFile()
     end
 })
 
