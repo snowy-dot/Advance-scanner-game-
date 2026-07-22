@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + SINGLE FILE EXPORT (V6)
+-- ADVANCED SCANNER + SINGLE FILE EXPORT (V7 - CRASH PROOF)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -82,7 +82,7 @@ local function EnableAntiCheat()
 end
 
 -- ============================================
--- BATCH SCANNER LOGIC
+-- BATCH SCANNER LOGIC (CRASH PROOF)
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -117,82 +117,91 @@ local function scanGameForScripts()
     end
     State.IsScanning = true
     
+    -- Run in a separate thread and wrap in pcall to prevent UI crashes
     task.spawn(function()
-        State.Batches = {}
-        local currentBatchArray = {}
-        local currentBatchLines = 0
-        local currentBatchCount = 1
-        local totalScriptsScanned = 0
-
-        if not decompile then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Your executor does not support decompile()",
-                Duration = 3
-            })
-            State.IsScanning = false
-            return
-        end
-
-        local descendants = game:GetDescendants()
-        local totalDescendants = #descendants
-
-        Rayfield:Notify({
-            Title = "Scanning",
-            Content = "Gathering scripts safely...",
-            Duration = 3
-        })
-
-        for i, obj in ipairs(descendants) do
-            if i % 15 == 0 then
-                task.wait()
+        local success, err = pcall(function()
+            State.Batches = {}
+            local currentBatchArray = {}
+            local currentBatchLines = 0
+            local currentBatchCount = 1
+            
+            if not decompile then
+                error("Your executor does not support decompile()")
             end
 
-            if i % 30 == 0 and State.ProgressParagraph then
-                local pct = math.floor((i / totalDescendants) * 100)
-                pcall(function()
-                    State.ProgressParagraph:Set({
-                        Title = "Status",
-                        Content = "Scan Progress: " .. tostring(pct) .. "%"
-                    })
-                end)
-            end
-
-            if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-                local fullName = obj:GetFullName()
-                local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
-                
-                if not (isCore and not State.ScanCoreScripts) then
-                    local decompSuccess, source = pcall(function()
-                        return decompile(obj)
-                    end)
-                    
-                    if decompSuccess and source then
-                        totalScriptsScanned = totalScriptsScanned + 1
-                        local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
-                        
-                        local _, lines = string.gsub(scriptEntry, "\n", "")
-                        lines = lines + 1
-                        
-                        if currentBatchLines + lines > MAX_BATCH_LINES then
-                            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
-                            currentBatchCount = currentBatchCount + 1
-                            currentBatchArray = {}
-                            currentBatchLines = 0
-                            
-                            table.insert(currentBatchArray, scriptEntry)
-                            currentBatchLines = lines
-                        else
-                            table.insert(currentBatchArray, scriptEntry)
-                            currentBatchLines = currentBatchLines + lines
-                        end
+            -- Pre-filter all scripts so we know the exact total for the percentage
+            local scriptList = {}
+            for _, obj in ipairs(game:GetDescendants()) do
+                if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                    local fullName = obj:GetFullName()
+                    local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
+                    if not (isCore and not State.ScanCoreScripts) then
+                        table.insert(scriptList, obj)
                     end
                 end
             end
-        end
 
-        if #currentBatchArray > 0 then
-            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+            local totalScripts = #scriptList
+
+            Rayfield:Notify({
+                Title = "Scanning",
+                Content = "Found " .. totalScripts .. " scripts. Starting decompile...",
+                Duration = 3
+            })
+
+            for i, obj in ipairs(scriptList) do
+                -- CRITICAL: Yield EVERY single script to prevent executor thread crash
+                task.wait()
+                
+                local decompSuccess, source = pcall(function()
+                    return decompile(obj)
+                end)
+                
+                if decompSuccess and source then
+                    local scriptEntry = "=== " .. obj:GetFullName() .. " ===\n" .. source .. "\n\n"
+                    
+                    local _, lines = string.gsub(scriptEntry, "\n", "")
+                    lines = lines + 1
+                    
+                    if currentBatchLines + lines > MAX_BATCH_LINES then
+                        State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+                        currentBatchCount = currentBatchCount + 1
+                        currentBatchArray = {}
+                        currentBatchLines = 0
+                        
+                        table.insert(currentBatchArray, scriptEntry)
+                        currentBatchLines = lines
+                    else
+                        table.insert(currentBatchArray, scriptEntry)
+                        currentBatchLines = currentBatchLines + lines
+                    end
+                end
+                
+                -- Update Progress UI every 5 scripts
+                if i % 5 == 0 and State.ProgressParagraph then
+                    local pct = math.floor((i / totalScripts) * 100)
+                    pcall(function()
+                        State.ProgressParagraph:Set({
+                            Title = "Status",
+                            Content = "Scan Progress: " .. tostring(pct) .. "% (" .. i .. "/" .. totalScripts .. ")"
+                        })
+                    end)
+                end
+            end
+
+            -- Save the final remaining batch
+            if #currentBatchArray > 0 then
+                State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+            end
+        end)
+
+        if not success then
+            print("Scan Error: " .. tostring(err))
+            Rayfield:Notify({
+                Title = "Error",
+                Content = "Scan failed: " .. tostring(err),
+                Duration = 5
+            })
         end
 
         local batchOptions = {"None"}
@@ -253,8 +262,6 @@ local function saveAllToSingleFile()
     end
 
     local fullContent = table.concat(fullFileArray, "\n\n--- BATCH BREAK ---\n\n")
-    
-    -- Name the file with the skulls as requested
     local fileName = "💀💀" .. State.GameName .. "💀💀.txt"
     
     pcall(function()
@@ -274,7 +281,7 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Single File Edition",
+    LoadingSubtitle = "Crash Proof Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
