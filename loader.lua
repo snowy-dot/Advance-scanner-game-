@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + SINGLE FILE EXPORT (V5)
+-- ADVANCED SCANNER + SINGLE FILE EXPORT (V6)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -144,12 +144,10 @@ local function scanGameForScripts()
         })
 
         for i, obj in ipairs(descendants) do
-            -- Yield every 15 scripts to prevent game freeze
             if i % 15 == 0 then
                 task.wait()
             end
 
-            -- Update Progress UI
             if i % 30 == 0 and State.ProgressParagraph then
                 local pct = math.floor((i / totalDescendants) * 100)
                 pcall(function()
@@ -193,7 +191,6 @@ local function scanGameForScripts()
             end
         end
 
-        -- Save the final remaining batch
         if #currentBatchArray > 0 then
             State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
         end
@@ -206,14 +203,12 @@ local function scanGameForScripts()
             table.insert(batchOptions, optionName)
         end
 
-        -- Update the Dropdown
         pcall(function()
             if State.Scanner_Dropdown then
                 State.Scanner_Dropdown:Refresh(batchOptions)
             end
         end)
 
-        -- Update the UI text to done✅
         if State.ProgressParagraph then
             pcall(function()
                 State.ProgressParagraph:Set({
@@ -252,17 +247,15 @@ local function saveAllToSingleFile()
         return
     end
 
-    -- Gather all batches into one large table array
     local fullFileArray = {}
     for i = 1, #State.Batches do
         table.insert(fullFileArray, State.Batches[i])
     end
 
-    -- Combine them all safely using table.concat
     local fullContent = table.concat(fullFileArray, "\n\n--- BATCH BREAK ---\n\n")
     
-    -- Name the file based on the game name
-    local fileName = State.GameName .. ".txt"
+    -- Name the file with the skulls as requested
+    local fileName = "💀💀" .. State.GameName .. "💀💀.txt"
     
     pcall(function()
         writefile(fileName, fullContent)
