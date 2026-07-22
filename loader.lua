@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + FULL HIERARCHY DUMP
+-- ADVANCED SCANNER + FULL GAME DECOMPILE
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -24,7 +24,7 @@ State.ScanCoreScripts = false
 State.IsScanning = false
 
 -- ============================================
--- BATCH SCANNER LOGIC
+-- FULL GAME DECOMPILE & BATCH LOGIC
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -42,7 +42,7 @@ local function copyBatchToClipboard(batchName)
     end
 end
 
-local function scanGameForScripts()
+local function scanFullGame()
     if State.IsScanning then return end
     State.IsScanning = true
     
@@ -51,7 +51,7 @@ local function scanGameForScripts()
         local currentBatchArray = {}
         local currentBatchLines = 0
         local currentBatchCount = 1
-        local totalScriptsScanned = 0
+        local totalItemsScanned = 0
         local yieldCounter = 0
 
         if not decompile then
@@ -60,35 +60,74 @@ local function scanGameForScripts()
             return
         end
 
-        Rayfield:Notify({Title = "Scanning", Content = "Scanning all client scripts into batches...", Duration = 3})
+        Rayfield:Notify({Title = "Scanning", Content = "Decompiling full game. This may take a minute...", Duration = 5})
 
         local descendants = game:GetDescendants()
         for _, obj in ipairs(descendants) do
             yieldCounter = yieldCounter + 1
-            if yieldCounter % 50 == 0 then task.wait() end
+            -- Yield every 15 items to prevent game freeze
+            if yieldCounter % 15 == 0 then
+                task.wait()
+            end
 
+            local fullName = obj:GetFullName()
+            local className = obj.ClassName
+            local entry = ""
+            
+            -- 1. If it's a script, decompile it
             if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-                local fullName = obj:GetFullName()
                 local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
                 if not (isCore and not State.ScanCoreScripts) then
                     local decompSuccess, source = pcall(function() return decompile(obj) end)
                     if decompSuccess and source then
-                        totalScriptsScanned = totalScriptsScanned + 1
-                        local scriptEntry = "=== " .. fullName .. " ===\n" .. source .. "\n\n"
-                        local _, lines = string.gsub(scriptEntry, "\n", "")
-                        lines = lines + 1
-                        
-                        if currentBatchLines + lines > MAX_BATCH_LINES then
-                            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
-                            currentBatchCount = currentBatchCount + 1
-                            currentBatchArray = {}
-                            currentBatchLines = 0
-                        end
-                        
-                        table.insert(currentBatchArray, scriptEntry)
-                        currentBatchLines = currentBatchLines + lines
+                        totalItemsScanned = totalItemsScanned + 1
+                        entry = "--- SCRIPT: " .. fullName .. " (" .. className .. ") ---\n" .. source .. "\n\n"
                     end
                 end
+            -- 2. If it's an Instance, dump its properties
+            else
+                totalItemsScanned = totalItemsScanned + 1
+                local props = {}
+                
+                -- Gather key properties based on class
+                if obj:IsA("BasePart") then
+                    table.insert(props, "Pos: " .. tostring(obj.Position))
+                    table.insert(props, "Size: " .. tostring(obj.Size))
+                    table.insert(props, "Material: " .. tostring(obj.Material))
+                    table.insert(props, "Color: " .. tostring(obj.Color))
+                elseif obj:IsA("ValueBase") then
+                    table.insert(props, "Value: " .. tostring(obj.Value))
+                elseif obj:IsA("Sound") then
+                    table.insert(props, "SoundId: " .. tostring(obj.SoundId))
+                    table.insert(props, "Volume: " .. tostring(obj.Volume))
+                elseif obj:IsA("Decal") or obj:IsA("Texture") then
+                    table.insert(props, "Texture: " .. tostring(obj.Texture))
+                elseif obj:IsA("TextButton") or obj:IsA("TextLabel") then
+                    table.insert(props, "Text: " .. tostring(obj.Text))
+                end
+                
+                local propString = ""
+                if #props > 0 then
+                    propString = " | " .. table.concat(props, " | ")
+                end
+                
+                entry = "--- INSTANCE: " .. fullName .. " (" .. className .. ")" .. propString .. " ---\n"
+            end
+            
+            -- Add to batch
+            if entry ~= "" then
+                local _, lines = string.gsub(entry, "\n", "")
+                lines = lines + 1
+                
+                if currentBatchLines + lines > MAX_BATCH_LINES then
+                    State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
+                    currentBatchCount = currentBatchCount + 1
+                    currentBatchArray = {}
+                    currentBatchLines = 0
+                end
+                
+                table.insert(currentBatchArray, entry)
+                currentBatchLines = currentBatchLines + lines
             end
         end
 
@@ -110,14 +149,14 @@ local function scanGameForScripts()
             end
         end)
         
-        Rayfield:Notify({Title = "Scan Complete", Content = "Scanned " .. totalScriptsScanned .. " scripts into " .. #State.Batches .. " batches.", Duration = 5})
+        Rayfield:Notify({Title = "Scan Complete", Content = "Decompiled " .. totalItemsScanned .. " items into " .. #State.Batches .. " batches.", Duration = 5})
         State.IsScanning = false
     end)
 end
 
 local function saveAllToSingleFile()
     if #State.Batches == 0 then
-        Rayfield:Notify({Title = "Error", Content = "No scripts found. Scan the game first.", Duration = 3})
+        Rayfield:Notify({Title = "Error", Content = "No data found. Scan the game first.", Duration = 3})
         return
     end
     if not writefile then
@@ -129,60 +168,9 @@ local function saveAllToSingleFile()
         table.insert(fullFileArray, State.Batches[i])
     end
     local fullContent = table.concat(fullFileArray, "\n\n--- BATCH BREAK ---\n\n")
-    local fileName = "💀💀Game_Scan💀💀.txt"
+    local fileName = "💀💀Full_Game_Decompile💀💀.txt"
     pcall(function() writefile(fileName, fullContent) end)
-    Rayfield:Notify({Title = "Saved", Content = "Saved all scripts to " .. fileName, Duration = 6})
-end
-
--- ============================================
--- HIERARCHY & INFO DUMP LOGIC
--- ============================================
-local function dumpHierarchy()
-    local output = {}
-    local function dumpInstance(inst, depth)
-        local indent = string.rep("  ", depth)
-        table.insert(output, indent .. inst.Name .. " (" .. inst.ClassName .. ")")
-        if depth < 5 then
-            for _, child in pairs(inst:GetChildren()) do
-                dumpInstance(child, depth + 1)
-            end
-        end
-    end
-    
-    local services = {"Workspace", "Lighting", "ReplicatedStorage", "Players", "ReplicatedFirst", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer"}
-    for _, serviceName in pairs(services) do
-        local service = game:GetService(serviceName)
-        if service then
-            table.insert(output, "\n=== " .. serviceName .. " ===")
-            for _, child in pairs(service:GetChildren()) do
-                dumpInstance(child, 1)
-            end
-        end
-    end
-    return table.concat(output, "\n")
-end
-
-local function dumpFullInfo()
-    local output = {}
-    local function dumpInstance(inst)
-        local info = inst.Name .. " (" .. inst.ClassName .. ")"
-        if inst:IsA("BasePart") then
-            info = info .. " | Pos: " .. tostring(inst.Position) .. " | Size: " .. tostring(inst.Size)
-        end
-        table.insert(output, info)
-    end
-    
-    local services = {"Workspace", "Lighting", "ReplicatedStorage", "Players", "ReplicatedFirst", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer"}
-    for _, serviceName in pairs(services) do
-        local service = game:GetService(serviceName)
-        if service then
-            table.insert(output, "\n=== " .. serviceName .. " ===")
-            for _, desc in pairs(service:GetDescendants()) do
-                dumpInstance(desc)
-            end
-        end
-    end
-    return table.concat(output, "\n")
+    Rayfield:Notify({Title = "Saved", Content = "Saved all data to " .. fileName, Duration = 6})
 end
 
 -- ============================================
@@ -191,18 +179,18 @@ end
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Hierarchy Edition",
+    LoadingSubtitle = "Full Decompile Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
-TabScanner:CreateSection("Batch Scanning System")
+TabScanner:CreateSection("Full Game Decompile")
 TabScanner:CreateButton({
-    Name = "Scan All Client Scripts",
+    Name = "Scan Full Game (Scripts + Everything)",
     Callback = function()
-        scanGameForScripts()
+        scanFullGame()
     end
 })
 
@@ -220,34 +208,6 @@ TabScanner:CreateButton({
     Name = "Save All Batches to Single File",
     Callback = function()
         saveAllToSingleFile()
-    end
-})
-
-TabScanner:CreateSection("Full Game Dump")
-TabScanner:CreateButton({
-    Name = "Dump Full Hierarchy (Map Layout)",
-    Callback = function()
-        local data = dumpHierarchy()
-        if setclipboard then
-            setclipboard(data)
-            Rayfield:Notify({Title = "Copied", Content = "Full Hierarchy copied to clipboard!", Duration = 3})
-        else
-            print(data)
-            Rayfield:Notify({Title = "Printed", Content = "Full Hierarchy printed to F9 console.", Duration = 3})
-        end
-    end
-})
-TabScanner:CreateButton({
-    Name = "Dump Full Info (All Properties)",
-    Callback = function()
-        local data = dumpFullInfo()
-        if setclipboard then
-            setclipboard(data)
-            Rayfield:Notify({Title = "Copied", Content = "Full Info copied to clipboard!", Duration = 3})
-        else
-            print(data)
-            Rayfield:Notify({Title = "Printed", Content = "Full Info printed to F9 console.", Duration = 3})
-        end
     end
 })
 
