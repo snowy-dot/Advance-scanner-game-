@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + FULL GAME DECOMPILE
+-- ADVANCED SCANNER + FULL GAME DECOMPILE (FIXED UI)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -65,8 +65,8 @@ local function scanFullGame()
         local descendants = game:GetDescendants()
         for _, obj in ipairs(descendants) do
             yieldCounter = yieldCounter + 1
-            -- Yield every 15 items to prevent game freeze
-            if yieldCounter % 15 == 0 then
+            -- Yield every 50 items to prevent UI from freezing/disappearing
+            if yieldCounter % 50 == 0 then
                 task.wait()
             end
 
@@ -89,17 +89,14 @@ local function scanFullGame()
                 totalItemsScanned = totalItemsScanned + 1
                 local props = {}
                 
-                -- Gather key properties based on class
+                -- Gather key properties based on class (Optimized for memory)
                 if obj:IsA("BasePart") then
                     table.insert(props, "Pos: " .. tostring(obj.Position))
                     table.insert(props, "Size: " .. tostring(obj.Size))
-                    table.insert(props, "Material: " .. tostring(obj.Material))
-                    table.insert(props, "Color: " .. tostring(obj.Color))
                 elseif obj:IsA("ValueBase") then
                     table.insert(props, "Value: " .. tostring(obj.Value))
                 elseif obj:IsA("Sound") then
                     table.insert(props, "SoundId: " .. tostring(obj.SoundId))
-                    table.insert(props, "Volume: " .. tostring(obj.Volume))
                 elseif obj:IsA("Decal") or obj:IsA("Texture") then
                     table.insert(props, "Texture: " .. tostring(obj.Texture))
                 elseif obj:IsA("TextButton") or obj:IsA("TextLabel") then
