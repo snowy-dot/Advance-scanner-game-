@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + ANTI-CHEAT (V3)
+-- ADVANCED SCANNER + ANTI-CHEAT (V4 - MEMORY SAFE)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -36,6 +36,7 @@ end
 -- State
 local State = {}
 State.Scanner_Dropdown = nil
+State.ProgressParagraph = nil
 State.Batches = {}
 State.ScanCoreScripts = false
 State.IsScanning = false
@@ -81,7 +82,7 @@ local function EnableAntiCheat()
 end
 
 -- ============================================
--- BATCH SCANNER LOGIC
+-- BATCH SCANNER LOGIC (MEMORY SAFE)
 -- ============================================
 local MAX_BATCH_LINES = 3500
 
@@ -116,17 +117,25 @@ local function scanGameForScripts()
     end
     State.IsScanning = true
     
-    -- Wrap in pcall to prevent UI crash if an error occurs
-    local success, err = pcall(function()
+    task.spawn(function()
         State.Batches = {}
-        local currentBatch = ""
+        local currentBatchArray = {}
         local currentBatchLines = 0
         local currentBatchCount = 1
         local totalScriptsScanned = 0
 
         if not decompile then
-            error("Your executor does not support decompile()")
+            Rayfield:Notify({
+                Title = "Error",
+                Content = "Your executor does not support decompile()",
+                Duration = 3
+            })
+            State.IsScanning = false
+            return
         end
+
+        local descendants = game:GetDescendants()
+        local totalDescendants = #descendants
 
         Rayfield:Notify({
             Title = "Scanning",
@@ -134,11 +143,23 @@ local function scanGameForScripts()
             Duration = 3
         })
 
-        local descendants = game:GetDescendants()
-        for _, obj in pairs(descendants) do
-            -- CRITICAL: Yield after EVERY script to prevent UI thread crash
-            task.wait()
-            
+        for i, obj in ipairs(descendants) do
+            -- Yield every 15 scripts to prevent game freeze without taking hours
+            if i % 15 == 0 then
+                task.wait()
+            end
+
+            -- Update Progress UI every 30 scripts
+            if i % 30 == 0 and State.ProgressParagraph then
+                local pct = math.floor((i / totalDescendants) * 100)
+                pcall(function()
+                    State.ProgressParagraph:Set({
+                        Title = "Status",
+                        Content = "Scan Progress: " .. tostring(pct) .. "%"
+                    })
+                end)
+            end
+
             if obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
                 local fullName = obj:GetFullName()
                 local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
@@ -156,12 +177,17 @@ local function scanGameForScripts()
                         lines = lines + 1
                         
                         if currentBatchLines + lines > MAX_BATCH_LINES then
-                            State.Batches[currentBatchCount] = currentBatch
+                            -- Use table.concat to save the batch safely
+                            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
                             currentBatchCount = currentBatchCount + 1
-                            currentBatch = scriptEntry
+                            currentBatchArray = {}
+                            currentBatchLines = 0
+                            
+                            table.insert(currentBatchArray, scriptEntry)
                             currentBatchLines = lines
                         else
-                            currentBatch = currentBatch .. scriptEntry
+                            -- Insert into table array (very memory efficient)
+                            table.insert(currentBatchArray, scriptEntry)
                             currentBatchLines = currentBatchLines + lines
                         end
                     end
@@ -169,41 +195,44 @@ local function scanGameForScripts()
             end
         end
 
-        if string.len(currentBatch) > 0 then
-            State.Batches[currentBatchCount] = currentBatch
+        -- Save the final remaining batch
+        if #currentBatchArray > 0 then
+            State.Batches[currentBatchCount] = table.concat(currentBatchArray, "")
         end
-    end)
 
-    if not success then
-        print("Scan Error: " .. tostring(err))
+        local batchOptions = {"None"}
+        for i = 1, #State.Batches do
+            local batchName = "Batch " .. tostring(i)
+            local lineCount = #string.split(State.Batches[i], "\n")
+            local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
+            table.insert(batchOptions, optionName)
+        end
+
+        -- Update the Dropdown
+        pcall(function()
+            if State.Scanner_Dropdown then
+                State.Scanner_Dropdown:Refresh(batchOptions)
+            end
+        end)
+
+        -- Update the UI text to done✅
+        if State.ProgressParagraph then
+            pcall(function()
+                State.ProgressParagraph:Set({
+                    Title = "Status",
+                    Content = "done✅"
+                })
+            end)
+        end
+        
         Rayfield:Notify({
-            Title = "Error",
-            Content = "Scan failed: " .. tostring(err),
+            Title = "Scan Complete",
+            Content = "done✅ - Scanned into " .. #State.Batches .. " batches.",
             Duration = 5
         })
-    end
-
-    local batchOptions = {"None"}
-    for i = 1, #State.Batches do
-        local batchName = "Batch " .. tostring(i)
-        local lineCount = #string.split(State.Batches[i], "\n")
-        local optionName = batchName .. " (" .. tostring(lineCount) .. " lines)"
-        table.insert(batchOptions, optionName)
-    end
-
-    pcall(function()
-        if State.Scanner_Dropdown then
-            State.Scanner_Dropdown:Refresh(batchOptions)
-        end
+        
+        State.IsScanning = false
     end)
-    
-    Rayfield:Notify({
-        Title = "Scan Complete",
-        Content = "Scanned into " .. #State.Batches .. " batches.",
-        Duration = 5
-    })
-    
-    State.IsScanning = false
 end
 
 local function saveBatchesToFiles()
@@ -288,6 +317,11 @@ TabScanner:CreateButton({
     Callback = function()
         scanGameForScripts()
     end
+})
+
+State.ProgressParagraph = TabScanner:CreateParagraph({
+    Title = "Status",
+    Content = "Scan Progress: 0%"
 })
 
 TabScanner:CreateSection("Batch Export System")
