@@ -1,10 +1,11 @@
 --!nocheck
 -- ============================================
--- ADVANCED UNLIMITED BATCH GAME SCANNER (FIXED)
+-- ADVANCED UNLIMITED BATCH GAME SCANNER (V2)
 -- ============================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
+local MarketplaceService = game:GetService("MarketplaceService")
 local LP = Players.LocalPlayer
 
 -- Load Rayfield
@@ -38,6 +39,17 @@ State.Scanner_Dropdown = nil
 State.Batches = {}
 State.ScanCoreScripts = false
 State.IsScanning = false
+State.GameName = "UnknownGame"
+
+-- Get Game Name
+pcall(function()
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+    if info and info.Name then
+        State.GameName = info.Name
+        -- Remove invalid characters for file names
+        State.GameName = string.gsub(State.GameName, "[\\/:*?\"<>|]", "_")
+    end
+end)
 
 -- ============================================
 -- BATCH SCANNER LOGIC
@@ -75,7 +87,6 @@ local function scanGameForScripts()
     end
     State.IsScanning = true
     
-    -- Run the scan in a separate thread so the UI doesn't freeze or yield
     task.spawn(function()
         State.Batches = {}
         local currentBatch = ""
@@ -102,7 +113,6 @@ local function scanGameForScripts()
 
         local descendants = game:GetDescendants()
         for _, obj in pairs(descendants) do
-            -- Yield every 50 scripts to prevent game crash
             yieldCounter = yieldCounter + 1
             if yieldCounter % 50 == 0 then
                 task.wait()
@@ -112,7 +122,6 @@ local function scanGameForScripts()
                 local fullName = obj:GetFullName()
                 local isCore = string.find(fullName, "CoreGui") or string.find(fullName, "RobloxScript")
                 
-                -- If it's a core script and we aren't scanning cores, skip it
                 if not (isCore and not State.ScanCoreScripts) then
                     local success, source = pcall(function()
                         return decompile(obj)
@@ -151,10 +160,10 @@ local function scanGameForScripts()
             table.insert(batchOptions, optionName)
         end
 
-        -- Safely update the Dropdown
+        -- Safely update the Dropdown (Fixed Syntax)
         pcall(function()
             if State.Scanner_Dropdown then
-                State.Scanner_Dropdown:Refresh(batchOptions)
+                State.Scanner_Dropdown:Refresh(batchOptions, true)
             end
         end)
         
@@ -187,9 +196,8 @@ local function saveBatchesToFiles()
         return
     end
 
-    local folderName = "GameScan_" .. tostring(os.time())
     for i = 1, #State.Batches do
-        local fileName = folderName .. "/Batch_" .. tostring(i) .. ".txt"
+        local fileName = "[" .. State.GameName .. "] Batch_" .. tostring(i) .. ".txt"
         pcall(function()
             writefile(fileName, State.Batches[i])
         end)
@@ -197,8 +205,8 @@ local function saveBatchesToFiles()
 
     Rayfield:Notify({
         Title = "Saved",
-        Content = "Saved " .. #State.Batches .. " batches to workspace folder.",
-        Duration = 5
+        Content = "Saved " .. #State.Batches .. " files to executor workspace folder.",
+        Duration = 6
     })
 end
 
@@ -252,6 +260,11 @@ TabScanner:CreateButton({
     Callback = function()
         saveBatchesToFiles()
     end
+})
+
+TabScanner:CreateParagraph({
+    Title = "Where are my files?",
+    Content = "Files are saved to your Executor's 'workspace' folder. (Usually located in %localappdata%/[ExecutorName]/workspace)"
 })
 
 TabScanner:CreateSection("System")
