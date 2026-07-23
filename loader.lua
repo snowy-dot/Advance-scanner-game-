@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + ANTI-CRASH 1MB AUTO-SAVE
+-- ADVANCED SCANNER + ANTI-CRASH DIRECT WRITE
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -22,12 +22,12 @@ pcall(function()
 end)
 
 -- ============================================
--- UI SETUP (Simplified to prevent crashes)
+-- UI SETUP
 -- ============================================
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Anti-Crash Edition",
+    LoadingSubtitle = "Direct Write Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -36,7 +36,7 @@ local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
 TabScanner:CreateSection("Full Game Decompile")
 local ScanButton = TabScanner:CreateButton({
-    Name = "Scan Everything (Auto-Save to Files)",
+    Name = "Scan Everything (Direct Save to Disk)",
     Callback = function() end
 })
 
@@ -54,7 +54,7 @@ TabScanner:CreateButton({
 })
 
 -- ============================================
--- SCANNER LOGIC
+-- SCANNER LOGIC (Direct Write / Anti-Crash)
 -- ============================================
 local IsScanning = false
 
@@ -63,27 +63,36 @@ ScanButton.Callback = function()
     IsScanning = true
     
     task.spawn(function()
-        local MAX_FILE_CHARS = 500000 -- 500KB chunks for maximum stability
-        local currentArray = {}
-        local currentSize = 0
-        local fileCount = 1
+        local fileName = GameName .. "_Full_Decompile.txt"
         local totalItems = #game:GetDescendants()
         local currentIndex = 0
         local yieldCounter = 0
 
         if not decompile then
-            ProgressLabel:Set({Title = "Status", Content = "Error: Executor missing decompile()"})
+            ProgressLabel:Set({Title = "Status", Content = "Error: No decompile()"})
             IsScanning = false
             return
         end
         
         if not writefile then
-            ProgressLabel:Set({Title = "Status", Content = "Error: Executor missing writefile()"})
+            ProgressLabel:Set({Title = "Status", Content = "Error: No writefile()"})
             IsScanning = false
             return
         end
 
-        ProgressLabel:Set({Title = "Status", Content = "Starting scan..."})
+        -- Initialize the file (clears any old data)
+        writefile(fileName, "--- GAME SCAN START ---\n")
+        
+        -- Check if appendfile is supported
+        local useAppend = appendfile ~= nil
+        
+        if not useAppend then
+            ProgressLabel:Set({Title = "Status", Content = "Error: Executor missing appendfile(). Cannot stream."})
+            IsScanning = false
+            return
+        end
+
+        ProgressLabel:Set({Title = "Status", Content = "Scanning 0% (Streaming to disk)..."})
         task.wait(0.5)
 
         local descendants = game:GetDescendants()
@@ -91,11 +100,11 @@ ScanButton.Callback = function()
             currentIndex = currentIndex + 1
             yieldCounter = yieldCounter + 1
             
-            -- Yield and update progress every 500 items to prevent UI crash
+            -- Yield and update progress every 500 items to prevent UI lockup
             if yieldCounter % 500 == 0 then
                 task.wait()
                 local percent = math.floor((currentIndex / totalItems) * 100)
-                ProgressLabel:Set({Title = "Status", Content = "Progress: " .. percent .. "% (File " .. fileCount .. ")"})
+                ProgressLabel:Set({Title = "Status", Content = "Progress: " .. percent .. "%"})
             end
 
             local fullName = obj:GetFullName()
@@ -133,38 +142,18 @@ ScanButton.Callback = function()
                 end
             end
             
-            -- Add to 500KB File
+            -- Write directly to disk immediately (Zero RAM usage)
             if entry ~= "" then
-                local entryLength = #entry
-                
-                if currentSize + entryLength > MAX_FILE_CHARS then
-                    -- Save current file
-                    local fileData = table.concat(currentArray, "")
-                    local fileName = GameName .. "_" .. tostring(fileCount) .. ".txt"
-                    pcall(function() writefile(fileName, fileData) end)
-                    
-                    -- Clear memory aggressively
-                    currentArray = {}
-                    currentSize = 0
-                    fileCount = fileCount + 1
-                    collectgarbage("collect")
-                end
-                
-                table.insert(currentArray, entry)
-                currentSize = currentSize + entryLength
+                pcall(function() appendfile(fileName, entry) end)
             end
         end
 
-        -- Save the final remaining file
-        if #currentArray > 0 then
-            local fileData = table.concat(currentArray, "")
-            local fileName = GameName .. "_" .. tostring(fileCount) .. ".txt"
-            pcall(function() writefile(fileName, fileData) end)
-        end
+        -- Finalize file
+        pcall(function() appendfile(fileName, "--- GAME SCAN END ---\n") end)
 
-        ProgressLabel:Set({Title = "Status", Content = "Done! Saved " .. fileCount .. " files to workspace."})
+        ProgressLabel:Set({Title = "Status", Content = "Done! Saved to " .. fileName})
         print("done")
-        Rayfield:Notify({Title = "Done", Content = "Scan complete!", Duration = 5})
+        Rayfield:Notify({Title = "Done", Content = "Scan complete! Check workspace folder.", Duration = 5})
         IsScanning = false
     end)
 end
