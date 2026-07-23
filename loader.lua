@@ -355,7 +355,8 @@ BatchButton.Callback = function()
         print("done")
         Rayfield:Notify({Title = "Done", Content = "Scanned " .. totalScriptsScanned .. " scripts.", Duration = 5})
         State.IsScanning = false
-end)
+    end)
+end
 
 Rayfield:Notify({
     Title = "Game Scanner",
