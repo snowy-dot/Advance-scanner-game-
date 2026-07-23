@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED SCANNER + FULL UI + DIRECT WRITE
+-- ADVANCED SCANNER + DIVISIONS (ANTI-CRASH)
 -- ============================================
 
 local Players = game:GetService("Players")
@@ -27,29 +27,69 @@ State.Scanner_Dropdown = nil
 State.Batches = {}
 State.ScanCoreScripts = false
 State.IsScanning = false
+State.DivisionDropdown = nil
+State.Divisions = {}
+State.DivisionArrays = {{}}
+State.CurrentDiv = 1
+State.CurrentDivSize = 0
 
 -- ============================================
--- UI SETUP (All buttons restored)
+-- UI SETUP
 -- ============================================
 local Window = Rayfield:CreateWindow({
     Name = "Advanced Game Scanner",
     LoadingTitle = "Scanner",
-    LoadingSubtitle = "Anti-Crash Full UI",
+    LoadingSubtitle = "Division Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
 local TabScanner = Window:CreateTab("Scanner", 4483362458)
 
-TabScanner:CreateSection("Full Game Decompile (Crash-Proof)")
+TabScanner:CreateSection("Full Game Decompile (Divisions)")
 local ScanButton = TabScanner:CreateButton({
-    Name = "Scan Everything (Direct Save to Disk)",
+    Name = "Scan Everything (Divide into Files 1-10)",
     Callback = function() end
 })
 
 local ProgressLabel = TabScanner:CreateParagraph({
     Name = "Status",
     Content = "Idle"
+})
+
+State.DivisionDropdown = TabScanner:CreateDropdown({
+    Name = "Select Division",
+    Options = {"None"},
+    CurrentOption = "None",
+    Flag = "DivDropdown",
+    Callback = function(Value)
+        if Value == "None" then return end
+        local divNum = tonumber(string.match(Value, "%d+"))
+        if divNum and State.Divisions[divNum] then
+            if setclipboard then
+                setclipboard(State.Divisions[divNum])
+                Rayfield:Notify({Title = "Copied", Content = Value .. " copied to clipboard!", Duration = 3})
+            else
+                print(State.Divisions[divNum])
+            end
+        end
+    end
+})
+
+TabScanner:CreateButton({
+    Name = "Save All Divisions to Files",
+    Callback = function()
+        if #State.Divisions == 0 then
+            Rayfield:Notify({Title = "Error", Content = "Run Division Scan first.", Duration = 3})
+            return
+        end
+        if not writefile then return end
+        for i = 1, #State.Divisions do
+            local fileName = GameName .. "_Division_" .. tostring(i) .. ".txt"
+            pcall(function() writefile(fileName, State.Divisions[i]) end)
+        end
+        Rayfield:Notify({Title = "Saved", Content = "Saved " .. #State.Divisions .. " files to workspace folder.", Duration = 5})
+    end
 })
 
 TabScanner:CreateSection("Standard Batch Scan (3500 lines)")
@@ -91,71 +131,6 @@ TabScanner:CreateButton({
     end
 })
 
-TabScanner:CreateSection("Hierarchy & Info Dump")
-TabScanner:CreateButton({
-    Name = "Dump Full Hierarchy (Map Layout)",
-    Callback = function()
-        local output = {}
-        local function dumpInstance(inst, depth)
-            local indent = string.rep("  ", depth)
-            table.insert(output, indent .. inst.Name .. " (" .. inst.ClassName .. ")")
-            if depth < 5 then
-                for _, child in pairs(inst:GetChildren()) do
-                    dumpInstance(child, depth + 1)
-                end
-            end
-        end
-        local services = {"Workspace", "Lighting", "ReplicatedStorage", "Players", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer"}
-        for _, serviceName in pairs(services) do
-            local service = game:GetService(serviceName)
-            if service then
-                table.insert(output, "\n=== " .. serviceName .. " ===")
-                for _, child in pairs(service:GetChildren()) do
-                    dumpInstance(child, 1)
-                end
-            end
-        end
-        local data = table.concat(output, "\n")
-        if setclipboard then
-            setclipboard(data)
-            Rayfield:Notify({Title = "Copied", Content = "Full Hierarchy copied to clipboard!", Duration = 3})
-        else
-            print(data)
-        end
-    end
-})
-
-TabScanner:CreateButton({
-    Name = "Dump Full Info (All Properties)",
-    Callback = function()
-        local output = {}
-        local function dumpInstance(inst)
-            local info = inst.Name .. " (" .. inst.ClassName .. ")"
-            if inst:IsA("BasePart") then
-                info = info .. " | Pos: " .. tostring(inst.Position) .. " | Size: " .. tostring(inst.Size)
-            end
-            table.insert(output, info)
-        end
-        local services = {"Workspace", "Lighting", "ReplicatedStorage", "Players", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer"}
-        for _, serviceName in pairs(services) do
-            local service = game:GetService(serviceName)
-            if service then
-                table.insert(output, "\n=== " .. serviceName .. " ===")
-                for _, desc in pairs(service:GetDescendants()) do
-                    dumpInstance(desc)
-                end
-            end
-        end
-        local data = table.concat(output, "\n")
-        if setclipboard then
-            setclipboard(data)
-            Rayfield:Notify({Title = "Copied", Content = "Full Info copied to clipboard!", Duration = 3})
-        else
-            print(data)
-        end
-    end
-})
-
 TabScanner:CreateSection("Scanner Settings")
 TabScanner:CreateToggle({
     Name = "Scan Roblox CoreScripts",
@@ -175,14 +150,22 @@ TabScanner:CreateButton({
 })
 
 -- ============================================
--- DIRECT WRITE SCAN LOGIC (Anti-Crash)
+-- DIVISION SCAN LOGIC
 -- ============================================
+local MAX_DIV_CHARS = 5000000 -- 5MB chunks to fit 10 divisions in 50MB total
+local MAX_DIVISIONS = 10
+
 ScanButton.Callback = function()
     if State.IsScanning then return end
     State.IsScanning = true
     
     task.spawn(function()
-        local fileName = GameName .. "_Full_Decompile.txt"
+        -- Reset Division State
+        State.Divisions = {}
+        State.DivisionArrays = {{}}
+        State.CurrentDiv = 1
+        State.CurrentDivSize = 0
+        
         local totalItems = #game:GetDescendants()
         local currentIndex = 0
         local yieldCounter = 0
@@ -192,16 +175,8 @@ ScanButton.Callback = function()
             State.IsScanning = false
             return
         end
-        
-        if not writefile or not appendfile then
-            ProgressLabel:Set({Title = "Status", Content = "Error: No writefile/appendfile"})
-            State.IsScanning = false
-            return
-        end
 
-        -- Initialize file
-        writefile(fileName, "--- GAME SCAN START ---\n")
-        ProgressLabel:Set({Title = "Status", Content = "Scanning 0% (Streaming to disk)..."})
+        ProgressLabel:Set({Title = "Status", Content = "Starting Division Scan..."})
         task.wait(0.5)
 
         local descendants = game:GetDescendants()
@@ -209,11 +184,11 @@ ScanButton.Callback = function()
             currentIndex = currentIndex + 1
             yieldCounter = yieldCounter + 1
             
-            -- Yield and update progress every 500 items
-            if yieldCounter % 500 == 0 then
+            -- Yield and update progress every 250 items
+            if yieldCounter % 250 == 0 then
                 task.wait()
                 local percent = math.floor((currentIndex / totalItems) * 100)
-                ProgressLabel:Set({Title = "Status", Content = "Progress: " .. percent .. "%"})
+                ProgressLabel:Set({Title = "Status", Content = "Progress: " .. percent .. "% (Div " .. State.CurrentDiv .. "/10)"})
             end
 
             local fullName = obj:GetFullName()
@@ -251,16 +226,51 @@ ScanButton.Callback = function()
                 end
             end
             
-            -- Write directly to disk immediately (Zero RAM buildup)
+            -- Add to Division
             if entry ~= "" then
-                pcall(function() appendfile(fileName, entry) end)
+                local entryLength = #entry
+                
+                if State.CurrentDivSize + entryLength > MAX_DIV_CHARS and State.CurrentDiv < MAX_DIVISIONS then
+                    State.Divisions[State.CurrentDiv] = table.concat(State.DivisionArrays[State.CurrentDiv], "")
+                    State.CurrentDiv = State.CurrentDiv + 1
+                    State.DivisionArrays[State.CurrentDiv] = {}
+                    State.CurrentDivSize = 0
+                    collectgarbage("collect")
+                end
+                
+                table.insert(State.DivisionArrays[State.CurrentDiv], entry)
+                State.CurrentDivSize = State.CurrentDivSize + entryLength
             end
         end
 
-        pcall(function() appendfile(fileName, "--- GAME SCAN END ---\n") end)
-        ProgressLabel:Set({Title = "Status", Content = "Done! Saved to " .. fileName})
+        -- Finalize the last division
+        if #State.DivisionArrays[State.CurrentDiv] > 0 then
+            State.Divisions[State.CurrentDiv] = table.concat(State.DivisionArrays[State.CurrentDiv], "")
+        end
+
+        -- Save all divisions to files automatically
+        if writefile then
+            for i = 1, #State.Divisions do
+                local fileName = GameName .. "_Division_" .. tostring(i) .. ".txt"
+                pcall(function() writefile(fileName, State.Divisions[i]) end)
+            end
+        end
+
+        -- Update the Division Dropdown
+        local divOptions = {"None"}
+        for i = 1, #State.Divisions do
+            local sizeMB = math.floor((#State.Divisions[i] / 1024) / 1024)
+            table.insert(divOptions, "Division " .. tostring(i) .. " (" .. tostring(sizeMB) .. " MB)")
+        end
+        pcall(function()
+            if State.DivisionDropdown then
+                State.DivisionDropdown:Refresh(divOptions, true)
+            end
+        end)
+
+        ProgressLabel:Set({Title = "Status", Content = "Done! Saved " .. #State.Divisions .. " Divisions."})
         print("done")
-        Rayfield:Notify({Title = "Done", Content = "Scan complete! Check workspace folder.", Duration = 5})
+        Rayfield:Notify({Title = "Done", Content = "Scan complete! Divisions saved.", Duration = 5})
         State.IsScanning = false
     end)
 end
@@ -345,8 +355,7 @@ BatchButton.Callback = function()
         print("done")
         Rayfield:Notify({Title = "Done", Content = "Scanned " .. totalScriptsScanned .. " scripts.", Duration = 5})
         State.IsScanning = false
-    end)
-end
+end)
 
 Rayfield:Notify({
     Title = "Game Scanner",
