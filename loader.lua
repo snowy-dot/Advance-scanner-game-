@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- UNIVERSAL SCANNER: STABLE TIMER + DIRECT SAVE
+-- UNIVERSAL SCANNER: AUTO-SPLIT FILES (UNDER 10MB)
 -- ============================================
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -19,7 +19,7 @@ local State = { IsScanning = false }
 local Window = Rayfield:CreateWindow({
     Name = "Universal Scanner",
     LoadingTitle = "Initializing Stealth Scanner",
-    LoadingSubtitle = "Anti-Bypass Edition",
+    LoadingSubtitle = "Auto-Split Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -34,31 +34,33 @@ local FileLabel = Tab:CreateLabel("Save Location: N/A")
 -- ============================================
 local function GetAllObjects()
     local objects = {}
-    
-    -- 1. Standard Descendants (Models, Parts, Buildings)
-    for _, obj in ipairs(game:GetDescendants()) do
-        table.insert(objects, obj)
+    for _, obj in ipairs(game:GetDescendants()) do table.insert(objects, obj) end
+    pcall(function() for _, s in ipairs(getscripts()) do if not table.find(objects, s) then table.insert(objects, s) end end end)
+    pcall(function() for _, n in ipairs(getnilinstances()) do if not table.find(objects, n) then table.insert(objects, n) end end end)
+    return objects
+end
+
+-- ============================================
+-- AUTO-SPLIT FILE WRITER
+-- ============================================
+local MAX_FILE_SIZE = 9961472 -- 9.5 MB limit per file
+local currentFileSize = 0
+local filePartNumber = 1
+local filePath = GameName .. "_Scan_Part_1.txt"
+
+local function SafeAppend(text)
+    -- If adding this text exceeds 9.5MB, create a new file part
+    if currentFileSize + #text > MAX_FILE_SIZE then
+        filePartNumber = filePartNumber + 1
+        filePath = GameName .. "_Scan_Part_" .. filePartNumber .. ".txt"
+        local header = "=== UNIVERSAL ANTI-BYPASS SCAN: " .. GameName .. " (PART " .. filePartNumber .. ") ===\n\n"
+        writefile(filePath, header)
+        currentFileSize = #header
+        FileLabel:Set("Save Location: " .. filePath)
     end
     
-    -- 2. Anti-Bypass: Grab Hidden Scripts
-    pcall(function()
-        for _, scriptObj in ipairs(getscripts()) do
-            if not table.find(objects, scriptObj) then
-                table.insert(objects, scriptObj)
-            end
-        end
-    end)
-    
-    -- 3. Anti-Bypass: Grab Nil Instances (Destroyed but running memory)
-    pcall(function()
-        for _, nilObj in ipairs(getnilinstances()) do
-            if not table.find(objects, nilObj) then
-                table.insert(objects, nilObj)
-            end
-        end
-    end)
-    
-    return objects
+    pcall(function() appendfile(filePath, text) end)
+    currentFileSize = currentFileSize + #text
 end
 
 -- ============================================
@@ -73,9 +75,12 @@ local function StartUniversalScan()
     State.IsScanning = true
     StatusLabel:Set("Status: Collecting Anti-Bypass Data...")
     
-    -- FIXED: Save directly to the root workspace folder (no sub-folders) to guarantee it appears
-    local filePath = GameName .. "_UniversalScan.txt"
-    writefile(filePath, "=== UNIVERSAL ANTI-BYPASS SCAN: " .. GameName .. " ===\n\n")
+    -- Initialize Part 1
+    filePartNumber = 1
+    filePath = GameName .. "_Scan_Part_1.txt"
+    local initHeader = "=== UNIVERSAL ANTI-BYPASS SCAN: " .. GameName .. " (PART 1) ===\n\n"
+    writefile(filePath, initHeader)
+    currentFileSize = #initHeader
     FileLabel:Set("Save Location: " .. filePath)
 
     local allObjects = GetAllObjects()
@@ -114,53 +119,42 @@ local function StartUniversalScan()
                 end
             end)
             
-            -- Write directly to disk
             if entry ~= "" then
-                pcall(function() appendfile(filePath, entry) end)
+                SafeAppend(entry)
             end
             
             processedCount = i
             
-            -- Update UI every 25 items
             if i % 25 == 0 then
-                -- FIXED: Stable Time Remaining Math
                 local elapsed = tick() - startTime
                 local remaining = 0
                 if processedCount > 0 and elapsed > 0 then
                     local rate = processedCount / elapsed
-                    if rate > 0 then
-                        remaining = (totalObjects - processedCount) / rate
-                    end
+                    if rate > 0 then remaining = (totalObjects - processedCount) / rate end
                 end
-                
                 if remaining < 0 then remaining = 0 end
                 
                 local mins = math.floor(remaining / 60)
                 local secs = math.floor(remaining % 60)
-                
                 local percent = math.floor((processedCount / totalObjects) * 100)
                 local filled = math.floor(percent / 5)
                 local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
                 
                 StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
                 TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
-                
-                -- Yield to executor to prevent timeout
                 task.wait()
             end
         end
         
-        -- 100% Completion
         State.IsScanning = false
         StatusLabel:Set("Status: COMPLETE! 100%")
         TimeLabel:Set("Time Remaining: 00:00")
         
-        -- Final confirmation write to flush the disk cache
-        pcall(function() appendfile(filePath, "\n=== SCAN COMPLETE ===\n") end)
+        pcall(function() appendfile(filePath, "\n=== SCAN PART " .. filePartNumber .. " COMPLETE ===\n") end)
         
         Rayfield:Notify({
             Title = "Scan Complete!", 
-            Content = "Saved as " .. filePath .. " in your executor workspace!", 
+            Content = "Finished! Split into " .. filePartNumber .. " parts. Check your workspace!", 
             Duration = 6
         })
     end)
