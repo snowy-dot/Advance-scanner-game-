@@ -1,11 +1,9 @@
 --!nocheck
 -- ============================================
--- ULTRA SCANNER: MULTI-THREAD + ANTI-CRASH + FULL DUMP
+-- ADVANCED UNIVERSAL SCANNER: ANTI-BYPASS + ZERO-LAG
 -- ============================================
 local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
 local MarketplaceService = game:GetService("MarketplaceService")
-local RunService = game:GetService("RunService")
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 if not Rayfield then return end
@@ -19,161 +17,144 @@ end)
 local State = { IsScanning = false }
 
 local Window = Rayfield:CreateWindow({
-    Name = "Ultra Game Scanner",
-    LoadingTitle = "Initializing Scanner",
-    LoadingSubtitle = "Multi-Thread Edition",
+    Name = "Universal Scanner",
+    LoadingTitle = "Initializing Stealth Scanner",
+    LoadingSubtitle = "Anti-Bypass Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
-local Tab = Window:CreateTab("Ultra Scanner", 4483362458)
+local Tab = Window:CreateTab("Scanner", 4483362458)
 local StatusLabel = Tab:CreateLabel("Status: Idle")
 local TimeLabel = Tab:CreateLabel("Time Remaining: --:--")
 
 -- ============================================
--- ANTI-CRASH BUFFERED WRITER
+-- UNIVERSAL ANTI-BYPASS COLLECTION
 -- ============================================
-local WriteQueue = {}
-local IsWriting = false
-
-local function ProcessWriteQueue(filePath)
-    if IsWriting then return end
-    IsWriting = true
-    task.spawn(function()
-        while #WriteQueue > 0 do
-            local chunk = table.remove(WriteQueue, 1)
-            pcall(function() appendfile(filePath, chunk) end)
-            task.wait(0.05) -- Yield slightly to prevent disk I/O crashes
+local function GetAllObjects()
+    local objects = {}
+    
+    -- 1. Standard Descendants (Models, Parts, Buildings)
+    for _, obj in ipairs(game:GetDescendants()) do
+        table.insert(objects, obj)
+    end
+    
+    -- 2. Anti-Bypass: Grab Hidden Scripts (Executor API)
+    pcall(function()
+        for _, scriptObj in ipairs(getscripts()) do
+            if not table.find(objects, scriptObj) then
+                table.insert(objects, scriptObj)
+            end
         end
-        IsWriting = false
     end)
+    
+    -- 3. Anti-Bypass: Grab Nil Instances (Destroyed but running memory)
+    pcall(function()
+        for _, nilObj in ipairs(getnilinstances()) do
+            if not table.find(objects, nilObj) then
+                table.insert(objects, nilObj)
+            end
+        end
+    end)
+    
+    return objects
 end
 
 -- ============================================
--- MULTI-THREADED SCAN LOGIC
+-- SEQUENTIAL ZERO-LAG SCANNER
 -- ============================================
-local function StartUltraScan()
+local function StartUniversalScan()
     if State.IsScanning then return end
     if not writefile or not appendfile or not makefolder then
         return Rayfield:Notify({Title = "Error", Content = "Executor lacks file functions.", Duration = 5})
     end
 
     State.IsScanning = true
+    StatusLabel:Set("Status: Collecting Anti-Bypass Data...")
     
-    -- Setup Folder & File
     local folderName = "GameScannerExports"
     if not isfolder(folderName) then makefolder(folderName) end
-    local filePath = folderName .. "/" .. GameName .. "_UltraScan.txt"
-    writefile(filePath, "=== ULTRA GAME SCAN: " .. GameName .. " ===\n\n")
+    local filePath = folderName .. "/" .. GameName .. "_UniversalScan.txt"
+    writefile(filePath, "=== UNIVERSAL ANTI-BYPASS SCAN: " .. GameName .. " ===\n\n")
 
-    StatusLabel:Set("Status: Collecting Objects...")
-    
-    -- Collect EVERYTHING
-    local allObjects = game:GetDescendants()
+    local allObjects = GetAllObjects()
     local totalObjects = #allObjects
     local processedCount = 0
     local startTime = tick()
     
-    -- Multi-threading setup (Simulates using device CPU cores to boost speed)
-    local MAX_WORKERS = 20 
-    local activeWorkers = 0
-    local currentIndex = 1
+    StatusLabel:Set("Status: Scanning " .. totalObjects .. " Objects...")
 
-    local function ProcessItem(obj)
-        local entry = ""
-        local className = obj.ClassName
-        local fullName = obj:GetFullName()
-        
-        if className == "Script" or className == "LocalScript" or className == "ModuleScript" then
-            local success, decompiled = pcall(function() return decompile(obj) end)
-            entry = "\n--- [SCRIPT: " .. className .. "] " .. fullName .. " ---\n"
-            if success and decompiled then
-                entry = entry .. decompiled .. "\n\n"
-            else
-                entry = entry .. "-- Failed to decompile or locked.\n\n"
-            end
-        else
-            -- Dump properties of models, parts, buildings, etc.
-            entry = "\n[" .. className .. "] " .. fullName .. "\n"
-            -- Safely grab a few common properties without crashing
-            if pcall(function() return obj.Name end) then entry = entry .. "Name: " .. obj.Name .. "\n" end
-            if obj:IsA("BasePart") then
-                entry = entry .. "Position: " .. tostring(obj.Position) .. "\n"
-                entry = entry .. "Size: " .. tostring(obj.Size) .. "\n"
-                entry = entry .. "Material: " .. tostring(obj.Material) .. "\n"
-            elseif obj:IsA("Model") then
-                entry = entry .. "PrimaryPart: " .. tostring(obj.PrimaryPart) .. "\n"
-            end
-        end
-        
-        table.insert(WriteQueue, entry)
-        processedCount = processedCount + 1
-    end
-
-    -- Worker Loop
+    -- Sequential Loop with Yielding (Fixes 99% stuck bug)
     task.spawn(function()
-        while currentIndex <= totalObjects do
-            if activeWorkers < MAX_WORKERS then
-                activeWorkers = activeWorkers + 1
-                local objToProcess = allObjects[currentIndex]
-                currentIndex = currentIndex + 1
+        for i = 1, totalObjects do
+            local obj = allObjects[i]
+            local entry = ""
+            
+            local success, err = pcall(function()
+                local className = obj.ClassName
+                local fullName = pcall(function() return obj:GetFullName() end) and obj:GetFullName() or "Unknown/Nil Path"
                 
-                task.spawn(function()
-                    local success, err = pcall(function()
-                        ProcessItem(objToProcess)
-                    end)
-                    activeWorkers = activeWorkers - 1
-                    
-                    -- Update Progress & Time
-                    if processedCount % 50 == 0 then
-                        local elapsed = tick() - startTime
-                        local rate = processedCount / elapsed
-                        local remaining = (totalObjects - processedCount) / rate
-                        
-                        local mins = math.floor(remaining / 60)
-                        local secs = math.floor(remaining % 60)
-                        
-                        local percent = math.floor((processedCount / totalObjects) * 100)
-                        local filled = math.floor(percent / 5)
-                        local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
-                        
-                        StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
-                        TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
-                        
-                        -- Trigger disk write
-                        if #WriteQueue > 0 then ProcessWriteQueue(filePath) end
+                -- If it's a script, decompile it
+                if className == "Script" or className == "LocalScript" or className == "ModuleScript" then
+                    local decompiled = "-- Failed to decompile or locked by AC"
+                    pcall(function() decompiled = decompile(obj) end)
+                    entry = "\n--- [SCRIPT: " .. className .. "] " .. fullName .. " ---\n" .. decompiled .. "\n\n"
+                else
+                    -- If it's a model/part, dump its properties
+                    entry = "\n[" .. className .. "] " .. fullName .. "\n"
+                    pcall(function() entry = entry .. "Name: " .. obj.Name .. "\n" end)
+                    if obj:IsA("BasePart") then
+                        pcall(function() 
+                            entry = entry .. "Position: " .. tostring(obj.Position) .. "\n"
+                            entry = entry .. "Size: " .. tostring(obj.Size) .. "\n"
+                            entry = entry .. "Material: " .. tostring(obj.Material) .. "\n"
+                        end)
+                    elseif obj:IsA("Model") then
+                        pcall(function() entry = entry .. "PrimaryPart: " .. tostring(obj.PrimaryPart) .. "\n" end)
                     end
-                end)
-            else
-                task.wait() -- Yield if all workers are busy
+                end
+            end)
+            
+            -- Append to file directly (Safe Disk I/O)
+            if entry ~= "" then
+                pcall(function() appendfile(filePath, entry) end)
+            end
+            
+            processedCount = i
+            
+            -- Update UI & Yield every 50 items to prevent 99% freeze and game lag
+            if i % 50 == 0 then
+                local elapsed = tick() - startTime
+                local rate = processedCount / elapsed
+                local remaining = (totalObjects - processedCount) / rate
+                
+                local mins = math.floor(remaining / 60)
+                local secs = math.floor(remaining % 60)
+                
+                local percent = math.floor((processedCount / totalObjects) * 100)
+                local filled = math.floor(percent / 5)
+                local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
+                
+                StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
+                TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
+                
+                -- THE FIX: Yield to executor to prevent timeout and UI crash
+                task.wait()
             end
         end
         
-        -- Wait for workers to finish
-        while activeWorkers > 0 do task.wait(0.1) end
-        
-        -- Write remaining queue
-        while #WriteQueue > 0 do 
-            ProcessWriteQueue(filePath) 
-            task.wait(0.1) 
-        end
-        
-        -- Finish
+        -- 100% Guaranteed Completion
         State.IsScanning = false
         StatusLabel:Set("Status: COMPLETE! 100%")
         TimeLabel:Set("Time Remaining: 00:00")
-        Rayfield:Notify({Title = "Scan Complete!", Content = "Dumped " .. totalObjects .. " objects to file.", Duration = 6})
+        Rayfield:Notify({Title = "Scan Complete!", Content = "Successfully bypassed and dumped " .. totalObjects .. " objects.", Duration = 6})
     end)
 end
 
--- Button
 Tab:CreateButton({
-    Name = "Start Ultra Full Game Scan",
+    Name = "Start Universal Anti-Bypass Scan",
     Callback = function()
-        if not State.IsScanning then
-            StartUltraScan()
-        else
-            Rayfield:Notify({Title = "Busy", Content = "Scanner is already running!", Duration = 3})
-        end
+        if not State.IsScanning then StartUniversalScan() 
+        else Rayfield:Notify({Title = "Busy", Content = "Scanner is already running!", Duration = 3}) end
     end
 })
