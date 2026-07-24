@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- UNIVERSAL SCRIPT SCANNER: ANTI-CHEAT BYPASS + TURBO
+-- UNIVERSAL SCRIPT SCANNER: TIMEOUT BYPASS + ANTI-FREEZE
 -- ============================================
 local MarketplaceService = game:GetService("MarketplaceService")
 
@@ -18,7 +18,7 @@ local State = { IsScanning = false }
 local Window = Rayfield:CreateWindow({
     Name = "Universal Script Scanner",
     LoadingTitle = "Initializing Bypass",
-    LoadingSubtitle = "Scripts Only Edition",
+    LoadingSubtitle = "Timeout Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -37,7 +37,6 @@ local function GetAllScripts()
     
     local function addScript(s)
         if s and not seen[s] then
-            -- Only grab actual code scripts
             if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
                 seen[s] = true
                 table.insert(scripts, s)
@@ -45,19 +44,43 @@ local function GetAllScripts()
         end
     end
     
-    -- 1. Standard game scripts (In case they aren't hiding)
-    for _, obj in ipairs(game:GetDescendants()) do addScript(obj) end
-    
-    -- 2. EXECUTOR BYPASS: Force grab all running scripts (Bypasses hidden/local scripts)
+    pcall(function() for _, obj in ipairs(game:GetDescendants()) do addScript(obj) end end)
     pcall(function() for _, s in ipairs(getscripts()) do addScript(s) end end)
-    
-    -- 3. EXECUTOR BYPASS: Force grab Nil Scripts (Anti-cheats hide here)
     pcall(function() for _, s in ipairs(getnilinstances()) do addScript(s) end end)
-    
-    -- 4. EXECUTOR BYPASS: Force grab Loaded Modules
     pcall(function() for _, s in ipairs(getloadedmodules()) do addScript(s) end end)
     
     return scripts
+end
+
+-- ============================================
+-- TIMEOUT DECOMPILE FUNCTION (PREVENTS FREEZING)
+-- ============================================
+local function SafeDecompile(scriptObj)
+    local result = ""
+    local done = false
+    
+    -- Run decompile in a separate thread so we can abandon it if it hangs
+    task.spawn(function()
+        pcall(function() 
+            local r = decompile(scriptObj)
+            if r and #r > 0 then result = r end
+        end)
+        done = true
+    end)
+    
+    -- Wait max 1 second for decompile to finish
+    local t = 0
+    while not done and t < 1.0 do
+        task.wait(0.1)
+        t = t + 0.1
+    end
+    
+    if not done then
+        return "-- DECOMPILE TIMED OUT (Anti-Decompile Protection Triggered)"
+    end
+    
+    if result == "" then return "-- Failed to decompile or empty" end
+    return result
 end
 
 -- ============================================
@@ -70,11 +93,10 @@ local filePath = GameName .. "_Scripts_Part_1.txt"
 
 local writeBuffer = {}
 local bufferSize = 0
-local MAX_BUFFER_SIZE = 500000 -- Flush to disk every ~0.5MB
+local MAX_BUFFER_SIZE = 500000
 
 local function FlushBuffer()
     if #writeBuffer == 0 then return end
-    
     local chunk = table.concat(writeBuffer, "\n")
     writeBuffer = {}
     bufferSize = 0
@@ -128,8 +150,7 @@ local function StartScriptScan()
                 local fullName = "Unknown/Nil Path"
                 pcall(function() fullName = scriptObj:GetFullName() end)
                 
-                local decompiled = "-- Failed to decompile or locked"
-                pcall(function() decompiled = decompile(scriptObj) end)
+                local decompiled = SafeDecompile(scriptObj)
                 
                 entry = "\n========================================\n"
                 entry = entry .. "SCRIPT: " .. fullName .. "\n"
@@ -149,13 +170,8 @@ local function StartScriptScan()
             
             processedCount = i
             
-            -- Yield every 10 scripts to balance speed and UI stability
+            -- UPDATE UI EVERY 10 SCRIPTS (Instant Feedback)
             if i % 10 == 0 then
-                task.wait()
-            end
-            
-            -- Update UI & Clean RAM every 100 scripts
-            if i % 100 == 0 then
                 local elapsed = tick() - startTime
                 local remaining = 0
                 if processedCount > 0 and elapsed > 0 then
@@ -173,8 +189,16 @@ local function StartScriptScan()
                 StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
                 TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
                 
-                -- Force RAM cleanup to prevent UI disappearing
-                collectgarbage("collect")
+                -- Yield to UI
+                task.wait()
+                
+                -- Clean RAM every 50 scripts
+                if i % 50 == 0 then
+                    collectgarbage("collect")
+                end
+            else
+                -- Micro-yield to prevent thread blocking
+                if i % 3 == 0 then task.wait() end
             end
         end
         
