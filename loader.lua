@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- ADVANCED UNIVERSAL SCANNER: ANTI-BYPASS + ZERO-LAG
+-- UNIVERSAL SCANNER: STABLE TIMER + DIRECT SAVE
 -- ============================================
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -27,6 +27,7 @@ local Window = Rayfield:CreateWindow({
 local Tab = Window:CreateTab("Scanner", 4483362458)
 local StatusLabel = Tab:CreateLabel("Status: Idle")
 local TimeLabel = Tab:CreateLabel("Time Remaining: --:--")
+local FileLabel = Tab:CreateLabel("Save Location: N/A")
 
 -- ============================================
 -- UNIVERSAL ANTI-BYPASS COLLECTION
@@ -39,7 +40,7 @@ local function GetAllObjects()
         table.insert(objects, obj)
     end
     
-    -- 2. Anti-Bypass: Grab Hidden Scripts (Executor API)
+    -- 2. Anti-Bypass: Grab Hidden Scripts
     pcall(function()
         for _, scriptObj in ipairs(getscripts()) do
             if not table.find(objects, scriptObj) then
@@ -65,17 +66,17 @@ end
 -- ============================================
 local function StartUniversalScan()
     if State.IsScanning then return end
-    if not writefile or not appendfile or not makefolder then
-        return Rayfield:Notify({Title = "Error", Content = "Executor lacks file functions.", Duration = 5})
+    if not writefile or not appendfile then
+        return Rayfield:Notify({Title = "Error", Content = "Your executor does not support saving files.", Duration = 5})
     end
 
     State.IsScanning = true
     StatusLabel:Set("Status: Collecting Anti-Bypass Data...")
     
-    local folderName = "GameScannerExports"
-    if not isfolder(folderName) then makefolder(folderName) end
-    local filePath = folderName .. "/" .. GameName .. "_UniversalScan.txt"
+    -- FIXED: Save directly to the root workspace folder (no sub-folders) to guarantee it appears
+    local filePath = GameName .. "_UniversalScan.txt"
     writefile(filePath, "=== UNIVERSAL ANTI-BYPASS SCAN: " .. GameName .. " ===\n\n")
+    FileLabel:Set("Save Location: " .. filePath)
 
     local allObjects = GetAllObjects()
     local totalObjects = #allObjects
@@ -84,7 +85,6 @@ local function StartUniversalScan()
     
     StatusLabel:Set("Status: Scanning " .. totalObjects .. " Objects...")
 
-    -- Sequential Loop with Yielding (Fixes 99% stuck bug)
     task.spawn(function()
         for i = 1, totalObjects do
             local obj = allObjects[i]
@@ -92,15 +92,14 @@ local function StartUniversalScan()
             
             local success, err = pcall(function()
                 local className = obj.ClassName
-                local fullName = pcall(function() return obj:GetFullName() end) and obj:GetFullName() or "Unknown/Nil Path"
+                local fullName = "Unknown/Nil Path"
+                pcall(function() fullName = obj:GetFullName() end)
                 
-                -- If it's a script, decompile it
                 if className == "Script" or className == "LocalScript" or className == "ModuleScript" then
                     local decompiled = "-- Failed to decompile or locked by AC"
                     pcall(function() decompiled = decompile(obj) end)
                     entry = "\n--- [SCRIPT: " .. className .. "] " .. fullName .. " ---\n" .. decompiled .. "\n\n"
                 else
-                    -- If it's a model/part, dump its properties
                     entry = "\n[" .. className .. "] " .. fullName .. "\n"
                     pcall(function() entry = entry .. "Name: " .. obj.Name .. "\n" end)
                     if obj:IsA("BasePart") then
@@ -115,18 +114,26 @@ local function StartUniversalScan()
                 end
             end)
             
-            -- Append to file directly (Safe Disk I/O)
+            -- Write directly to disk
             if entry ~= "" then
                 pcall(function() appendfile(filePath, entry) end)
             end
             
             processedCount = i
             
-            -- Update UI & Yield every 50 items to prevent 99% freeze and game lag
-            if i % 50 == 0 then
+            -- Update UI every 25 items
+            if i % 25 == 0 then
+                -- FIXED: Stable Time Remaining Math
                 local elapsed = tick() - startTime
-                local rate = processedCount / elapsed
-                local remaining = (totalObjects - processedCount) / rate
+                local remaining = 0
+                if processedCount > 0 and elapsed > 0 then
+                    local rate = processedCount / elapsed
+                    if rate > 0 then
+                        remaining = (totalObjects - processedCount) / rate
+                    end
+                end
+                
+                if remaining < 0 then remaining = 0 end
                 
                 local mins = math.floor(remaining / 60)
                 local secs = math.floor(remaining % 60)
@@ -138,16 +145,24 @@ local function StartUniversalScan()
                 StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
                 TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
                 
-                -- THE FIX: Yield to executor to prevent timeout and UI crash
+                -- Yield to executor to prevent timeout
                 task.wait()
             end
         end
         
-        -- 100% Guaranteed Completion
+        -- 100% Completion
         State.IsScanning = false
         StatusLabel:Set("Status: COMPLETE! 100%")
         TimeLabel:Set("Time Remaining: 00:00")
-        Rayfield:Notify({Title = "Scan Complete!", Content = "Successfully bypassed and dumped " .. totalObjects .. " objects.", Duration = 6})
+        
+        -- Final confirmation write to flush the disk cache
+        pcall(function() appendfile(filePath, "\n=== SCAN COMPLETE ===\n") end)
+        
+        Rayfield:Notify({
+            Title = "Scan Complete!", 
+            Content = "Saved as " .. filePath .. " in your executor workspace!", 
+            Duration = 6
+        })
     end)
 end
 
