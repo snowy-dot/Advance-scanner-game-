@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- UNIVERSAL SCRIPT SCANNER: TIMEOUT BYPASS + ANTI-FREEZE
+-- UNIVERSAL SCRIPT SCANNER: BULLETPROOF EDITION
 -- ============================================
 local MarketplaceService = game:GetService("MarketplaceService")
 
@@ -18,7 +18,7 @@ local State = { IsScanning = false }
 local Window = Rayfield:CreateWindow({
     Name = "Universal Script Scanner",
     LoadingTitle = "Initializing Bypass",
-    LoadingSubtitle = "Timeout Edition",
+    LoadingSubtitle = "Bulletproof Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -29,58 +29,36 @@ local TimeLabel = Tab:CreateLabel("Time Remaining: --:--")
 local FileLabel = Tab:CreateLabel("Save Location: N/A")
 
 -- ============================================
--- ANTI-CHEAT BYPASS COLLECTION
+-- BULLETPROOF SCRIPT COLLECTION
 -- ============================================
 local function GetAllScripts()
     local scripts = {}
     local seen = {}
     
     local function addScript(s)
-        if s and not seen[s] then
+        if s == nil then return end
+        if seen[s] then return end
+        
+        local isScript = false
+        -- Safely check if it's a script without crashing
+        pcall(function()
             if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
-                seen[s] = true
-                table.insert(scripts, s)
+                isScript = true
             end
+        end)
+        
+        if isScript then
+            seen[s] = true
+            table.insert(scripts, s)
         end
     end
     
     pcall(function() for _, obj in ipairs(game:GetDescendants()) do addScript(obj) end end)
-    pcall(function() for _, s in ipairs(getscripts()) do addScript(s) end end)
-    pcall(function() for _, s in ipairs(getnilinstances()) do addScript(s) end end)
-    pcall(function() for _, s in ipairs(getloadedmodules()) do addScript(s) end end)
+    pcall(function() if getscripts then for _, s in ipairs(getscripts()) do addScript(s) end end end)
+    pcall(function() if getnilinstances then for _, s in ipairs(getnilinstances()) do addScript(s) end end end)
+    pcall(function() if getloadedmodules then for _, s in ipairs(getloadedmodules()) do addScript(s) end end end)
     
     return scripts
-end
-
--- ============================================
--- TIMEOUT DECOMPILE FUNCTION (PREVENTS FREEZING)
--- ============================================
-local function SafeDecompile(scriptObj)
-    local result = ""
-    local done = false
-    
-    -- Run decompile in a separate thread so we can abandon it if it hangs
-    task.spawn(function()
-        pcall(function() 
-            local r = decompile(scriptObj)
-            if r and #r > 0 then result = r end
-        end)
-        done = true
-    end)
-    
-    -- Wait max 1 second for decompile to finish
-    local t = 0
-    while not done and t < 1.0 do
-        task.wait(0.1)
-        t = t + 0.1
-    end
-    
-    if not done then
-        return "-- DECOMPILE TIMED OUT (Anti-Decompile Protection Triggered)"
-    end
-    
-    if result == "" then return "-- Failed to decompile or empty" end
-    return result
 end
 
 -- ============================================
@@ -105,7 +83,7 @@ local function FlushBuffer()
         filePartNumber = filePartNumber + 1
         filePath = GameName .. "_Scripts_Part_" .. filePartNumber .. ".txt"
         local header = "=== UNIVERSAL SCRIPT SCAN: " .. GameName .. " (PART " .. filePartNumber .. ") ===\n\n"
-        writefile(filePath, header)
+        pcall(function() writefile(filePath, header) end)
         currentFileSize = #header
         FileLabel:Set("Save Location: " .. filePath)
     end
@@ -115,7 +93,7 @@ local function FlushBuffer()
 end
 
 -- ============================================
--- TURBO SCANNER
+-- BULLETPROOF SCANNER
 -- ============================================
 local function StartScriptScan()
     if State.IsScanning then return end
@@ -124,95 +102,132 @@ local function StartScriptScan()
     end
 
     State.IsScanning = true
-    StatusLabel:Set("Status: Forcing Anti-Cheat Bypass...")
+    StatusLabel:Set("Status: Collecting Hidden Scripts...")
     
     filePartNumber = 1
     filePath = GameName .. "_Scripts_Part_1.txt"
     local initHeader = "=== UNIVERSAL SCRIPT SCAN: " .. GameName .. " (PART 1) ===\n\n"
-    writefile(filePath, initHeader)
+    
+    local writeSuccess, writeErr = pcall(function() writefile(filePath, initHeader) end)
+    if not writeSuccess then
+        Rayfield:Notify({Title = "File Error", Content = "Cannot write to disk: " .. tostring(writeErr), Duration = 6})
+        State.IsScanning = false
+        return
+    end
+    
     currentFileSize = #initHeader
     FileLabel:Set("Save Location: " .. filePath)
 
     local allScripts = GetAllScripts()
     local totalScripts = #allScripts
+    
+    if totalScripts == 0 then
+        StatusLabel:Set("Status: No scripts found!")
+        State.IsScanning = false
+        return
+    end
+    
     local processedCount = 0
     local startTime = tick()
     
     StatusLabel:Set("Status: Decompiling " .. totalScripts .. " Scripts...")
 
     task.spawn(function()
-        for i = 1, totalScripts do
-            local scriptObj = allScripts[i]
-            local entry = ""
-            
-            pcall(function()
-                local className = scriptObj.ClassName
-                local fullName = "Unknown/Nil Path"
-                pcall(function() fullName = scriptObj:GetFullName() end)
+        -- MASTER PCALL: If anything inside the loop errors, it catches it and continues
+        local success, err = pcall(function()
+            for i = 1, totalScripts do
+                local scriptObj = allScripts[i]
+                local entry = ""
                 
-                local decompiled = SafeDecompile(scriptObj)
+                -- Safely extract all data
+                pcall(function()
+                    local className = "Unknown"
+                    local fullName = "Unknown"
+                    
+                    pcall(function() className = scriptObj.ClassName end)
+                    
+                    local successName, nameResult = pcall(function() return scriptObj:GetFullName() end)
+                    if successName and type(nameResult) == "string" then
+                        fullName = nameResult
+                    else
+                        pcall(function() fullName = tostring(scriptObj) end)
+                    end
+                    
+                    local decompiled = "-- Failed to decompile or unsupported"
+                    if type(decompile) == "function" then
+                        pcall(function() 
+                            local r = decompile(scriptObj)
+                            if r and #r > 0 then decompiled = r end
+                        end)
+                    end
+                    
+                    entry = "\n========================================\n"
+                    entry = entry .. "SCRIPT: " .. fullName .. "\n"
+                    entry = entry .. "CLASS: " .. className .. "\n"
+                    entry = entry .. "========================================\n"
+                    entry = entry .. decompiled .. "\n\n"
+                end)
                 
-                entry = "\n========================================\n"
-                entry = entry .. "SCRIPT: " .. fullName .. "\n"
-                entry = entry .. "CLASS: " .. className .. "\n"
-                entry = entry .. "========================================\n"
-                entry = entry .. decompiled .. "\n\n"
-            end)
-            
-            if entry ~= "" then
-                table.insert(writeBuffer, entry)
-                bufferSize = bufferSize + #entry
-            end
-            
-            if bufferSize >= MAX_BUFFER_SIZE then
-                FlushBuffer()
-            end
-            
-            processedCount = i
-            
-            -- UPDATE UI EVERY 10 SCRIPTS (Instant Feedback)
-            if i % 10 == 0 then
-                local elapsed = tick() - startTime
-                local remaining = 0
-                if processedCount > 0 and elapsed > 0 then
-                    local rate = processedCount / elapsed
-                    if rate > 0 then remaining = (totalScripts - processedCount) / rate end
+                if entry ~= "" then
+                    table.insert(writeBuffer, entry)
+                    bufferSize = bufferSize + #entry
                 end
-                if remaining < 0 then remaining = 0 end
                 
-                local mins = math.floor(remaining / 60)
-                local secs = math.floor(remaining % 60)
-                local percent = math.floor((processedCount / totalScripts) * 100)
-                local filled = math.floor(percent / 5)
-                local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
+                if bufferSize >= MAX_BUFFER_SIZE then
+                    FlushBuffer()
+                end
                 
-                StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
-                TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
+                processedCount = i
                 
-                -- Yield to UI
-                task.wait()
+                -- YIELD & UPDATE UI EVERY 5 SCRIPTS
+                if i % 5 == 0 then
+                    task.wait()
+                    
+                    local elapsed = tick() - startTime
+                    local remaining = 0
+                    if processedCount > 0 and elapsed > 0 then
+                        local rate = processedCount / elapsed
+                        if rate > 0 then remaining = (totalScripts - processedCount) / rate end
+                    end
+                    if remaining < 0 then remaining = 0 end
+                    
+                    local mins = math.floor(remaining / 60)
+                    local secs = math.floor(remaining % 60)
+                    local percent = math.floor((processedCount / totalScripts) * 100)
+                    local filled = math.floor(percent / 5)
+                    local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
+                    
+                    -- Wrap UI updates in pcall so UI errors don't kill the loop
+                    pcall(function()
+                        StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
+                        TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
+                    end)
+                end
                 
-                -- Clean RAM every 50 scripts
-                if i % 50 == 0 then
+                -- Clean RAM every 25 scripts
+                if i % 25 == 0 then
                     collectgarbage("collect")
                 end
-            else
-                -- Micro-yield to prevent thread blocking
-                if i % 3 == 0 then task.wait() end
             end
+        end)
+        
+        if not success then
+            print("Scanner encountered an error but is saving what it has: " .. tostring(err))
         end
         
         FlushBuffer()
         
         State.IsScanning = false
-        StatusLabel:Set("Status: COMPLETE! 100%")
-        TimeLabel:Set("Time Remaining: 00:00")
+        pcall(function()
+            StatusLabel:Set("Status: COMPLETE! 100%")
+            TimeLabel:Set("Time Remaining: 00:00")
+        end)
         
         pcall(function() appendfile(filePath, "\n=== SCAN PART " .. filePartNumber .. " COMPLETE ===\n") end)
         
         Rayfield:Notify({
             Title = "Bypass & Scan Complete!", 
-            Content = "Decompiled " .. totalScripts .. " scripts into " .. filePartNumber .. " parts.", 
+            Content = "Decompiled " .. processedCount .. " scripts into " .. filePartNumber .. " parts.", 
             Duration = 6
         })
     end)
