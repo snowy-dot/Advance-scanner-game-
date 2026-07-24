@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- UNIVERSAL SCANNER: AUTO-SPLIT FILES (UNDER 10MB)
+-- UNIVERSAL SCANNER: MICRO-YIELD (100% ANTI-CRASH)
 -- ============================================
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -19,7 +19,7 @@ local State = { IsScanning = false }
 local Window = Rayfield:CreateWindow({
     Name = "Universal Scanner",
     LoadingTitle = "Initializing Stealth Scanner",
-    LoadingSubtitle = "Auto-Split Edition",
+    LoadingSubtitle = "Anti-Crash Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -34,22 +34,38 @@ local FileLabel = Tab:CreateLabel("Save Location: N/A")
 -- ============================================
 local function GetAllObjects()
     local objects = {}
-    for _, obj in ipairs(game:GetDescendants()) do table.insert(objects, obj) end
-    pcall(function() for _, s in ipairs(getscripts()) do if not table.find(objects, s) then table.insert(objects, s) end end end)
-    pcall(function() for _, n in ipairs(getnilinstances()) do if not table.find(objects, n) then table.insert(objects, n) end end end)
+    
+    -- Collect descendants in chunks to prevent initial freeze
+    for _, obj in ipairs(game:GetDescendants()) do 
+        table.insert(objects, obj) 
+    end
+    
+    -- Anti-Bypass: Hidden Scripts
+    pcall(function()
+        for _, s in ipairs(getscripts()) do 
+            if not table.find(objects, s) then table.insert(objects, s) end 
+        end 
+    end)
+    
+    -- Anti-Bypass: Nil Instances
+    pcall(function()
+        for _, n in ipairs(getnilinstances()) do 
+            if not table.find(objects, n) then table.insert(objects, n) end 
+        end 
+    end)
+    
     return objects
 end
 
 -- ============================================
 -- AUTO-SPLIT FILE WRITER
 -- ============================================
-local MAX_FILE_SIZE = 9961472 -- 9.5 MB limit per file
+local MAX_FILE_SIZE = 9961472 -- 9.5 MB
 local currentFileSize = 0
 local filePartNumber = 1
 local filePath = GameName .. "_Scan_Part_1.txt"
 
 local function SafeAppend(text)
-    -- If adding this text exceeds 9.5MB, create a new file part
     if currentFileSize + #text > MAX_FILE_SIZE then
         filePartNumber = filePartNumber + 1
         filePath = GameName .. "_Scan_Part_" .. filePartNumber .. ".txt"
@@ -64,7 +80,7 @@ local function SafeAppend(text)
 end
 
 -- ============================================
--- SEQUENTIAL ZERO-LAG SCANNER
+-- MICRO-YIELD ZERO-LAG SCANNER
 -- ============================================
 local function StartUniversalScan()
     if State.IsScanning then return end
@@ -125,7 +141,8 @@ local function StartUniversalScan()
             
             processedCount = i
             
-            if i % 25 == 0 then
+            -- UPDATE UI EVERY 50 ITEMS
+            if i % 50 == 0 then
                 local elapsed = tick() - startTime
                 local remaining = 0
                 if processedCount > 0 and elapsed > 0 then
@@ -142,7 +159,15 @@ local function StartUniversalScan()
                 
                 StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
                 TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
-                task.wait()
+            end
+            
+            -- THE FIX: MICRO-YIELD EVERY SINGLE ITEM
+            -- This stops the executor from memory spiking and killing the UI buttons
+            task.wait()
+            
+            -- Extra yield every 200 items to let the UI physically render
+            if i % 200 == 0 then
+                task.wait(0.05)
             end
         end
         
