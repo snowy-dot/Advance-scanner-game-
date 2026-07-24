@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- UNIVERSAL SCRIPT SCANNER: DIAGNOSTIC & TIMEOUT
+-- UNIVERSAL SCRIPT SCANNER: GC-FREE + SPOOF FIX
 -- ============================================
 local MarketplaceService = game:GetService("MarketplaceService")
 
@@ -18,7 +18,7 @@ local State = { IsScanning = false }
 local Window = Rayfield:CreateWindow({
     Name = "Universal Script Scanner",
     LoadingTitle = "Initializing Bypass",
-    LoadingSubtitle = "Diagnostic Edition",
+    LoadingSubtitle = "Stable Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -31,27 +31,37 @@ local CountLabel = Tab:CreateLabel("Total Scripts Found: 0")
 local SuccessLabel = Tab:CreateLabel("Successfully Decompiled: 0")
 
 -- ============================================
--- STRICT & DEDUPLICATED SCRIPT COLLECTION
+-- STRICT SPOOF-PROOF SCRIPT COLLECTION
 -- ============================================
 local function GetAllScripts()
     local scripts = {}
     local seen = {}
     
     local function add(s)
-        if s == nil then return end
-        local class = ""
-        pcall(function() class = s.ClassName end)
-        if class ~= "Script" and class ~= "LocalScript" and class ~= "ModuleScript" then return end
+        -- STRICT CHECK: Must be a real Instance, not a fake userdata spoofed by Anti-Cheat
+        if typeof(s) ~= "Instance" then return end
+        
+        local isScript = false
+        pcall(function()
+            if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
+                isScript = true
+            end
+        end)
+        if not isScript then return end
         
         local fullName = "Unknown"
         pcall(function() fullName = s:GetFullName() end)
+        
         if not seen[fullName] then
             seen[fullName] = true
             table.insert(scripts, s)
         end
     end
 
+    -- 1. Standard game tree
     pcall(function() for _, obj in ipairs(game:GetDescendants()) do add(obj) end end)
+    
+    -- 2. Executor API (Bypass)
     pcall(function() if getscripts then for _, s in ipairs(getscripts()) do add(s) end end end)
     pcall(function() if getloadedmodules then for _, s in ipairs(getloadedmodules()) do add(s) end end end)
     pcall(function() if getnilinstances then for _, s in ipairs(getnilinstances()) do add(s) end end end)
@@ -68,13 +78,11 @@ local function SafeDecompile(scriptObj)
     local result = nil
     local done = false
     
-    -- Run decompile in a separate thread so we can abandon it if it hangs
     task.spawn(function()
         pcall(function()
             local r = decompile(scriptObj)
             if r and #r > 0 then result = r end
         end)
-        -- Fallback attempt
         if not result then
             pcall(function()
                 local r2 = decompile(scriptObj, true)
@@ -84,7 +92,6 @@ local function SafeDecompile(scriptObj)
         done = true
     end)
     
-    -- Wait max 1 second for decompile to finish
     local t = 0
     while not done and t < 1.0 do
         task.wait(0.1)
@@ -111,7 +118,7 @@ local MAX_BUFFER_SIZE = 500000
 local function FlushBuffer()
     if #writeBuffer == 0 then return end
     local chunk = table.concat(writeBuffer, "\n")
-    writeBuffer = {}
+    writeBuffer = {} -- Clear memory instantly
     bufferSize = 0
     
     if currentFileSize + #chunk > MAX_FILE_SIZE then
@@ -128,7 +135,7 @@ local function FlushBuffer()
 end
 
 -- ============================================
--- DIAGNOSTIC SCANNER
+-- STABLE SCANNER (NO COLLECTGARBAGE)
 -- ============================================
 local function StartScriptScan()
     if State.IsScanning then return end
@@ -165,14 +172,12 @@ local function StartScriptScan()
     local startTime = tick()
     
     task.spawn(function()
-        -- DIAGNOSTIC PCALL: If the loop crashes, it will tell us exactly why
         local success, err = pcall(function()
             for i = 1, totalScripts do
                 local scriptObj = allScripts[i]
                 local entry = ""
                 local didSucceed = false
                 
-                -- INSTANT UI UPDATE: Shows exactly which script we are on
                 pcall(function()
                     StatusLabel:Set("Status: Scanning Script " .. i .. " of " .. totalScripts .. "...")
                 end)
@@ -209,13 +214,13 @@ local function StartScriptScan()
                     if didSucceed then successCount = successCount + 1 end
                 end
                 
+                -- FLUSH BUFFER: Clears memory naturally without collectgarbage
                 if bufferSize >= MAX_BUFFER_SIZE then
                     FlushBuffer()
                 end
                 
                 processedCount = i
                 
-                -- Update Time & Success Count every 5 scripts
                 if i % 5 == 0 then
                     local elapsed = tick() - startTime
                     local remaining = 0
@@ -235,19 +240,16 @@ local function StartScriptScan()
                         SuccessLabel:Set("Successfully Decompiled: " .. successCount .. " / " .. totalScripts)
                     end)
                     
-                    collectgarbage("collect")
+                    -- Slightly longer yield to let executor naturally clean memory
+                    task.wait(0.05)
+                else
+                    task.wait()
                 end
-                
-                -- Micro yield to prevent thread blocking
-                task.wait()
             end
         end)
         
-        -- IF THE LOOP CRASHED, SHOW IT ON THE UI
         if not success then
-            pcall(function()
-                StatusLabel:Set("CRASHED! Error: " .. tostring(err))
-            end)
+            pcall(function() StatusLabel:Set("CRASHED! Error: " .. tostring(err)) end)
             print("SCANNER CRASHED: " .. tostring(err))
         else
             FlushBuffer()
