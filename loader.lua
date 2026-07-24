@@ -1,159 +1,179 @@
 --!nocheck
 -- ============================================
--- ADVANCED GAME SCANNER + PROGRESS BAR + ANTI-CRASH
+-- ULTRA SCANNER: MULTI-THREAD + ANTI-CRASH + FULL DUMP
 -- ============================================
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local MarketplaceService = game:GetService("MarketplaceService")
-local LP = Players.LocalPlayer
+local RunService = game:GetService("RunService")
 
--- Load Rayfield
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 if not Rayfield then return end
 
--- Get Game Name for File Saving
 local GameName = "UnknownGame"
 pcall(function()
     local info = MarketplaceService:GetProductInfo(game.PlaceId)
-    if info and info.Name then
-        GameName = string.gsub(info.Name, "[^%w_]", "_")
-    end
+    if info and info.Name then GameName = string.gsub(info.Name, "[^%w_]", "_") end
 end)
 
--- State
-local State = {}
-State.IsScanning = false
-State.ScanCoreScripts = false
+local State = { IsScanning = false }
 
--- ============================================
--- UI SETUP
--- ============================================
 local Window = Rayfield:CreateWindow({
-    Name = "Advanced Game Scanner",
-    LoadingTitle = "Scanner Initializing",
-    LoadingSubtitle = "Direct Write Edition",
+    Name = "Ultra Game Scanner",
+    LoadingTitle = "Initializing Scanner",
+    LoadingSubtitle = "Multi-Thread Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
-local TabScanner = Window:CreateTab("Scanner", 4483362458)
+local Tab = Window:CreateTab("Ultra Scanner", 4483362458)
+local StatusLabel = Tab:CreateLabel("Status: Idle")
+local TimeLabel = Tab:CreateLabel("Time Remaining: --:--")
 
--- UI Elements
-local StatusLabel = TabScanner:CreateLabel("Status: Idle")
+-- ============================================
+-- ANTI-CRASH BUFFERED WRITER
+-- ============================================
+local WriteQueue = {}
+local IsWriting = false
 
-local CoreScriptsToggle = TabScanner:CreateToggle({
-    Name = "Scan CoreScripts (May cause lag)",
-    CurrentValue = false,
-    Flag = "CoreScriptsToggle",
-    Callback = function(Value)
-        State.ScanCoreScripts = Value
-    end
-})
-
--- Function to generate ASCII progress bar
-local function getProgressBar(current, total)
-    local percent = math.floor((current / total) * 100)
-    local filled = math.floor(percent / 5)
-    local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
-    return string.format("[%s] %d%% (%d/%d)", bar, percent, current, total)
+local function ProcessWriteQueue(filePath)
+    if IsWriting then return end
+    IsWriting = true
+    task.spawn(function()
+        while #WriteQueue > 0 do
+            local chunk = table.remove(WriteQueue, 1)
+            pcall(function() appendfile(filePath, chunk) end)
+            task.wait(0.05) -- Yield slightly to prevent disk I/O crashes
+        end
+        IsWriting = false
+    end)
 end
 
--- Scan Button
-local ScanButton = TabScanner:CreateButton({
-    Name = "Start Full Game Scan",
-    Callback = function()
-        if State.IsScanning then
-            Rayfield:Notify({Title = "Busy", Content = "Scanner is already running!", Duration = 3})
-            return
-        end
-        
-        if not writefile or not appendfile or not makefolder then
-            Rayfield:Notify({Title = "Error", Content = "Your executor lacks file writing support.", Duration = 5})
-            return
-        end
+-- ============================================
+-- MULTI-THREADED SCAN LOGIC
+-- ============================================
+local function StartUltraScan()
+    if State.IsScanning then return end
+    if not writefile or not appendfile or not makefolder then
+        return Rayfield:Notify({Title = "Error", Content = "Executor lacks file functions.", Duration = 5})
+    end
 
-        State.IsScanning = true
-        ScanButton:Set("Scan in Progress...")
-        StatusLabel:Set("Collecting Scripts... Please wait.")
-        
-        task.wait(0.5)
-        
-        -- 1. Collect all scripts first to get a total count for the progress bar
-        local scriptsToScan = {}
-        for _, obj in ipairs(game:GetDescendants()) do
-            if obj:IsA("LocalScript") or obj:IsA("ModuleScript") or obj:IsA("Script") then
-                if State.ScanCoreScripts or not obj:IsDescendantOf(CoreGui) then
-                    table.insert(scriptsToScan, obj)
-                end
-            end
-        end
-        
-        local totalScripts = #scriptsToScan
-        if totalScripts == 0 then
-            StatusLabel:Set("Status: No scripts found!")
-            State.IsScanning = false
-            ScanButton:Set("Start Full Game Scan")
-            return
-        end
+    State.IsScanning = true
+    
+    -- Setup Folder & File
+    local folderName = "GameScannerExports"
+    if not isfolder(folderName) then makefolder(folderName) end
+    local filePath = folderName .. "/" .. GameName .. "_UltraScan.txt"
+    writefile(filePath, "=== ULTRA GAME SCAN: " .. GameName .. " ===\n\n")
 
-        -- 2. Setup File Directory
-        local folderName = "GameScannerExports"
-        if not isfolder(folderName) then
-            makefolder(folderName)
-        end
-        local fileName = folderName .. "/" .. GameName .. "_Scan.txt"
+    StatusLabel:Set("Status: Collecting Objects...")
+    
+    -- Collect EVERYTHING
+    local allObjects = game:GetDescendants()
+    local totalObjects = #allObjects
+    local processedCount = 0
+    local startTime = tick()
+    
+    -- Multi-threading setup (Simulates using device CPU cores to boost speed)
+    local MAX_WORKERS = 20 
+    local activeWorkers = 0
+    local currentIndex = 1
+
+    local function ProcessItem(obj)
+        local entry = ""
+        local className = obj.ClassName
+        local fullName = obj:GetFullName()
         
-        -- Clear existing file
-        writefile(fileName, "=== GAME SCAN START: " .. GameName .. " ===\nTotal Scripts: " .. totalScripts .. "\n\n")
-        
-        -- 3. Scan and write directly to disk (Anti-Crash)
-        local scannedCount = 0
-        local successCount = 0
-        
-        for i, scriptObj in ipairs(scriptsToScan) do
-            -- Update UI every 10 scripts to prevent UI lag
-            if i % 10 == 0 then
-                StatusLabel:Set("Scanning...\n" .. getProgressBar(i, totalScripts))
-            end
-            
-            -- Decompile script safely
-            local success, decompiled = pcall(function()
-                if decompile then 
-                    return decompile(scriptObj) 
-                else 
-                    return "-- Decompile function not available in this executor"
-                end
-            end)
-            
+        if className == "Script" or className == "LocalScript" or className == "ModuleScript" then
+            local success, decompiled = pcall(function() return decompile(obj) end)
+            entry = "\n--- [SCRIPT: " .. className .. "] " .. fullName .. " ---\n"
             if success and decompiled then
-                local entry = "\n========================================\n"
-                entry = entry .. "SCRIPT: " .. scriptObj:GetFullName() .. "\n"
-                entry = entry .. "========================================\n"
                 entry = entry .. decompiled .. "\n\n"
-                
-                -- Append directly to file (Zero RAM usage)
-                appendfile(fileName, entry)
-                successCount = successCount + 1
+            else
+                entry = entry .. "-- Failed to decompile or locked.\n\n"
             end
-            
-            scannedCount = i
-            -- Yield periodically to prevent executor timeout
-            if i % 50 == 0 then
-                task.wait()
+        else
+            -- Dump properties of models, parts, buildings, etc.
+            entry = "\n[" .. className .. "] " .. fullName .. "\n"
+            -- Safely grab a few common properties without crashing
+            if pcall(function() return obj.Name end) then entry = entry .. "Name: " .. obj.Name .. "\n" end
+            if obj:IsA("BasePart") then
+                entry = entry .. "Position: " .. tostring(obj.Position) .. "\n"
+                entry = entry .. "Size: " .. tostring(obj.Size) .. "\n"
+                entry = entry .. "Material: " .. tostring(obj.Material) .. "\n"
+            elseif obj:IsA("Model") then
+                entry = entry .. "PrimaryPart: " .. tostring(obj.PrimaryPart) .. "\n"
             end
         end
-
-        -- 4. Finish up
-        StatusLabel:Set("Status: Complete!\n" .. getProgressBar(scannedCount, totalScripts) .. "\nSaved to GameScannerExports folder!")
-        ScanButton:Set("Start Full Game Scan")
-        State.IsScanning = false
         
-        Rayfield:Notify({
-            Title = "Scan Complete!",
-            Content = "Successfully decompiled " .. successCount .. " scripts.\nCheck your executor's workspace folder!",
-            Duration = 6
-        })
+        table.insert(WriteQueue, entry)
+        processedCount = processedCount + 1
+    end
+
+    -- Worker Loop
+    task.spawn(function()
+        while currentIndex <= totalObjects do
+            if activeWorkers < MAX_WORKERS then
+                activeWorkers = activeWorkers + 1
+                local objToProcess = allObjects[currentIndex]
+                currentIndex = currentIndex + 1
+                
+                task.spawn(function()
+                    local success, err = pcall(function()
+                        ProcessItem(objToProcess)
+                    end)
+                    activeWorkers = activeWorkers - 1
+                    
+                    -- Update Progress & Time
+                    if processedCount % 50 == 0 then
+                        local elapsed = tick() - startTime
+                        local rate = processedCount / elapsed
+                        local remaining = (totalObjects - processedCount) / rate
+                        
+                        local mins = math.floor(remaining / 60)
+                        local secs = math.floor(remaining % 60)
+                        
+                        local percent = math.floor((processedCount / totalObjects) * 100)
+                        local filled = math.floor(percent / 5)
+                        local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
+                        
+                        StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
+                        TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
+                        
+                        -- Trigger disk write
+                        if #WriteQueue > 0 then ProcessWriteQueue(filePath) end
+                    end
+                end)
+            else
+                task.wait() -- Yield if all workers are busy
+            end
+        end
+        
+        -- Wait for workers to finish
+        while activeWorkers > 0 do task.wait(0.1) end
+        
+        -- Write remaining queue
+        while #WriteQueue > 0 do 
+            ProcessWriteQueue(filePath) 
+            task.wait(0.1) 
+        end
+        
+        -- Finish
+        State.IsScanning = false
+        StatusLabel:Set("Status: COMPLETE! 100%")
+        TimeLabel:Set("Time Remaining: 00:00")
+        Rayfield:Notify({Title = "Scan Complete!", Content = "Dumped " .. totalObjects .. " objects to file.", Duration = 6})
+    end)
+end
+
+-- Button
+Tab:CreateButton({
+    Name = "Start Ultra Full Game Scan",
+    Callback = function()
+        if not State.IsScanning then
+            StartUltraScan()
+        else
+            Rayfield:Notify({Title = "Busy", Content = "Scanner is already running!", Duration = 3})
+        end
     end
 })
-
-Rayfield:LoadConfiguration()
