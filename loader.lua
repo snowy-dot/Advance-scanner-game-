@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================
--- UNIVERSAL SCRIPT SCANNER: BULLETPROOF EDITION
+-- UNIVERSAL SCRIPT SCANNER: MAXIMUM RECOVERY
 -- ============================================
 local MarketplaceService = game:GetService("MarketplaceService")
 
@@ -18,7 +18,7 @@ local State = { IsScanning = false }
 local Window = Rayfield:CreateWindow({
     Name = "Universal Script Scanner",
     LoadingTitle = "Initializing Bypass",
-    LoadingSubtitle = "Bulletproof Edition",
+    LoadingSubtitle = "Maximum Recovery Edition",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
@@ -27,36 +27,61 @@ local Tab = Window:CreateTab("Script Scanner", 4483362458)
 local StatusLabel = Tab:CreateLabel("Status: Idle")
 local TimeLabel = Tab:CreateLabel("Time Remaining: --:--")
 local FileLabel = Tab:CreateLabel("Save Location: N/A")
+local CountLabel = Tab:CreateLabel("Total Scripts Found: 0")
 
 -- ============================================
--- BULLETPROOF SCRIPT COLLECTION
+-- MAXIMUM RECOVERY SCRIPT COLLECTION
 -- ============================================
 local function GetAllScripts()
     local scripts = {}
     local seen = {}
     
-    local function addScript(s)
+    local function add(s)
         if s == nil then return end
         if seen[s] then return end
-        
-        local isScript = false
-        -- Safely check if it's a script without crashing
-        pcall(function()
-            if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
-                isScript = true
-            end
-        end)
-        
-        if isScript then
-            seen[s] = true
-            table.insert(scripts, s)
-        end
+        seen[s] = true
+        table.insert(scripts, s)
     end
+
+    -- 1. Standard game tree (Workspace, ReplicatedStorage, etc.)
+    pcall(function()
+        for _, obj in ipairs(game:GetDescendants()) do
+            local ok, isScript = pcall(function()
+                return obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript")
+            end)
+            if ok and isScript then
+                add(obj)
+            end
+        end
+    end)
     
-    pcall(function() for _, obj in ipairs(game:GetDescendants()) do addScript(obj) end end)
-    pcall(function() if getscripts then for _, s in ipairs(getscripts()) do addScript(s) end end end)
-    pcall(function() if getnilinstances then for _, s in ipairs(getnilinstances()) do addScript(s) end end end)
-    pcall(function() if getloadedmodules then for _, s in ipairs(getloadedmodules()) do addScript(s) end end end)
+    -- 2. Executor API: getscripts() (TRUST BLINDLY - Bypasses IsA checks)
+    pcall(function()
+        if getscripts then 
+            for _, s in ipairs(getscripts()) do add(s) end 
+        end
+    end)
+    
+    -- 3. Executor API: getloadedmodules() (TRUST BLINDLY)
+    pcall(function()
+        if getloadedmodules then 
+            for _, s in ipairs(getloadedmodules()) do add(s) end 
+        end
+    end)
+    
+    -- 4. Executor API: getnilinstances() (Must check IsA safely because it returns models too)
+    pcall(function()
+        if getnilinstances then
+            for _, s in ipairs(getnilinstances()) do
+                local ok, isScript = pcall(function()
+                    return s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript")
+                end)
+                if ok and isScript then
+                    add(s)
+                end
+            end
+        end
+    end)
     
     return scripts
 end
@@ -102,7 +127,12 @@ local function StartScriptScan()
     end
 
     State.IsScanning = true
-    StatusLabel:Set("Status: Collecting Hidden Scripts...")
+    StatusLabel:Set("Status: Waiting for game to load scripts...")
+    
+    -- WAIT 5 SECONDS: Let the game fully load before scanning so we don't miss late-loading scripts
+    task.wait(5)
+    
+    StatusLabel:Set("Status: Forcing Anti-Cheat Bypass...")
     
     filePartNumber = 1
     filePath = GameName .. "_Scripts_Part_1.txt"
@@ -121,8 +151,10 @@ local function StartScriptScan()
     local allScripts = GetAllScripts()
     local totalScripts = #allScripts
     
+    CountLabel:Set("Total Scripts Found: " .. totalScripts)
+    
     if totalScripts == 0 then
-        StatusLabel:Set("Status: No scripts found!")
+        StatusLabel:Set("Status: No scripts found! Executor might not support getscripts().")
         State.IsScanning = false
         return
     end
@@ -133,13 +165,11 @@ local function StartScriptScan()
     StatusLabel:Set("Status: Decompiling " .. totalScripts .. " Scripts...")
 
     task.spawn(function()
-        -- MASTER PCALL: If anything inside the loop errors, it catches it and continues
         local success, err = pcall(function()
             for i = 1, totalScripts do
                 local scriptObj = allScripts[i]
                 local entry = ""
                 
-                -- Safely extract all data
                 pcall(function()
                     local className = "Unknown"
                     local fullName = "Unknown"
@@ -197,7 +227,6 @@ local function StartScriptScan()
                     local filled = math.floor(percent / 5)
                     local bar = string.rep("=", filled) .. string.rep(" ", 20 - filled)
                     
-                    -- Wrap UI updates in pcall so UI errors don't kill the loop
                     pcall(function()
                         StatusLabel:Set(string.format("Scanning: [%s] %d%%", bar, percent))
                         TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
