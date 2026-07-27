@@ -1,7 +1,7 @@
 --!nocheck
 -- ============================================================
--- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.3
--- FIXED: UI crash (buttons disappearing) — fully decoupled
+-- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.4
+-- FINAL FIX: UI updates now run on a dedicated timer
 -- ============================================================
 
 -- ============================================================
@@ -51,17 +51,6 @@ local function BypassProtections()
                 return old(t, k)
             end
             setrawmetatable(game, mt)
-        end
-    end)
-
-    pcall(function()
-        if getreg then
-            local reg = getreg()
-            for i = 1, #reg do
-                if type(reg[i]) == "function" and tostring(reg[i]):find("Scanning") then
-                    reg[i] = function() end
-                end
-            end
         end
     end)
 end
@@ -168,9 +157,9 @@ end
 local GameInfo = GetGameInfo()
 
 -- ============================================================
--- STATE MANAGEMENT
+-- STATE — SHARED BETWEEN SCANNER AND UI UPDATER
 -- ============================================================
-local State = {
+local ScanState = {
     IsScanning = false,
     IsPaused = false,
     TotalScripts = 0,
@@ -179,14 +168,40 @@ local State = {
     Failed = 0,
     StartTime = 0,
     CurrentFile = "",
-    FileParts = 0
+    FileParts = 0,
+    StatusText = "Ready",
+    TimeText = "--:--",
+    SuccessText = "Decompiled: 0 | Protected: 0",
+    CountText = "Total Scripts Found: 0",
+    FileText = "Save Location: Not started"
 }
 
-local ScanStatistics = {
-    ByType = { Script = 0, LocalScript = 0, ModuleScript = 0, Other = 0 },
-    BySource = { Game = 0, Executor = 0, Nil = 0, Loaded = 0 },
-    ByStatus = { Decompiled = 0, Protected = 0, TimedOut = 0, Error = 0 }
-}
+-- ============================================================
+-- UI LABELS (Stored globally for timer updater)
+-- ============================================================
+local StatusLabel = { Set = function() end }
+local TimeLabel = { Set = function() end }
+local FileLabel = { Set = function() end }
+local CountLabel = { Set = function() end }
+local SuccessLabel = { Set = function() end }
+
+-- ============================================================
+-- UI UPDATER — Runs every 0.3 seconds (safe)
+-- ============================================================
+local function UIUpdater()
+    task.spawn(function()
+        while true do
+            task.wait(0.3)
+            pcall(function()
+                StatusLabel:Set(ScanState.StatusText)
+                TimeLabel:Set(ScanState.TimeText)
+                FileLabel:Set(ScanState.FileText)
+                CountLabel:Set(ScanState.CountText)
+                SuccessLabel:Set(ScanState.SuccessText)
+            end)
+        end
+    end)
+end
 
 -- ============================================================
 -- SCRIPT COLLECTOR
@@ -228,11 +243,6 @@ local function CollectEverything()
             Disabled = isDisabled,
             Source = source or "Unknown"
         })
-        
-        if className == "Script" then ScanStatistics.ByType.Script = ScanStatistics.ByType.Script + 1
-        elseif className == "LocalScript" then ScanStatistics.ByType.LocalScript = ScanStatistics.ByType.LocalScript + 1
-        elseif className == "ModuleScript" then ScanStatistics.ByType.ModuleScript = ScanStatistics.ByType.ModuleScript + 1
-        else ScanStatistics.ByType.Other = ScanStatistics.ByType.Other + 1 end
     end
 
     pcall(function()
@@ -296,8 +306,8 @@ local function DecompileScript(scriptObj)
     end
     
     if not result then
-        result = "-- DECOMPILE FAILED (Protected Bytecode)\n-- Class: " .. scriptObj.ClassName .. "\n-- Name: " .. scriptObj.Name
-        ScanStatistics.ByStatus.Protected = ScanStatistics.ByStatus.Protected + 1
+        result = "-- DECOMPILE FAILED (Protected Bytecode)"
+        ScanState.Failed = ScanState.Failed + 1
     end
     
     return result
@@ -341,17 +351,18 @@ local function FlushBuffer()
         )
         pcall(function() writefile(path, header) end)
         currentFileSize = #header
-        State.CurrentFile = path
-        State.FileParts = filePart
+        ScanState.CurrentFile = path
+        ScanState.FileParts = filePart
+        ScanState.FileText = "Save Location: " .. path
     end
     
-    pcall(function() appendfile(State.CurrentFile, chunk) end)
+    pcall(function() appendfile(ScanState.CurrentFile, chunk) end)
     currentFileSize = currentFileSize + #chunk
 end
 
 local function InitializeFile()
     filePart = 1
-    State.CurrentFile = GetFilePath(1)
+    ScanState.CurrentFile = GetFilePath(1)
     local header = string.format(
         "=== UNIVERSAL SCRIPT SCAN: %s ===\n" ..
         "=== PART 1 ===\n" ..
@@ -364,43 +375,18 @@ local function InitializeFile()
         ExecutorType,
         os.date("%Y-%m-%d %H:%M:%S")
     )
-    pcall(function() writefile(State.CurrentFile, header) end)
+    pcall(function() writefile(ScanState.CurrentFile, header) end)
     currentFileSize = #header
-    State.FileParts = 1
+    ScanState.FileParts = 1
+    ScanState.FileText = "Save Location: " .. ScanState.CurrentFile
 end
 
 -- ============================================================
--- UI LABELS
--- ============================================================
-local StatusLabel = { Set = function() end }
-local TimeLabel = { Set = function() end }
-local FileLabel = { Set = function() end }
-local CountLabel = { Set = function() end }
-local SuccessLabel = { Set = function() end }
-
--- ============================================================
--- SAFE UI UPDATE
--- ============================================================
-local function SafeUpdateUI(status, time, success, file, count)
-    task.spawn(function()
-        pcall(function()
-            if status then StatusLabel:Set(status) end
-            if time then TimeLabel:Set(time) end
-            if success then SuccessLabel:Set(success) end
-            if file then FileLabel:Set(file) end
-            if count then CountLabel:Set(count) end
-        end)
-    end)
-    task.wait() -- Yield to let UI render
-end
-
--- ============================================================
--- SCANNER ENGINE — RUNS ON SEPARATE THREAD
+-- SCANNER ENGINE — Updates State only, UI updates via timer
 -- ============================================================
 local function RunScanner()
-    -- Run on a separate thread so UI doesn't freeze
     task.spawn(function()
-        if State.IsScanning then
+        if ScanState.IsScanning then
             if Rayfield and Rayfield.Notify then
                 Rayfield:Notify({Title = "Busy", Content = "Scanner is already running!", Duration = 3})
             end
@@ -414,31 +400,25 @@ local function RunScanner()
             return
         end
 
-        State.IsScanning = true
-        State.IsPaused = false
-        State.Processed = 0
-        State.Decompiled = 0
-        State.Failed = 0
-        State.StartTime = tick()
+        ScanState.IsScanning = true
+        ScanState.IsPaused = false
+        ScanState.Processed = 0
+        ScanState.Decompiled = 0
+        ScanState.Failed = 0
+        ScanState.StartTime = tick()
+        ScanState.StatusText = "Initializing..."
+        ScanState.TimeText = "--:--"
         
-        ScanStatistics.ByType = { Script = 0, LocalScript = 0, ModuleScript = 0, Other = 0 }
-        ScanStatistics.BySource = { Game = 0, Executor = 0, Nil = 0, Loaded = 0 }
-        ScanStatistics.ByStatus = { Decompiled = 0, Protected = 0, TimedOut = 0, Error = 0 }
-
-        SafeUpdateUI("Status: Initializing bypass...", "Time Remaining: --:--")
         task.wait(0.5)
 
-        SafeUpdateUI("Status: Collecting all scripts...")
-        task.wait(0.5)
-        
+        ScanState.StatusText = "Collecting scripts..."
         local allScripts = CollectEverything()
-        State.TotalScripts = #allScripts
+        ScanState.TotalScripts = #allScripts
+        ScanState.CountText = "Total Scripts Found: " .. ScanState.TotalScripts
         
-        SafeUpdateUI(nil, nil, nil, nil, "Total Scripts Found: " .. State.TotalScripts)
-        
-        if State.TotalScripts == 0 then
-            SafeUpdateUI("Status: No scripts found!")
-            State.IsScanning = false
+        if ScanState.TotalScripts == 0 then
+            ScanState.StatusText = "No scripts found!"
+            ScanState.IsScanning = false
             if Rayfield and Rayfield.Notify then
                 Rayfield:Notify({Title = "Alert", Content = "No scripts detected.", Duration = 4})
             end
@@ -446,22 +426,20 @@ local function RunScanner()
             return
         end
 
-        SafeUpdateUI("Status: Initializing file system...")
+        ScanState.StatusText = "Initializing file system..."
         InitializeFile()
-        SafeUpdateUI(nil, nil, nil, "Save Location: " .. State.CurrentFile)
         task.wait(0.5)
 
-        SafeUpdateUI("Status: Scanning...")
+        ScanState.StatusText = "Scanning..."
         
         local scanSuccess, scanErr = pcall(function()
-            for i = 1, State.TotalScripts do
-                -- Check pause
-                while State.IsPaused do
+            for i = 1, ScanState.TotalScripts do
+                while ScanState.IsPaused do
                     task.wait(0.5)
-                    if not State.IsScanning then return end
+                    if not ScanState.IsScanning then return end
                 end
                 
-                if not State.IsScanning then break end
+                if not ScanState.IsScanning then break end
                 
                 local data = allScripts[i]
                 local scriptObj = data.Object
@@ -475,8 +453,7 @@ local function RunScanner()
                 local decompiled = DecompileScript(scriptObj)
                 if not decompiled:match("^%-%-") then
                     didDecompile = true
-                    State.Decompiled = State.Decompiled + 1
-                    ScanStatistics.ByStatus.Decompiled = ScanStatistics.ByStatus.Decompiled + 1
+                    ScanState.Decompiled = ScanState.Decompiled + 1
                 end
                 
                 entry = string.format(
@@ -497,10 +474,6 @@ local function RunScanner()
                     decompiled
                 )
                 
-                if not didDecompile then
-                    State.Failed = State.Failed + 1
-                end
-                
                 table.insert(writeBuffer, entry)
                 bufferSize = bufferSize + #entry
                 
@@ -508,53 +481,48 @@ local function RunScanner()
                     FlushBuffer()
                 end
                 
-                State.Processed = i
+                ScanState.Processed = i
                 
-                -- Update UI every 5 scripts — using task.spawn to keep UI alive
+                -- Update state every 5 scripts (UI updater reads this)
                 if i % 5 == 0 then
-                    local elapsed = tick() - State.StartTime
+                    local elapsed = tick() - ScanState.StartTime
                     local remaining = 0
-                    if State.Processed > 0 and elapsed > 0 then
-                        local rate = State.Processed / elapsed
-                        if rate > 0 then remaining = (State.TotalScripts - State.Processed) / rate end
+                    if ScanState.Processed > 0 and elapsed > 0 then
+                        local rate = ScanState.Processed / elapsed
+                        if rate > 0 then remaining = (ScanState.TotalScripts - ScanState.Processed) / rate end
                     end
                     if remaining < 0 then remaining = 0 end
                     
                     local mins = math.floor(remaining / 60)
                     local secs = math.floor(remaining % 60)
-                    local percent = math.floor((State.Processed / State.TotalScripts) * 100)
+                    local percent = math.floor((ScanState.Processed / ScanState.TotalScripts) * 100)
                     
-                    SafeUpdateUI(
-                        string.format("Scanning: %d%% (%d/%d)", percent, State.Processed, State.TotalScripts),
-                        string.format("Time Remaining: %02d:%02d", mins, secs),
-                        string.format("Decompiled: %d | Protected: %d", State.Decompiled, State.Failed)
-                    )
+                    ScanState.StatusText = string.format("Scanning: %d%% (%d/%d)", percent, ScanState.Processed, ScanState.TotalScripts)
+                    ScanState.TimeText = string.format("Time Remaining: %02d:%02d", mins, secs)
+                    ScanState.SuccessText = string.format("Decompiled: %d | Protected: %d", ScanState.Decompiled, ScanState.Failed)
                 end
                 
-                -- Yield to prevent thread starvation
-                if i % 10 == 0 then
-                    task.wait(0.01)
-                end
                 task.wait()
             end
         end)
 
-        -- Final flush
         FlushBuffer()
         pcall(function()
-            appendfile(State.CurrentFile, "\n" .. string.rep("=", 60) .. "\n")
-            appendfile(State.CurrentFile, "SCAN COMPLETE\n")
-            appendfile(State.CurrentFile, string.format("Total: %d | Decompiled: %d | Protected: %d\n", State.TotalScripts, State.Decompiled, State.Failed))
-            appendfile(State.CurrentFile, string.rep("=", 60) .. "\n")
+            appendfile(ScanState.CurrentFile, "\n" .. string.rep("=", 60) .. "\n")
+            appendfile(ScanState.CurrentFile, "SCAN COMPLETE\n")
+            appendfile(ScanState.CurrentFile, string.format("Total: %d | Decompiled: %d | Protected: %d\n", ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed))
+            appendfile(ScanState.CurrentFile, string.rep("=", 60) .. "\n")
         end)
 
-        State.IsScanning = false
-        SafeUpdateUI("Status: COMPLETE!", "Time Remaining: 00:00", string.format("Decompiled: %d | Protected: %d", State.Decompiled, State.Failed))
+        ScanState.IsScanning = false
+        ScanState.StatusText = "COMPLETE!"
+        ScanState.TimeText = "Time Remaining: 00:00"
+        ScanState.SuccessText = string.format("Decompiled: %d | Protected: %d", ScanState.Decompiled, ScanState.Failed)
         
         if Rayfield and Rayfield.Notify then
             Rayfield:Notify({
                 Title = "Scan Complete!",
-                Content = string.format("%d scripts decompiled out of %d", State.Decompiled, State.TotalScripts),
+                Content = string.format("%d scripts decompiled out of %d", ScanState.Decompiled, ScanState.TotalScripts),
                 Duration = 6
             })
         end
@@ -568,7 +536,7 @@ end
 -- ============================================================
 if Rayfield and Rayfield.CreateWindow then
     local Window = Rayfield:CreateWindow({
-        Name = "Universal Script Scanner v3.3",
+        Name = "Universal Script Scanner v3.4",
         LoadingTitle = "Initializing Bypass Engine",
         LoadingSubtitle = "Bypassing Anti-Scan Protections...",
         ConfigurationSaving = { Enabled = false },
@@ -601,15 +569,15 @@ if Rayfield and Rayfield.CreateWindow then
     MainTab:CreateButton({
         Name = "⏸️ Toggle Pause",
         Callback = function()
-            if not State.IsScanning then
+            if not ScanState.IsScanning then
                 Rayfield:Notify({Title = "Info", Content = "No scan is running.", Duration = 2})
                 return
             end
-            State.IsPaused = not State.IsPaused
-            SafeUpdateUI(State.IsPaused and "Status: PAUSED" or "Status: Resuming...")
+            ScanState.IsPaused = not ScanState.IsPaused
+            ScanState.StatusText = ScanState.IsPaused and "Status: PAUSED" or "Status: Resuming..."
             Rayfield:Notify({
-                Title = State.IsPaused and "Paused" or "Resumed",
-                Content = State.IsPaused and "Scan paused. Click again to resume." or "Scan resumed.",
+                Title = ScanState.IsPaused and "Paused" or "Resumed",
+                Content = ScanState.IsPaused and "Scan paused. Click again to resume." or "Scan resumed.",
                 Duration = 2
             })
         end
@@ -618,13 +586,13 @@ if Rayfield and Rayfield.CreateWindow then
     MainTab:CreateButton({
         Name = "⏹️ Stop Scan",
         Callback = function()
-            if not State.IsScanning then
+            if not ScanState.IsScanning then
                 Rayfield:Notify({Title = "Info", Content = "No scan is running.", Duration = 2})
                 return
             end
-            State.IsScanning = false
-            State.IsPaused = false
-            SafeUpdateUI("Status: STOPPED")
+            ScanState.IsScanning = false
+            ScanState.IsPaused = false
+            ScanState.StatusText = "STOPPED"
             Rayfield:Notify({Title = "Stopped", Content = "Scan stopped. Partial results saved.", Duration = 3})
             getgenv().ScannerRunning = false
         end
@@ -636,13 +604,12 @@ if Rayfield and Rayfield.CreateWindow then
         Duration = 4
     })
 
-    SafeUpdateUI("Status: Ready. Press 'Start Full Scan' to begin.")
+    ScanState.StatusText = "Ready. Press 'Start Full Scan' to begin."
 
 else
     print("========================================")
-    print("  UNIVERSAL SCRIPT SCANNER v3.3")
+    print("  UNIVERSAL SCRIPT SCANNER v3.4")
     print("  [NO GUI] Rayfield failed to load")
-    print("  Using console output only")
     print("========================================")
     print("Game: " .. GameInfo.Name)
     print("Executor: " .. ExecutorType)
@@ -661,17 +628,19 @@ else
     end)
 end
 
-print("[Scanner] v3.3 loaded successfully.")
+-- ============================================================
+-- START UI UPDATER (Runs every 0.3 seconds)
+-- ============================================================
+UIUpdater()
+
+print("[Scanner] v3.4 loaded successfully.")
 print("[Scanner] Game: " .. GameInfo.Name)
 print("[Scanner] Executor: " .. ExecutorType)
+print("[Scanner] UI Updater is running (every 0.3s) — UI should NOT crash")
 
 -- ============================================================
 -- CLEANUP
 -- ============================================================
-game:GetService("RunService").Heartbeat:Connect(function()
-    -- Keep alive
-end)
-
 task.delay(2, function()
     pcall(function()
         getgenv().ScannerRunning = false
