@@ -1,7 +1,7 @@
 --!nocheck
 -- ============================================================
--- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.1
--- FIXED: No UniverseId | No Duplicates | Rayfield Fallback
+-- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.2
+-- FIXES: UniverseId removed | Duplicate prevention | Rayfield fallback | UI crash fixed
 -- ============================================================
 
 -- ============================================================
@@ -14,7 +14,7 @@ end
 getgenv().ScannerRunning = true
 
 -- ============================================================
--- BYPASS LAYER
+-- BYPASS LAYER — Anti-Anti-Cheat
 -- ============================================================
 local function BypassProtections()
     pcall(function()
@@ -51,6 +51,17 @@ local function BypassProtections()
                 return old(t, k)
             end
             setrawmetatable(game, mt)
+        end
+    end)
+
+    pcall(function()
+        if getreg then
+            local reg = getreg()
+            for i = 1, #reg do
+                if type(reg[i]) == "function" and tostring(reg[i]):find("Scanning") then
+                    reg[i] = function() end
+                end
+            end
         end
     end)
 end
@@ -90,7 +101,7 @@ if success and result then
     local fn, err = loadstring(result)
     if fn then
         pcall(function() fn() end)
-        Rayfield = rayfield -- Some executors use global
+        Rayfield = rayfield
         if not Rayfield then
             Rayfield = loadstring(result)()
         end
@@ -113,7 +124,6 @@ end
 
 -- If Rayfield still failed, create a simple text UI
 if not Rayfield then
-    -- Notify via core GUI
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
             Title = "Scanner Ready (No GUI)",
@@ -122,9 +132,15 @@ if not Rayfield then
         })
     end)
     
-    -- Create a dummy table to prevent errors
     Rayfield = {
-        CreateWindow = function() return { CreateTab = function() return { CreateLabel = function() return { Set = function() end } end, CreateButton = function() return { Callback = function() end } end, CreateDivider = function() end, CreateParagraph = function() end } end } end,
+        CreateWindow = function() return { 
+            CreateTab = function() return { 
+                CreateLabel = function() return { Set = function() end } end, 
+                CreateButton = function() return { Callback = function() end } end, 
+                CreateDivider = function() end, 
+                CreateParagraph = function() end 
+            } end 
+        } end,
         Notify = function() end
     }
 end
@@ -176,7 +192,7 @@ local ScanStatistics = {
 }
 
 -- ============================================================
--- SCRIPT COLLECTOR
+-- SCRIPT COLLECTOR — 4 PASSES
 -- ============================================================
 local function CollectEverything()
     local collected = {}
@@ -258,7 +274,7 @@ local function CollectEverything()
 end
 
 -- ============================================================
--- DECOMPILATION ENGINE
+-- DECOMPILATION ENGINE — 4 METHODS
 -- ============================================================
 local function DecompileScript(scriptObj)
     local result = nil
@@ -368,6 +384,21 @@ local CountLabel = { Set = function() end }
 local SuccessLabel = { Set = function() end }
 
 -- ============================================================
+-- SAFE UI UPDATE — PREVENTS CRASHES
+-- ============================================================
+local function SafeUpdateUI(status, time, success, file, count)
+    task.spawn(function()
+        pcall(function()
+            if status then StatusLabel:Set(status) end
+            if time then TimeLabel:Set(time) end
+            if success then SuccessLabel:Set(success) end
+            if file then FileLabel:Set(file) end
+            if count then CountLabel:Set(count) end
+        end)
+    end)
+end
+
+-- ============================================================
 -- CORE SCANNER ENGINE
 -- ============================================================
 local function ScriptScanner()
@@ -396,18 +427,17 @@ local function ScriptScanner()
     ScanStatistics.BySource = { Game = 0, Executor = 0, Nil = 0, Loaded = 0 }
     ScanStatistics.ByStatus = { Decompiled = 0, Protected = 0, TimedOut = 0, Error = 0 }
 
-    pcall(function() StatusLabel:Set("Status: Initializing bypass...") end)
-    pcall(function() TimeLabel:Set("Time Remaining: --:--") end)
+    SafeUpdateUI("Status: Initializing bypass...", "Time Remaining: --:--")
     task.wait(1)
 
-    pcall(function() StatusLabel:Set("Status: Collecting all scripts (4 passes)...") end)
+    SafeUpdateUI("Status: Collecting all scripts (4 passes)...")
     local allScripts = CollectEverything()
     State.TotalScripts = #allScripts
     
-    pcall(function() CountLabel:Set("Total Scripts Found: " .. State.TotalScripts) end)
+    SafeUpdateUI(nil, nil, nil, nil, "Total Scripts Found: " .. State.TotalScripts)
     
     if State.TotalScripts == 0 then
-        pcall(function() StatusLabel:Set("Status: No scripts found!") end)
+        SafeUpdateUI("Status: No scripts found!")
         State.IsScanning = false
         if Rayfield and Rayfield.Notify then
             Rayfield:Notify({Title = "Alert", Content = "No scripts detected.", Duration = 4})
@@ -415,11 +445,11 @@ local function ScriptScanner()
         return
     end
 
-    pcall(function() StatusLabel:Set("Status: Initializing file system...") end)
+    SafeUpdateUI("Status: Initializing file system...")
     InitializeFile()
-    pcall(function() FileLabel:Set("Save Location: " .. State.CurrentFile) end)
+    SafeUpdateUI(nil, nil, nil, "Save Location: " .. State.CurrentFile)
 
-    pcall(function() StatusLabel:Set("Status: Scanning...") end)
+    SafeUpdateUI("Status: Scanning...")
     
     local success, err = pcall(function()
         for i = 1, State.TotalScripts do
@@ -474,7 +504,8 @@ local function ScriptScanner()
             
             State.Processed = i
             
-            if i % 3 == 0 then
+            -- UPDATE UI SAFELY — Every 5 scripts
+            if i % 5 == 0 then
                 local elapsed = tick() - State.StartTime
                 local remaining = 0
                 if State.Processed > 0 and elapsed > 0 then
@@ -487,16 +518,13 @@ local function ScriptScanner()
                 local secs = math.floor(remaining % 60)
                 local percent = math.floor((State.Processed / State.TotalScripts) * 100)
                 
-                pcall(function()
-                    StatusLabel:Set(string.format("Scanning: %d%% (%d/%d)", percent, State.Processed, State.TotalScripts))
-                    TimeLabel:Set(string.format("Time Remaining: %02d:%02d", mins, secs))
-                    SuccessLabel:Set(string.format("Decompiled: %d | Protected: %d", State.Decompiled, State.Failed))
-                end)
-                
-                task.wait(0.02)
-            else
-                task.wait()
+                SafeUpdateUI(
+                    string.format("Scanning: %d%% (%d/%d)", percent, State.Processed, State.TotalScripts),
+                    string.format("Time Remaining: %02d:%02d", mins, secs),
+                    string.format("Decompiled: %d | Protected: %d", State.Decompiled, State.Failed)
+                )
             end
+            task.wait()
         end
     end)
 
@@ -509,11 +537,7 @@ local function ScriptScanner()
     end)
 
     State.IsScanning = false
-    pcall(function()
-        StatusLabel:Set("Status: COMPLETE!")
-        TimeLabel:Set("Time Remaining: 00:00")
-        SuccessLabel:Set(string.format("Decompiled: %d | Protected: %d", State.Decompiled, State.Failed))
-    end)
+    SafeUpdateUI("Status: COMPLETE!", "Time Remaining: 00:00", string.format("Decompiled: %d | Protected: %d", State.Decompiled, State.Failed))
     
     if Rayfield and Rayfield.Notify then
         Rayfield:Notify({
@@ -531,7 +555,7 @@ end
 -- ============================================================
 if Rayfield and Rayfield.CreateWindow then
     local Window = Rayfield:CreateWindow({
-        Name = "Universal Script Scanner v3.1",
+        Name = "Universal Script Scanner v3.2",
         LoadingTitle = "Initializing Bypass Engine",
         LoadingSubtitle = "Bypassing Anti-Scan Protections...",
         ConfigurationSaving = { Enabled = false },
@@ -569,7 +593,7 @@ if Rayfield and Rayfield.CreateWindow then
                 return
             end
             State.IsPaused = not State.IsPaused
-            StatusLabel:Set(State.IsPaused and "Status: PAUSED" or "Status: Resuming...")
+            SafeUpdateUI(State.IsPaused and "Status: PAUSED" or "Status: Resuming...")
             Rayfield:Notify({
                 Title = State.IsPaused and "Paused" or "Resumed",
                 Content = State.IsPaused and "Scan paused. Click again to resume." or "Scan resumed.",
@@ -587,7 +611,7 @@ if Rayfield and Rayfield.CreateWindow then
             end
             State.IsScanning = false
             State.IsPaused = false
-            StatusLabel:Set("Status: STOPPED")
+            SafeUpdateUI("Status: STOPPED")
             Rayfield:Notify({Title = "Stopped", Content = "Scan stopped. Partial results saved.", Duration = 3})
             getgenv().ScannerRunning = false
         end
@@ -599,12 +623,12 @@ if Rayfield and Rayfield.CreateWindow then
         Duration = 4
     })
 
-    StatusLabel:Set("Status: Ready. Press 'Start Full Scan' to begin.")
+    SafeUpdateUI("Status: Ready. Press 'Start Full Scan' to begin.")
 
 else
     -- No UI fallback — print to console
     print("========================================")
-    print("  UNIVERSAL SCRIPT SCANNER v3.1")
+    print("  UNIVERSAL SCRIPT SCANNER v3.2")
     print("  [NO GUI] Rayfield failed to load")
     print("  Using console output only")
     print("========================================")
@@ -614,7 +638,6 @@ else
     print("Type: ScriptScanner() to start")
     print("========================================")
     
-    -- Expose function to global
     _G.ScriptScanner = ScriptScanner
     
     pcall(function()
@@ -626,7 +649,7 @@ else
     end)
 end
 
-print("[Scanner] v3.1 loaded successfully.")
+print("[Scanner] v3.2 loaded successfully.")
 print("[Scanner] Game: " .. GameInfo.Name)
 print("[Scanner] Executor: " .. ExecutorType)
 
@@ -642,3 +665,34 @@ task.delay(2, function()
         getgenv().ScannerRunning = false
     end)
 end)
+
+-- ============================================================
+-- YOUR LOADER (Keep this at the top of your loader file)
+-- ============================================================
+--[[
+--!nocheck
+if getgenv().ScannerRunning then
+    print("[Scanner] Already running. Skipping duplicate.")
+    return
+end
+getgenv().ScannerRunning = true
+
+local url = "https://raw.githubusercontent.com/snowy-dot/Advance-scanner-game-/main/loader.lua"
+
+local success, response = pcall(function()
+    return game:HttpGet(url, true)
+end)
+
+if success and response then
+    local func = loadstring(response)
+    if func then
+        pcall(func)
+    else
+        print("[Scanner] Loadstring failed.")
+        getgenv().ScannerRunning = false
+    end
+else
+    print("[Scanner] Download failed.")
+    getgenv().ScannerRunning = false
+end
+]]
