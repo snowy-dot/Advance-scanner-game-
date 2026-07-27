@@ -1,7 +1,7 @@
 --!nocheck
 -- ============================================================
--- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.4
--- FINAL FIX: UI updates now run on a dedicated timer
+-- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.5
+-- FINAL FIX: UI persistence + auto-recovery + anti-crash
 -- ============================================================
 
 -- ============================================================
@@ -157,7 +157,7 @@ end
 local GameInfo = GetGameInfo()
 
 -- ============================================================
--- STATE — SHARED BETWEEN SCANNER AND UI UPDATER
+-- STATE
 -- ============================================================
 local ScanState = {
     IsScanning = false,
@@ -177,7 +177,7 @@ local ScanState = {
 }
 
 -- ============================================================
--- UI LABELS (Stored globally for timer updater)
+-- UI LABELS (Stored globally)
 -- ============================================================
 local StatusLabel = { Set = function() end }
 local TimeLabel = { Set = function() end }
@@ -186,20 +186,210 @@ local CountLabel = { Set = function() end }
 local SuccessLabel = { Set = function() end }
 
 -- ============================================================
--- UI UPDATER — Runs every 0.3 seconds (safe)
+-- UI WINDOW REFERENCE — For recovery
+-- ============================================================
+local UIWindow = nil
+local UIMainTab = nil
+local UIScreenGui = nil
+local UIExists = false
+
+-- ============================================================
+-- RECREATE UI — Restores buttons if they disappear
+-- ============================================================
+local function RecreateUI()
+    pcall(function()
+        -- Destroy old UI if it exists
+        if UIScreenGui and UIScreenGui.Parent then
+            UIScreenGui:Destroy()
+        end
+        if UIWindow and UIWindow.Destroy then
+            UIWindow:Destroy()
+        end
+    end)
+    
+    UIExists = false
+    UIWindow = nil
+    UIMainTab = nil
+    UIScreenGui = nil
+    
+    -- Wait a moment
+    task.wait(0.5)
+    
+    -- Build new UI
+    BuildUI()
+    
+    -- Notify
+    if Rayfield and Rayfield.Notify then
+        Rayfield:Notify({
+            Title = "UI Rebuilt",
+            Content = "The UI has been restored.",
+            Duration = 3
+        })
+    end
+end
+
+-- ============================================================
+-- UI UPDATER — Every 0.3 seconds
 -- ============================================================
 local function UIUpdater()
     task.spawn(function()
         while true do
             task.wait(0.3)
             pcall(function()
-                StatusLabel:Set(ScanState.StatusText)
-                TimeLabel:Set(ScanState.TimeText)
-                FileLabel:Set(ScanState.FileText)
-                CountLabel:Set(ScanState.CountText)
-                SuccessLabel:Set(ScanState.SuccessText)
+                -- Check if UI still exists
+                if UIExists then
+                    StatusLabel:Set(ScanState.StatusText)
+                    TimeLabel:Set(ScanState.TimeText)
+                    FileLabel:Set(ScanState.FileText)
+                    CountLabel:Set(ScanState.CountText)
+                    SuccessLabel:Set(ScanState.SuccessText)
+                end
             end)
         end
+    end)
+end
+
+-- ============================================================
+-- UI RECOVERY WATCHER — Detects if UI disappears
+-- ============================================================
+local function UIWatcher()
+    task.spawn(function()
+        local lastCheck = tick()
+        while true do
+            task.wait(2)
+            pcall(function()
+                -- Check if UI still exists
+                if UIExists and UIScreenGui and UIScreenGui.Parent == nil then
+                    -- UI was destroyed or removed
+                    print("[Scanner] UI disappeared! Rebuilding...")
+                    UIExists = false
+                    RecreateUI()
+                end
+                
+                -- Also check if Rayfield window still exists
+                if UIExists and UIWindow and not UIWindow.Parent then
+                    -- Rayfield window was destroyed
+                    print("[Scanner] UI Window disappeared! Rebuilding...")
+                    UIExists = false
+                    RecreateUI()
+                end
+            end)
+        end
+    end)
+end
+
+-- ============================================================
+-- BUILD UI — Called once, and again if UI disappears
+-- ============================================================
+function BuildUI()
+    if not Rayfield or not Rayfield.CreateWindow then
+        print("[Scanner] Rayfield not available. No UI to build.")
+        return
+    end
+    
+    pcall(function()
+        UIWindow = Rayfield:CreateWindow({
+            Name = "Universal Script Scanner v3.5",
+            LoadingTitle = "Initializing Bypass Engine",
+            LoadingSubtitle = "Bypassing Anti-Scan Protections...",
+            ConfigurationSaving = { Enabled = false },
+            KeySystem = false
+        })
+
+        -- Get the ScreenGui from Rayfield's window
+        pcall(function()
+            -- Rayfield stores its ScreenGui in the window object
+            -- We need to find it
+            for _, gui in ipairs(game.CoreGui:GetChildren()) do
+                if gui:IsA("ScreenGui") and gui.Name == "Rayfield" then
+                    UIScreenGui = gui
+                    -- Force it to stay on top
+                    gui.ResetOnSpawn = false
+                    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+                    gui.DisplayOrder = 999
+                    -- Set ignore gui inset
+                    gui.IgnoreGuiInset = true
+                    print("[Scanner] UI locked to top layer (DisplayOrder: 999)")
+                end
+            end
+        end)
+
+        UIMainTab = UIWindow:CreateTab("Scanner", 4483362458)
+
+        UIMainTab:CreateParagraph({
+            Title = "Game Info",
+            Content = string.format("Name: %s\nID: %d\nCreator: %s\nExecutor: %s",
+                GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, ExecutorType)
+        })
+
+        UIMainTab:CreateDivider()
+
+        StatusLabel = UIMainTab:CreateLabel("Status: Ready")
+        TimeLabel = UIMainTab:CreateLabel("Time Remaining: --:--")
+        FileLabel = UIMainTab:CreateLabel("Save Location: Not started")
+        CountLabel = UIMainTab:CreateLabel("Total Scripts Found: 0")
+        SuccessLabel = UIMainTab:CreateLabel("Decompiled: 0 | Protected: 0")
+
+        UIMainTab:CreateDivider()
+
+        UIMainTab:CreateButton({
+            Name = "🚀 Start Full Scan",
+            Callback = RunScanner
+        })
+
+        UIMainTab:CreateButton({
+            Name = "⏸️ Toggle Pause",
+            Callback = function()
+                if not ScanState.IsScanning then
+                    Rayfield:Notify({Title = "Info", Content = "No scan is running.", Duration = 2})
+                    return
+                end
+                ScanState.IsPaused = not ScanState.IsPaused
+                ScanState.StatusText = ScanState.IsPaused and "Status: PAUSED" or "Status: Resuming..."
+                Rayfield:Notify({
+                    Title = ScanState.IsPaused and "Paused" or "Resumed",
+                    Content = ScanState.IsPaused and "Scan paused. Click again to resume." or "Scan resumed.",
+                    Duration = 2
+                })
+            end
+        })
+
+        UIMainTab:CreateButton({
+            Name = "⏹️ Stop Scan",
+            Callback = function()
+                if not ScanState.IsScanning then
+                    Rayfield:Notify({Title = "Info", Content = "No scan is running.", Duration = 2})
+                    return
+                end
+                ScanState.IsScanning = false
+                ScanState.IsPaused = false
+                ScanState.StatusText = "STOPPED"
+                Rayfield:Notify({Title = "Stopped", Content = "Scan stopped. Partial results saved.", Duration = 3})
+                getgenv().ScannerRunning = false
+            end
+        })
+
+        UIMainTab:CreateDivider()
+
+        UIMainTab:CreateButton({
+            Name = "🔄 Reset UI (If buttons disappear)",
+            Callback = function()
+                RecreateUI()
+            end
+        })
+
+        Rayfield:Notify({
+            Title = "Scanner Ready",
+            Content = string.format("Loaded. Game: %s | Executor: %s", GameInfo.Name, ExecutorType),
+            Duration = 4
+        })
+
+        ScanState.StatusText = "Ready. Press 'Start Full Scan' to begin."
+        UIExists = true
+        
+        print("[Scanner] UI built successfully.")
+        print("[Scanner] UI locked to top layer. Press ESC won't hide it.")
+        print("[Scanner] If buttons disappear, click 'Reset UI'.")
     end)
 end
 
@@ -382,9 +572,9 @@ local function InitializeFile()
 end
 
 -- ============================================================
--- SCANNER ENGINE — Updates State only, UI updates via timer
+-- SCANNER ENGINE
 -- ============================================================
-local function RunScanner()
+function RunScanner()
     task.spawn(function()
         if ScanState.IsScanning then
             if Rayfield and Rayfield.Notify then
@@ -483,7 +673,7 @@ local function RunScanner()
                 
                 ScanState.Processed = i
                 
-                -- Update state every 5 scripts (UI updater reads this)
+                -- Update state every 5 scripts
                 if i % 5 == 0 then
                     local elapsed = tick() - ScanState.StartTime
                     local remaining = 0
@@ -532,111 +722,33 @@ local function RunScanner()
 end
 
 -- ============================================================
--- BUILD UI
+-- START EVERYTHING
 -- ============================================================
-if Rayfield and Rayfield.CreateWindow then
-    local Window = Rayfield:CreateWindow({
-        Name = "Universal Script Scanner v3.4",
-        LoadingTitle = "Initializing Bypass Engine",
-        LoadingSubtitle = "Bypassing Anti-Scan Protections...",
-        ConfigurationSaving = { Enabled = false },
-        KeySystem = false
-    })
 
-    local MainTab = Window:CreateTab("Scanner", 4483362458)
+-- Build the UI
+BuildUI()
 
-    MainTab:CreateParagraph({
-        Title = "Game Info",
-        Content = string.format("Name: %s\nID: %d\nCreator: %s\nExecutor: %s",
-            GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, ExecutorType)
-    })
-
-    MainTab:CreateDivider()
-
-    StatusLabel = MainTab:CreateLabel("Status: Ready")
-    TimeLabel = MainTab:CreateLabel("Time Remaining: --:--")
-    FileLabel = MainTab:CreateLabel("Save Location: Not started")
-    CountLabel = MainTab:CreateLabel("Total Scripts Found: 0")
-    SuccessLabel = MainTab:CreateLabel("Decompiled: 0 | Protected: 0")
-
-    MainTab:CreateDivider()
-
-    MainTab:CreateButton({
-        Name = "🚀 Start Full Scan",
-        Callback = RunScanner
-    })
-
-    MainTab:CreateButton({
-        Name = "⏸️ Toggle Pause",
-        Callback = function()
-            if not ScanState.IsScanning then
-                Rayfield:Notify({Title = "Info", Content = "No scan is running.", Duration = 2})
-                return
-            end
-            ScanState.IsPaused = not ScanState.IsPaused
-            ScanState.StatusText = ScanState.IsPaused and "Status: PAUSED" or "Status: Resuming..."
-            Rayfield:Notify({
-                Title = ScanState.IsPaused and "Paused" or "Resumed",
-                Content = ScanState.IsPaused and "Scan paused. Click again to resume." or "Scan resumed.",
-                Duration = 2
-            })
-        end
-    })
-
-    MainTab:CreateButton({
-        Name = "⏹️ Stop Scan",
-        Callback = function()
-            if not ScanState.IsScanning then
-                Rayfield:Notify({Title = "Info", Content = "No scan is running.", Duration = 2})
-                return
-            end
-            ScanState.IsScanning = false
-            ScanState.IsPaused = false
-            ScanState.StatusText = "STOPPED"
-            Rayfield:Notify({Title = "Stopped", Content = "Scan stopped. Partial results saved.", Duration = 3})
-            getgenv().ScannerRunning = false
-        end
-    })
-
-    Rayfield:Notify({
-        Title = "Scanner Ready",
-        Content = string.format("Loaded. Game: %s | Executor: %s", GameInfo.Name, ExecutorType),
-        Duration = 4
-    })
-
-    ScanState.StatusText = "Ready. Press 'Start Full Scan' to begin."
-
-else
-    print("========================================")
-    print("  UNIVERSAL SCRIPT SCANNER v3.4")
-    print("  [NO GUI] Rayfield failed to load")
-    print("========================================")
-    print("Game: " .. GameInfo.Name)
-    print("Executor: " .. ExecutorType)
-    print("")
-    print("Type: RunScanner() to start")
-    print("========================================")
-    
-    _G.RunScanner = RunScanner
-    
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "Scanner Ready (Console Mode)",
-            Text = "Type RunScanner() in console to start",
-            Duration = 5
-        })
-    end)
-end
-
--- ============================================================
--- START UI UPDATER (Runs every 0.3 seconds)
--- ============================================================
+-- Start UI updater
 UIUpdater()
 
-print("[Scanner] v3.4 loaded successfully.")
-print("[Scanner] Game: " .. GameInfo.Name)
-print("[Scanner] Executor: " .. ExecutorType)
-print("[Scanner] UI Updater is running (every 0.3s) — UI should NOT crash")
+-- Start UI recovery watcher
+UIWatcher()
+
+-- Console output
+print("========================================")
+print("  UNIVERSAL SCRIPT SCANNER v3.5")
+print("  UI PERSISTENCE ENABLED")
+print("  Auto-recovery: ACTIVE")
+print("  DisplayOrder: 999 (Always on top)")
+print("========================================")
+print("Game: " .. GameInfo.Name)
+print("Executor: " .. ExecutorType)
+print("")
+print("If UI disappears:")
+print("  1. Press ESC then click back to Roblox")
+print("  2. Click the 'Reset UI' button in the scanner")
+print("  3. UI will auto-recover in 2-3 seconds")
+print("========================================")
 
 -- ============================================================
 -- CLEANUP
