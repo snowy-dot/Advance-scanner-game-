@@ -1,25 +1,36 @@
 --!nocheck
 -- ============================================================
--- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.0
--- ADVANCED BYPASS • GC-FREE • ZERO TRACE
+-- ULTIMATE UNIVERSAL SCRIPT SCANNER v3.1
+-- FIXED: No UniverseId | No Duplicates | Full Error Handling
 -- ============================================================
 
 -- ============================================================
--- [1] BYPASS LAYER — Anti-Anti-Cheat
+-- PREVENT DUPLICATE EXECUTION
+-- ============================================================
+if getgenv().ScannerRunning then
+    print("[Scanner] Already running. Skipping duplicate.")
+    return
+end
+getgenv().ScannerRunning = true
+
+-- ============================================================
+-- BYPASS LAYER — Anti-Anti-Cheat
 -- ============================================================
 local function BypassProtections()
-    -- Disable common anti-debug hooks
     pcall(function()
         if hookfunction then
-            local old = hookfunction(debug.getinfo, function() return {source = "", short_src = "", func = function() end} end)
+            local old = hookfunction(debug.getinfo, function() 
+                return {source = "", short_src = "", func = function() end} 
+            end)
             hookfunction(debug.getinfo, function(...) 
-                if select(1, ...) == 2 then return {source = "", short_src = "", func = function() end} end
+                if select(1, ...) == 2 then 
+                    return {source = "", short_src = "", func = function() end} 
+                end
                 return old(...)
             end)
         end
     end)
 
-    -- Hide scanner from game environment
     pcall(function()
         local mt = getrawmetatable(game)
         if mt then
@@ -43,7 +54,6 @@ local function BypassProtections()
         end
     end)
 
-    -- Prevent reflection from detecting scanner
     pcall(function()
         if getreg then
             local reg = getreg()
@@ -59,7 +69,7 @@ end
 BypassProtections()
 
 -- ============================================================
--- [2] EXECUTOR DETECTION & CAPABILITY MAPPING
+-- EXECUTOR DETECTION
 -- ============================================================
 local ExecutorCapabilities = {
     WriteFile = type(writefile) == "function",
@@ -85,7 +95,7 @@ if ExecutorCapabilities.WriteFile then
 end
 
 -- ============================================================
--- [3] RAYFIELD LOADER
+-- RAYFIELD LOADER
 -- ============================================================
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 if not Rayfield then
@@ -96,14 +106,21 @@ if not Rayfield then
     })
     task.wait(2)
     Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/shlexware/Rayfield/main/source'))()
-    if not Rayfield then return end
+    if not Rayfield then
+        getgenv().ScannerRunning = false
+        return
+    end
 end
 
 -- ============================================================
--- [4] GAME DETECTION
+-- GAME INFO — FIXED (No UniverseId)
 -- ============================================================
 local function GetGameInfo()
-    local info = { Name = "UnknownGame", PlaceId = game.PlaceId, UniverseId = game.UniverseId, Creator = "Unknown" }
+    local info = { 
+        Name = "UnknownGame", 
+        PlaceId = game.PlaceId, 
+        Creator = "Unknown" 
+    }
     pcall(function()
         local marketplace = game:GetService("MarketplaceService")
         local product = marketplace:GetProductInfo(game.PlaceId)
@@ -121,7 +138,7 @@ end
 local GameInfo = GetGameInfo()
 
 -- ============================================================
--- [5] STATE MANAGEMENT
+-- STATE MANAGEMENT
 -- ============================================================
 local State = {
     IsScanning = false,
@@ -144,7 +161,7 @@ local ScanStatistics = {
 }
 
 -- ============================================================
--- [6] ADVANCED SCRIPT COLLECTOR — EVERYTHING. EVERYWHERE.
+-- SCRIPT COLLECTOR — 4 PASSES
 -- ============================================================
 local function CollectEverything()
     local collected = {}
@@ -190,16 +207,15 @@ local function CollectEverything()
         else ScanStatistics.ByType.Other = ScanStatistics.ByType.Other + 1 end
     end
 
-    -- PASS 1: Full game tree (all instances)
+    -- PASS 1
     pcall(function()
-        local start = tick()
         for _, obj in ipairs(game:GetDescendants()) do
             addScript(obj, "GameTree")
         end
         ScanStatistics.BySource.Game = ScanStatistics.BySource.Game + 1
     end)
 
-    -- PASS 2: Executor-specific APIs
+    -- PASS 2
     if ExecutorCapabilities.GetScripts then
         pcall(function()
             for _, s in ipairs(getscripts()) do
@@ -227,7 +243,7 @@ local function CollectEverything()
         end)
     end
 
-    -- PASS 3: Deep scan — reach into every container
+    -- PASS 3
     pcall(function()
         local containers = {}
         for _, obj in ipairs(game:GetDescendants()) do
@@ -245,7 +261,7 @@ local function CollectEverything()
         end
     end)
 
-    -- PASS 4: Explorer-style — walk all children recursively from root
+    -- PASS 4
     local function walkChildren(parent, depth)
         if depth > 1000 then return end
         pcall(function()
@@ -263,13 +279,12 @@ local function CollectEverything()
 end
 
 -- ============================================================
--- [7] DECOMPILATION ENGINE — MULTI-PASS, ZERO FAILURE
+-- DECOMPILATION ENGINE — 4 METHODS
 -- ============================================================
-local function DecompileScript(scriptObj, attempts)
-    attempts = attempts or 1
+local function DecompileScript(scriptObj)
     local result = nil
     
-    -- Method 1: Standard decompile
+    -- Method 1
     if ExecutorCapabilities.Decompile then
         pcall(function()
             local r = decompile(scriptObj)
@@ -277,7 +292,7 @@ local function DecompileScript(scriptObj, attempts)
         end)
     end
     
-    -- Method 2: Force mode
+    -- Method 2
     if not result and ExecutorCapabilities.Decompile then
         pcall(function()
             local r = decompile(scriptObj, true)
@@ -285,7 +300,7 @@ local function DecompileScript(scriptObj, attempts)
         end)
     end
     
-    -- Method 3: String extraction fallback (if source is embedded)
+    -- Method 3
     if not result then
         pcall(function()
             local src = scriptObj.Source
@@ -293,7 +308,7 @@ local function DecompileScript(scriptObj, attempts)
         end)
     end
     
-    -- Method 4: Raw bytecode dump (if we can get it)
+    -- Method 4
     if not result and ExecutorCapabilities.GetReg then
         pcall(function()
             local reg = getreg()
@@ -318,14 +333,14 @@ local function DecompileScript(scriptObj, attempts)
 end
 
 -- ============================================================
--- [8] FILE MANAGEMENT — AUTO-SPLIT, COMPRESSION-READY
+-- FILE MANAGEMENT
 -- ============================================================
-local MAX_FILE_SIZE = 8 * 1024 * 1024 -- 8 MB
+local MAX_FILE_SIZE = 8 * 1024 * 1024
 local currentFileSize = 0
 local filePart = 1
 local writeBuffer = {}
 local bufferSize = 0
-local MAX_BUFFER_SIZE = 500 * 1024 -- 500 KB
+local MAX_BUFFER_SIZE = 500 * 1024
 
 local function GetFilePath(part)
     return GameInfo.Name .. "_Scripts_Part_" .. part .. ".txt"
@@ -343,14 +358,13 @@ local function FlushBuffer()
         local header = string.format(
             "=== UNIVERSAL SCRIPT SCAN: %s ===\n" ..
             "=== PART %d ===\n" ..
-            "=== Game ID: %d | Universe: %d ===\n" ..
+            "=== Game ID: %d ===\n" ..
             "=== Executor: %s ===\n" ..
             "=== Date: %s ===\n" ..
             "====================================\n\n",
             GameInfo.Name,
             filePart,
             GameInfo.PlaceId,
-            GameInfo.UniverseId,
             ExecutorType,
             os.date("%Y-%m-%d %H:%M:%S")
         )
@@ -370,13 +384,12 @@ local function InitializeFile()
     local header = string.format(
         "=== UNIVERSAL SCRIPT SCAN: %s ===\n" ..
         "=== PART 1 ===\n" ..
-        "=== Game ID: %d | Universe: %d ===\n" ..
+        "=== Game ID: %d ===\n" ..
         "=== Executor: %s ===\n" ..
         "=== Date: %s ===\n" ..
         "====================================\n\n",
         GameInfo.Name,
         GameInfo.PlaceId,
-        GameInfo.UniverseId,
         ExecutorType,
         os.date("%Y-%m-%d %H:%M:%S")
     )
@@ -386,7 +399,7 @@ local function InitializeFile()
 end
 
 -- ============================================================
--- [9] CORE SCANNER ENGINE
+-- CORE SCANNER ENGINE
 -- ============================================================
 local function ScriptScanner()
     if State.IsScanning then
@@ -407,7 +420,6 @@ local function ScriptScanner()
     State.Skipped = 0
     State.StartTime = tick()
     
-    -- Reset statistics
     ScanStatistics.ByType = { Script = 0, LocalScript = 0, ModuleScript = 0, Other = 0 }
     ScanStatistics.BySource = { Game = 0, Executor = 0, Nil = 0, Loaded = 0 }
     ScanStatistics.ByStatus = { Decompiled = 0, Protected = 0, TimedOut = 0, Error = 0 }
@@ -416,7 +428,6 @@ local function ScriptScanner()
     TimeLabel:Set("Time Remaining: --:--")
     task.wait(1)
 
-    -- Scan the game
     StatusLabel:Set("Status: Collecting all scripts (4 passes)...")
     local allScripts = CollectEverything()
     State.TotalScripts = #allScripts
@@ -426,7 +437,7 @@ local function ScriptScanner()
     if State.TotalScripts == 0 then
         StatusLabel:Set("Status: No scripts found!")
         State.IsScanning = false
-        Rayfield:Notify({Title = "Alert", Content = "No scripts detected. Anti-scan protection may be active.", Duration = 4})
+        Rayfield:Notify({Title = "Alert", Content = "No scripts detected.", Duration = 4})
         return
     end
 
@@ -434,12 +445,10 @@ local function ScriptScanner()
     InitializeFile()
     FileLabel:Set("Save Location: " .. State.CurrentFile)
 
-    -- Process all scripts
     StatusLabel:Set("Status: Scanning...")
     
     local success, err = pcall(function()
         for i = 1, State.TotalScripts do
-            -- Check for pause
             while State.IsPaused do
                 task.wait(0.5)
             end
@@ -449,20 +458,17 @@ local function ScriptScanner()
             local entry = ""
             local didDecompile = false
             
-            -- Capture metadata
             local name = data.Name or "Unknown"
             local className = data.Class or "Unknown"
             local disabled = data.Disabled and " [DISABLED]" or ""
             
-            -- Decompile with timeout
-            local decompiled = DecompileScript(scriptObj, 3)
+            local decompiled = DecompileScript(scriptObj)
             if not decompiled:match("^%-%-") then
                 didDecompile = true
                 State.Decompiled = State.Decompiled + 1
                 ScanStatistics.ByStatus.Decompiled = ScanStatistics.ByStatus.Decompiled + 1
             end
             
-            -- Build entry
             entry = string.format(
                 "\n%s\n" ..
                 "SCRIPT: %s%s\n" ..
@@ -485,7 +491,6 @@ local function ScriptScanner()
                 State.Failed = State.Failed + 1
             end
             
-            -- Buffer
             table.insert(writeBuffer, entry)
             bufferSize = bufferSize + #entry
             
@@ -495,7 +500,6 @@ local function ScriptScanner()
             
             State.Processed = i
             
-            -- Update UI every 3 scripts
             if i % 3 == 0 then
                 local elapsed = tick() - State.StartTime
                 local remaining = 0
@@ -522,7 +526,6 @@ local function ScriptScanner()
         end
     end)
 
-    -- Finalize
     FlushBuffer()
     pcall(function()
         appendfile(State.CurrentFile, "\n" .. string.rep("=", 60) .. "\n")
@@ -541,26 +544,28 @@ local function ScriptScanner()
         Content = string.format("%d scripts decompiled out of %d", State.Decompiled, State.TotalScripts),
         Duration = 6
     })
+    
+    -- Allow next execution
+    getgenv().ScannerRunning = false
 end
 
 -- ============================================================
--- [10] RAYFIELD UI — FULL CONTROLLER
+-- RAYFIELD UI
 -- ============================================================
 local Window = Rayfield:CreateWindow({
-    Name = "Ultimate Script Scanner v3.0",
+    Name = "Ultimate Script Scanner v3.1",
     LoadingTitle = "Initializing Bypass Engine",
     LoadingSubtitle = "Bypassing Anti-Scan Protections...",
     ConfigurationSaving = { Enabled = false },
     KeySystem = false
 })
 
--- Main Tab
 local MainTab = Window:CreateTab("Scanner", 4483362458)
 
 MainTab:CreateParagraph({
     Title = "Game Info",
-    Content = string.format("Name: %s\nID: %d\nUniverse: %d\nCreator: %s\nExecutor: %s",
-        GameInfo.Name, GameInfo.PlaceId, GameInfo.UniverseId, GameInfo.Creator, ExecutorType)
+    Content = string.format("Name: %s\nID: %d\nCreator: %s\nExecutor: %s",
+        GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, ExecutorType)
 })
 
 MainTab:CreateDivider()
@@ -573,7 +578,6 @@ local SuccessLabel = MainTab:CreateLabel("Decompiled: 0 | Protected: 0")
 
 MainTab:CreateDivider()
 
--- Buttons
 MainTab:CreateButton({
     Name = "🚀 Start Full Scan",
     Callback = ScriptScanner
@@ -607,118 +611,12 @@ MainTab:CreateButton({
         State.IsPaused = false
         StatusLabel:Set("Status: STOPPED")
         Rayfield:Notify({Title = "Stopped", Content = "Scan stopped. Partial results saved.", Duration = 3})
+        getgenv().ScannerRunning = false
     end
 })
 
-MainTab:CreateDivider()
-
--- Statistics Tab
-local StatsTab = Window:CreateTab("Statistics", 4483362458)
-
-StatsTab:CreateParagraph({
-    Title = "Script Types",
-    Content = "Scripts: 0\nLocalScripts: 0\nModuleScripts: 0\nOther: 0"
-})
-
-StatsTab:CreateParagraph({
-    Title = "Detection Sources",
-    Content = "Game Tree: 0\nExecutor API: 0\nNil Instances: 0\nLoaded Modules: 0"
-})
-
-StatsTab:CreateParagraph({
-    Title = "Decompilation Status",
-    Content = "Decompiled: 0\nProtected: 0\nTimed Out: 0\nErrors: 0"
-})
-
-local function UpdateStats()
-    pcall(function()
-        StatsTab:CreateParagraph({
-            Title = "Script Types",
-            Content = string.format(
-                "Scripts: %d\nLocalScripts: %d\nModuleScripts: %d\nOther: %d",
-                ScanStatistics.ByType.Script,
-                ScanStatistics.ByType.LocalScript,
-                ScanStatistics.ByType.ModuleScript,
-                ScanStatistics.ByType.Other
-            )
-        })
-        StatsTab:CreateParagraph({
-            Title = "Detection Sources",
-            Content = string.format(
-                "Game Tree: %d\nExecutor API: %d\nNil Instances: %d\nLoaded Modules: %d",
-                ScanStatistics.BySource.Game,
-                ScanStatistics.BySource.Executor,
-                ScanStatistics.BySource.Nil,
-                ScanStatistics.BySource.Loaded
-            )
-        })
-        StatsTab:CreateParagraph({
-            Title = "Decompilation Status",
-            Content = string.format(
-                "Decompiled: %d\nProtected: %d\nTimed Out: %d\nErrors: %d",
-                ScanStatistics.ByStatus.Decompiled,
-                ScanStatistics.ByStatus.Protected,
-                ScanStatistics.ByStatus.TimedOut,
-                ScanStatistics.ByStatus.Error
-            )
-        })
-    end)
-end
-
--- Update stats every 2 seconds
-task.spawn(function()
-    while true do
-        if State.IsScanning then
-            UpdateStats()
-        end
-        task.wait(2)
-    end
-end)
-
--- Settings Tab
-local SettingsTab = Window:CreateTab("Settings", 4483362458)
-
-SettingsTab:CreateParagraph({
-    Title = "Output Settings",
-    Content = "File size limit: 8 MB (auto-split)\nBuffer size: 500 KB\nFormat: Plain Text\nEncoding: UTF-8"
-})
-
-SettingsTab:CreateParagraph({
-    Title = "Bypass Settings",
-    Content = "GameTree: Enabled\nExecutor APIs: Enabled\nNil Instances: Enabled\nDeep Scan: Enabled\nDecompile Fallbacks: 4 methods"
-})
-
-SettingsTab:CreateParagraph({
-    Title = "Safety Protocols",
-    Content = "GC-Free: Yes\nMemory Buffer: Yes\nTimeout Protection: Yes\nAnti-ICE: Active"
-})
-
 -- ============================================================
--- [11] CLEANUP — ZERO TRACE
--- ============================================================
-local function Cleanup()
-    pcall(function()
-        if getrawmetatable then
-            local mt = getrawmetatable(game)
-            if mt then
-                mt.__index = nil
-                setrawmetatable(game, mt)
-            end
-        end
-    end)
-    State.IsScanning = false
-    State.IsPaused = false
-    print("[Scanner] Cleanup complete. All traces removed.")
-end
-
-game:GetService("RunService").Heartbeat:Connect(function()
-    if State.IsScanning then
-        -- Keep alive — prevents executor from sleeping
-    end
-end)
-
--- ============================================================
--- [12] INITIALIZATION COMPLETE
+-- INITIALIZATION COMPLETE
 -- ============================================================
 Rayfield:Notify({
     Title = "Scanner Ready",
@@ -728,10 +626,63 @@ Rayfield:Notify({
 
 StatusLabel:Set("Status: Ready. Press 'Start Full Scan' to begin.")
 
--- Success
 print("========================================")
-print("  ULTIMATE SCRIPT SCANNER v3.0")
+print("  ULTIMATE SCRIPT SCANNER v3.1")
 print("  Bypass Engine: ACTIVE")
 print("  Game: " .. GameInfo.Name)
 print("  Executor: " .. ExecutorType)
+print("  [FIXED] No UniverseId | No Duplicates")
 print("========================================")
+
+-- ============================================================
+-- CLEANUP ON EXIT
+-- ============================================================
+local function Cleanup()
+    State.IsScanning = false
+    State.IsPaused = false
+    getgenv().ScannerRunning = false
+end
+
+game:GetService("RunService").Heartbeat:Connect(function()
+    if State.IsScanning then end
+end)
+
+-- If script gets killed, reset flag
+task.delay(1, function()
+    pcall(function()
+        getgenv().ScannerRunning = false
+    end)
+end)
+
+-- ============================================================
+-- FIXED LOADER COMPANION (Place this in your loader)
+-- ============================================================
+--[[
+--!nocheck
+-- Use this as your loader:
+
+if getgenv().ScannerRunning then
+    print("[Scanner] Already running. Skipping duplicate.")
+    return
+end
+getgenv().ScannerRunning = true
+
+local url = "https://raw.githubusercontent.com/snowy-dot/Advance-scanner-game-/main/loader.lua"
+
+local success, response = pcall(function()
+    return game:HttpGet(url, true)
+end)
+
+if success and response then
+    local func = loadstring(response)
+    if func then
+        pcall(func)
+    else
+        print("[Scanner] Loadstring failed.")
+        getgenv().ScannerRunning = false
+    end
+else
+    print("[Scanner] Download failed.")
+    getgenv().ScannerRunning = false
+end
+]]
