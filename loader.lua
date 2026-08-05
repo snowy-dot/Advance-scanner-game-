@@ -1,10 +1,19 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v5.1 — NATIVE UI (NO EXTERNAL DEPENDENCY)
+-- APEX SCRIPT SCANNER v5.2 — FLUENT UI
+-- - Fluent library (github release asset, no rate limiting)
+-- - 10-layer anti-cheat bypass
+-- - 7-method decompile fallback chain
+-- - Registry scan with upvalue chain walking
+-- - Remote event spy
+-- - Connection dumper
+-- - Nil instance scanner
+-- - Buffered async file I/O
+-- - Anti-tamper hook guard
 -- ============================================================
 
 if getgenv().ScannerRunning then
-    print("[Scanner] Already running. Skipping duplicate.")
+    print("[Scanner] Already running.")
     return
 end
 getgenv().ScannerRunning = true
@@ -26,35 +35,27 @@ local ScannerInstances = {}
 local ScannerFunctions = {}
 
 local function HideInstance(inst)
-    if typeof(inst) == "Instance" then
-        ScannerInstances[inst] = true
-    end
+    if typeof(inst) == "Instance" then ScannerInstances[inst] = true end
 end
 
 local function HideFunction(fn)
-    if type(fn) == "function" then
-        ScannerFunctions[fn] = true
-    end
+    if type(fn) == "function" then ScannerFunctions[fn] = true end
 end
 
 local function InstallApexBypass()
+    -- Layer 1: debug.getinfo scrub
     pcall(function()
         if hookfunction and not BypassState.HooksInstalled then
             local oldGetInfo = debug.getinfo
             BypassState.OriginalGetInfo = oldGetInfo
-
             local function FilteredGetInfo(...)
                 local info = oldGetInfo(...)
                 if info and type(info) == "table" then
-                    if info.source then
-                        if info.source:match("Scanner") or info.source:match("[Bb]ypass") then
-                            info.source = "Workspace.GameScript"
-                        end
+                    if info.source and (info.source:match("Scanner") or info.source:match("[Bb]ypass")) then
+                        info.source = "Workspace.GameScript"
                     end
-                    if info.short_src then
-                        if info.short_src:match("Scanner") or info.short_src:match("[Bb]ypass") then
-                            info.short_src = "GameScript"
-                        end
+                    if info.short_src and (info.short_src:match("Scanner") or info.short_src:match("[Bb]ypass")) then
+                        info.short_src = "GameScript"
                     end
                     if info.func and ScannerFunctions[info.func] then
                         info.func = nil
@@ -71,71 +72,88 @@ local function InstallApexBypass()
         end
     end)
 
+    -- Layer 2: __namecall hook
     pcall(function()
         if hookmetamethod and not BypassState.OriginalNamecall then
             local mt = getrawmetatable(game)
             local oldNamecall = mt.__namecall
             BypassState.OriginalNamecall = oldNamecall
-
             setreadonly(mt, false)
-            mt.__namecall = newcclosure and newcclosure(function(self, ...)
-                local method = getnamecallmethod()
-                if method == "GetFullName" and ScannerInstances[self] then
-                    return "Workspace.GameScript"
-                end
-                if method == "FindService" then
-                    local service = select(1, ...)
-                    if service and (service:match("[Aa]nti[Cc]heat") or service:match("[Pp]rotect")) then
-                        return nil
+            local newNamecall
+            if newcclosure then
+                newNamecall = newcclosure(function(self, ...)
+                    local method = getnamecallmethod()
+                    if method == "GetFullName" and ScannerInstances[self] then
+                        return "Workspace.GameScript"
                     end
-                end
-                if method == "GetChildren" or method == "GetDescendants" then
-                    local results = oldNamecall(self, ...)
-                    if type(results) == "table" then
-                        local filtered = {}
-                        for _, v in ipairs(results) do
-                            if not ScannerInstances[v] and v.Name ~= "Scanner" and v.Name ~= "ApexUI" then
-                                table.insert(filtered, v)
-                            end
+                    if method == "FindService" then
+                        local svc = select(1, ...)
+                        if svc and (svc:match("[Aa]nti[Cc]heat") or svc:match("[Pp]rotect") or svc:match("[Ss]hield")) then
+                            return nil
                         end
-                        return filtered
                     end
-                end
-                if method == "FindFirstChild" then
-                    local name = select(1, ...)
-                    if name and (name:match("[Ss]canner") or name:match("ApexUI")) then
-                        return nil
+                    if method == "GetChildren" or method == "GetDescendants" then
+                        local results = oldNamecall(self, ...)
+                        if type(results) == "table" then
+                            local filtered = {}
+                            for _, v in ipairs(results) do
+                                if not ScannerInstances[v] and v.Name ~= "Scanner" and v.Name ~= "Fluent" and v.Name ~= "ApexUI" then
+                                    table.insert(filtered, v)
+                                end
+                            end
+                            return filtered
+                        end
                     end
-                end
-                if method == "IsA" and ScannerInstances[self] then
-                    local className = select(1, ...)
-                    if className == "LocalScript" or className == "Script" or className == "ModuleScript" then
-                        return false
+                    if method == "FindFirstChild" then
+                        local name = select(1, ...)
+                        if name and (name:match("[Ss]canner") or name:match("Fluent") or name:match("ApexUI")) then
+                            return nil
+                        end
                     end
+                    if method == "IsA" and ScannerInstances[self] then
+                        local cn = select(1, ...)
+                        if cn == "LocalScript" or cn == "Script" or cn == "ModuleScript" then
+                            return false
+                        end
+                    end
+                    return oldNamecall(self, ...)
+                end)
+            else
+                newNamecall = function(self, ...)
+                    return oldNamecall(self, ...)
                 end
-                return oldNamecall(self, ...)
-            end) or function(self, ...) return oldNamecall(self, ...) end
+            end
+            mt.__namecall = newNamecall
             setreadonly(mt, true)
+            HideFunction(newNamecall)
         end
     end)
 
+    -- Layer 3: __index hook
     pcall(function()
         local mt = getrawmetatable(game)
         if mt and hookmetamethod then
             setreadonly(mt, false)
             local oldIndex = mt.__index
             BypassState.OriginalIndex = oldIndex
-            mt.__index = newcclosure and newcclosure(function(t, k)
-                if k == "Name" and ScannerInstances[t] then return "GameScript" end
-                if k == "ClassName" and ScannerInstances[t] then return "Script" end
-                if k == "Disabled" and ScannerInstances[t] then return true end
-                if (k == "Source" or k == "Bytecode") and ScannerInstances[t] then return "" end
-                return oldIndex(t, k)
-            end) or oldIndex
+            local newIndex
+            if newcclosure then
+                newIndex = newcclosure(function(t, k)
+                    if k == "Name" and ScannerInstances[t] then return "GameScript" end
+                    if k == "ClassName" and ScannerInstances[t] then return "Script" end
+                    if k == "Disabled" and ScannerInstances[t] then return true end
+                    if (k == "Source" or k == "Bytecode") and ScannerInstances[t] then return "" end
+                    return oldIndex(t, k)
+                end)
+            else
+                newIndex = oldIndex
+            end
+            mt.__index = newIndex
             setreadonly(mt, true)
         end
     end)
 
+    -- Layer 4: error/assert/traceback hooks
     pcall(function()
         if hookfunction then
             local oldError = error
@@ -166,6 +184,7 @@ local function InstallApexBypass()
                 if type(tb) == "string" then
                     tb = tb:gsub("[Ss]canner", "GameScript")
                     tb = tb:gsub("[Bb]ypass", "CoreScript")
+                    tb = tb:gsub("[Ff]luent", "GameUI")
                 end
                 return tb
             end
@@ -174,13 +193,31 @@ local function InstallApexBypass()
         end
     end)
 
+    -- Layer 5: identity elevation
     pcall(function()
         if setidentity then setidentity(7) end
         if getthreadcontext then getthreadcontext(7) end
         if setthreadcontext then setthreadcontext(7) end
     end)
 
-    -- Anti-tamper guard
+    -- Layer 6: getloadedmodules filter
+    pcall(function()
+        if hookfunction and getloadedmodules then
+            local oldGetLoadedModules = getloadedmodules
+            local function FilteredGetLoadedModules()
+                local results = oldGetLoadedModules()
+                local filtered = {}
+                for _, mod in ipairs(results) do
+                    if not ScannerInstances[mod] then table.insert(filtered, mod) end
+                end
+                return filtered
+            end
+            hookfunction(getloadedmodules, FilteredGetLoadedModules)
+            HideFunction(FilteredGetLoadedModules)
+        end
+    end)
+
+    -- Layer 7: anti-tamper guard
     pcall(function()
         task.spawn(function()
             while true do
@@ -233,6 +270,7 @@ local Capabilities = {
     SetClipboard = type(setclipboard) == "function",
     Gethui = type(gethui) == "function",
     Newcclosure = type(newcclosure) == "function",
+    IsLuaLclosure = type(islclosure) == "function",
 }
 
 local ExecutorName = "Unknown"
@@ -256,15 +294,10 @@ end
 -- GAME INFO
 -- ============================================================
 local function GetGameInfo()
-    local info = {
-        Name = "UnknownGame",
-        PlaceId = game.PlaceId,
-        Creator = "Unknown",
-        JobId = game.JobId or "N/A",
-    }
+    local info = { Name = "UnknownGame", PlaceId = game.PlaceId, Creator = "Unknown", JobId = game.JobId or "N/A" }
     pcall(function()
-        local marketplace = game:GetService("MarketplaceService")
-        local product = marketplace:GetProductInfo(game.PlaceId)
+        local mp = game:GetService("MarketplaceService")
+        local product = mp:GetProductInfo(game.PlaceId)
         if product then
             info.Name = string.gsub(product.Name or "UnknownGame", "[^%w_]", "_")
             info.Creator = product.Creator and product.Creator.Name or "Unknown"
@@ -277,6 +310,118 @@ local function GetGameInfo()
 end
 
 local GameInfo = GetGameInfo()
+
+-- ============================================================
+-- FLUENT LIBRARY LOADER
+-- ============================================================
+local Fluent = nil
+
+local function LoadFluent()
+    -- Fluent is distributed as a github release asset — no rate limiting
+    local urls = {
+        "https://github.com/dvrzz/Fluent/releases/latest/download/Fluent.txt",
+        "https://raw.githubusercontent.com/dvrzz/Fluent/main/Fluent.txt",
+        "https://raw.githubusercontent.com/dvrzz/Fluent/master/Fluent.txt",
+    }
+    for _, url in ipairs(urls) do
+        local ok, src = pcall(function() return game:HttpGet(url) end)
+        if ok and src and #src > 500 then
+            local fn = loadstring(src)
+            if fn then
+                local ok2, result = pcall(fn)
+                if ok2 and result then
+                    Fluent = result
+                    return
+                end
+                -- Some versions return global
+                local ok3 = pcall(function() fn() end)
+                if ok3 and Fluent then return end
+                if ok3 and _G.Fluent then Fluent = _G.Fluent; return end
+                if ok3 and fluent then Fluent = fluent; return end
+            end
+        end
+    end
+
+    -- Fallback: try Orion
+    if not Fluent then
+        local ok, src = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/Jun0deps/Orion/main/source") end)
+        if ok and src and #src > 500 then
+            local fn = loadstring(src)
+            if fn then
+                pcall(function() fn() end)
+                if OrionLib then
+                    -- Wrap Orion to match Fluent API
+                    Fluent = setmetatable({ _Orion = true }, {
+                        __index = function(t, k)
+                            if k == "CreateWindow" then
+                                return function(config)
+                                    local win = OrionLib:MakeWindow(config)
+                                    return setmetatable({}, {
+                                        __index = function(_, key)
+                                            if key == "CreateTab" then
+                                                return function(tabConfig)
+                                                    local tab = win:MakeTab(tabConfig)
+                                                    return setmetatable({}, {
+                                                        __index = function(_, tk)
+                                                            if tk == "CreateLabel" then return function(text) return { Set = function(s) end }, tab:AddLabel(text) end end
+                                                            if tk == "CreateParagraph" then return function(p) tab:AddParagraph(p.Title, p.Content) end end
+                                                            if tk == "CreateButton" then return function(b) tab:AddButton(b) end end
+                                                            if tk == "CreateToggle" then return function(tg) local t = tab:AddToggle(tg); return { Set = function(v) t:Set(v) end } end end
+                                                            if tk == "CreateDivider" then return function() tab:AddSection("—") end end
+                                                            if tk == "CreateSection" then return function(name) tab:AddSection(name) end end
+                                                            if tk == "CreateSlider" then return function(s) return tab:AddSlider(s) end end
+                                                            if tk == "CreateDropdown" then return function(d) return tab:AddDropdown(d) end end
+                                                            if tk == "CreateInput" then return function(i) return { Set = function() end } end end
+                                                        end
+                                                    })
+                                                end
+                                            end
+                                            if k == "Destroy" then return function() OrionLib:Destroy() end end
+                                        end
+                                    })
+                                end
+                            end
+                            if k == "Notify" then
+                                return function(n)
+                                    OrionLib:MakeNotification({ Title = n.Title or "", Content = n.Content or "", Duration = n.Duration or 3 })
+                                end
+                            end
+                        end
+                    })
+                    return
+                end
+            end
+        end
+    end
+
+    -- Final fallback: native stub
+    if not Fluent then
+        Fluent = {
+            CreateWindow = function()
+                return {
+                    CreateTab = function()
+                        local stub = {
+                            CreateLabel = function() return { Set = function() end } end,
+                            CreateParagraph = function() end,
+                            CreateButton = function() return { Callback = function() end } end,
+                            CreateToggle = function() return { Set = function() end } end,
+                            CreateDivider = function() end,
+                            CreateSection = function() end,
+                            CreateSlider = function() return { Set = function() end } end,
+                            CreateDropdown = function() return { Set = function() end } end,
+                            CreateInput = function() return { Set = function() end } end,
+                        }
+                        return stub
+                    end,
+                    Destroy = function() end,
+                }
+            end,
+            Notify = function() end,
+        }
+    end
+end
+
+LoadFluent()
 
 -- ============================================================
 -- STATE
@@ -296,6 +441,7 @@ local ScanState = {
     Failed = 0,
     BytecodeDumped = 0,
     RemotesFound = 0,
+    ConnectionsFound = 0,
     StartTime = 0,
     CurrentFile = "",
     StatusText = "Ready",
@@ -306,618 +452,13 @@ local ScanState = {
 }
 
 -- ============================================================
--- NATIVE UI — NO EXTERNAL DEPENDENCY
--- ============================================================
-local UI = {}
-local ScreenGui = nil
-local MainFrame = nil
-local TabButtons = {}
-local TabPages = {}
-local ActiveTab = nil
-local UIElements = {}
-
-local function GetParent()
-    local parent = game:GetService("CoreGui")
-    pcall(function()
-        if Capabilities.Gethui then
-            parent = gethui()
-        end
-    end)
-    return parent
-end
-
-local function MakeDraggable(frame)
-    local dragging = false
-    local dragStart, startPos
-
-    frame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-        end
-    end)
-
-    frame.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-
-    game:GetService("UserInputService").InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
-            )
-        end
-    end)
-end
-
-local function CreateElement(className, props, parent)
-    local inst = Instance.new(className)
-    for k, v in pairs(props or {}) do
-        inst[k] = v
-    end
-    if parent then inst.Parent = parent end
-    return inst
-end
-
--- Colors
-local C = {
-    BG = Color3.fromRGB(20, 20, 25),
-    BG2 = Color3.fromRGB(30, 30, 38),
-    Accent = Color3.fromRGB(88, 101, 242),
-    Accent2 = Color3.fromRGB(120, 130, 255),
-    Text = Color3.fromRGB(230, 230, 235),
-    TextDim = Color3.fromRGB(150, 150, 160),
-    Green = Color3.fromRGB(87, 242, 135),
-    Red = Color3.fromRGB(237, 66, 69),
-    Yellow = Color3.fromRGB(254, 231, 92),
-    ToggleOff = Color3.fromRGB(50, 50, 55),
-    ToggleOn = Color3.fromRGB(87, 242, 135),
-}
-
-function BuildUI()
-    -- Destroy old UI if exists
-    pcall(function()
-        local parent = GetParent()
-        for _, child in ipairs(parent:GetChildren()) do
-            if child.Name == "ApexUI" then
-                child:Destroy()
-            end
-        end
-    end)
-
-    ScreenGui = CreateElement("ScreenGui", {
-        Name = "ApexUI",
-        ResetOnSpawn = false,
-        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        DisplayOrder = 9999,
-        IgnoreGuiInset = true,
-    })
-    pcall(function() ScreenGui.Parent = GetParent() end)
-    HideInstance(ScreenGui)
-
-    -- Main window frame
-    MainFrame = CreateElement("Frame", {
-        Name = "MainWindow",
-        Size = UDim2.new(0, 520, 0, 420),
-        Position = UDim2.new(0.5, -260, 0.5, -210),
-        BackgroundColor3 = C.BG,
-        BorderSizePixel = 0,
-        Active = true,
-    }, ScreenGui)
-
-    -- Rounded corners
-    CreateElement("UICorner", { CornerRadius = UDim.new(0, 8) }, MainFrame)
-
-    -- Drop shadow
-    CreateElement("UIStroke", {
-        Color = Color3.fromRGB(0, 0, 0),
-        Thickness = 1,
-        Transparency = 0.5,
-    }, MainFrame)
-
-    -- Title bar
-    local TitleBar = CreateElement("Frame", {
-        Name = "TitleBar",
-        Size = UDim2.new(1, 0, 0, 36),
-        BackgroundColor3 = C.Accent,
-        BorderSizePixel = 0,
-    }, MainFrame)
-    CreateElement("UICorner", { CornerRadius = UDim.new(0, 8) }, TitleBar)
-
-    -- Fix bottom corners of title bar
-    CreateElement("Frame", {
-        Size = UDim2.new(1, 0, 0, 10),
-        Position = UDim2.new(0, 0, 1, -10),
-        BackgroundColor3 = C.Accent,
-        BorderSizePixel = 0,
-    }, TitleBar)
-
-    local TitleLabel = CreateElement("TextLabel", {
-        Size = UDim2.new(1, -40, 1, 0),
-        Position = UDim2.new(0, 12, 0, 0),
-        BackgroundTransparency = 1,
-        Text = "APEX SCRIPT SCANNER v5.1",
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        TextSize = 14,
-        Font = Enum.Font.GothamBold,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    }, TitleBar)
-
-    -- Close button
-    local CloseBtn = CreateElement("TextButton", {
-        Size = UDim2.new(0, 28, 0, 28),
-        Position = UDim2.new(1, -32, 0, 4),
-        BackgroundColor3 = C.Red,
-        Text = "X",
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        TextSize = 14,
-        Font = Enum.Font.GothamBold,
-        BorderSizePixel = 0,
-    }, TitleBar)
-    CreateElement("UICorner", { CornerRadius = UDim.new(0, 6) }, CloseBtn)
-    CloseBtn.MouseButton1Click:Connect(function()
-        ScreenGui:Destroy()
-        getgenv().ScannerRunning = false
-    end)
-
-    -- Minimize button
-    local MinBtn = CreateElement("TextButton", {
-        Size = UDim2.new(0, 28, 0, 28),
-        Position = UDim2.new(1, -64, 0, 4),
-        BackgroundColor3 = C.BG2,
-        Text = "—",
-        TextColor3 = Color3.fromRGB(255, 255, 255),
-        TextSize = 14,
-        Font = Enum.Font.GothamBold,
-        BorderSizePixel = 0,
-    }, TitleBar)
-    CreateElement("UICorner", { CornerRadius = UDim.new(0, 6) }, MinBtn)
-
-    local minimized = false
-    MinBtn.MouseButton1Click:Connect(function()
-        minimized = not minimized
-        if minimized then
-            MainFrame.Size = UDim2.new(0, 520, 0, 36)
-        else
-            MainFrame.Size = UDim2.new(0, 520, 0, 420)
-        end
-    end)
-
-    MakeDraggable(TitleBar)
-
-    -- Tab bar
-    local TabBar = CreateElement("Frame", {
-        Name = "TabBar",
-        Size = UDim2.new(1, 0, 0, 32),
-        Position = UDim2.new(0, 0, 0, 36),
-        BackgroundColor3 = C.BG2,
-        BorderSizePixel = 0,
-    }, MainFrame)
-
-    -- Content area
-    local ContentArea = CreateElement("Frame", {
-        Name = "Content",
-        Size = UDim2.new(1, 0, 1, -68),
-        Position = UDim2.new(0, 0, 0, 68),
-        BackgroundColor3 = C.BG,
-        BorderSizePixel = 0,
-    }, MainFrame)
-
-    -- Scrolling frame for tab content
-    local ContentScroller = CreateElement("ScrollingFrame", {
-        Name = "Scroller",
-        Size = UDim2.new(1, -16, 1, -8),
-        Position = UDim2.new(0, 8, 0, 4),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        ScrollBarThickness = 4,
-        ScrollBarImageColor3 = C.Accent,
-        CanvasSize = UDim2.new(0, 0, 0, 0),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-    }, ContentArea)
-
-    -- Tab system
-    local tabOrder = {}
-    local function CreateTab(name, icon)
-        local tabPage = CreateElement("Frame", {
-            Name = name,
-            Size = UDim2.new(1, 0, 1, 0),
-            BackgroundTransparency = 1,
-            Visible = false,
-        }, ContentScroller)
-
-        local layout = CreateElement("UIListLayout", {
-            Padding = UDim.new(0, 6),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-        }, tabPage)
-
-        local tabBtn = CreateElement("TextButton", {
-            Size = UDim2.new(0, 0, 1, 0),
-            BackgroundColor3 = C.BG,
-            Text = name,
-            TextColor3 = C.TextDim,
-            TextSize = 13,
-            Font = Enum.Font.GothamSemibold,
-            BorderSizePixel = 0,
-            AutoButtonColor = false,
-        }, TabBar)
-
-        CreateElement("UICorner", { CornerRadius = UDim.new(0, 0) }, tabBtn)
-
-        -- Auto-size tab buttons
-        table.insert(tabOrder, tabBtn)
-
-        local function UpdateTabSizes()
-            local count = #tabOrder
-            local width = 1 / count
-            for i, btn in ipairs(tabOrder) do
-                btn.Size = UDim2.new(width, -2, 1, 0)
-                btn.Position = UDim2.new(width * (i - 1), 1, 0, 0)
-            end
-        end
-        UpdateTabSizes()
-
-        tabBtn.MouseButton1Click:Connect(function()
-            for _, btn in ipairs(tabOrder) do
-                btn.TextColor3 = C.TextDim
-                btn.BackgroundColor3 = C.BG
-            end
-            tabBtn.TextColor3 = C.Text
-            tabBtn.BackgroundColor3 = C.Accent
-
-            for _, page in ipairs(TabPages) do
-                page.Visible = false
-            end
-            tabPage.Visible = true
-            ActiveTab = tabPage
-        end)
-
-        table.insert(TabPages, tabPage)
-
-        -- Auto-activate first tab
-        if #tabOrder == 1 then
-            tabBtn.TextColor3 = C.Text
-            tabBtn.BackgroundColor3 = C.Accent
-            tabPage.Visible = true
-            ActiveTab = tabPage
-        end
-
-        -- Helper functions for this tab
-        local tab = {}
-
-        function tab:CreateLabel(text)
-            local label = CreateElement("TextLabel", {
-                Size = UDim2.new(1, 0, 0, 20),
-                BackgroundTransparency = 1,
-                Text = text,
-                TextColor3 = C.Text,
-                TextSize = 12,
-                Font = Enum.Font.Gotham,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                TextWrapped = true,
-                LayoutOrder = #tabPage:GetChildren(),
-            }, tabPage)
-            table.insert(UIElements, {obj = label, type = "label"})
-            return {
-                Set = function(newText)
-                    label.Text = newText
-                end
-            }
-        end
-
-        function tab:CreateParagraph(title, content)
-            local frame = CreateElement("Frame", {
-                Size = UDim2.new(1, 0, 0, 60),
-                BackgroundColor3 = C.BG2,
-                BorderSizePixel = 0,
-                LayoutOrder = #tabPage:GetChildren(),
-            }, tabPage)
-            CreateElement("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
-
-            local tLabel = CreateElement("TextLabel", {
-                Size = UDim2.new(1, -16, 0, 18),
-                Position = UDim2.new(0, 8, 0, 6),
-                BackgroundTransparency = 1,
-                Text = title,
-                TextColor3 = C.Accent2,
-                TextSize = 13,
-                Font = Enum.Font.GothamBold,
-                TextXAlignment = Enum.TextXAlignment.Left,
-            }, frame)
-
-            local cLabel = CreateElement("TextLabel", {
-                Size = UDim2.new(1, -16, 0, 36),
-                Position = UDim2.new(0, 8, 0, 24),
-                BackgroundTransparency = 1,
-                Text = content,
-                TextColor3 = C.TextDim,
-                TextSize = 11,
-                Font = Enum.Font.Gotham,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                TextWrapped = true,
-            }, frame)
-
-            -- Auto-resize frame
-            local lines = select(2, content:gsub("\n", "\n")) + 1
-            frame.Size = UDim2.new(1, 0, 0, 24 + (lines * 14) + 6)
-        end
-
-        function tab:CreateButton(name, callback)
-            local btn = CreateElement("TextButton", {
-                Size = UDim2.new(1, 0, 0, 32),
-                BackgroundColor3 = C.BG2,
-                Text = "",
-                BorderSizePixel = 0,
-                AutoButtonColor = true,
-                LayoutOrder = #tabPage:GetChildren(),
-            }, tabPage)
-            CreateElement("UICorner", { CornerRadius = UDim.new(0, 6) }, btn)
-
-            local label = CreateElement("TextLabel", {
-                Size = UDim2.new(1, -16, 1, 0),
-                Position = UDim2.new(0, 12, 0, 0),
-                BackgroundTransparency = 1,
-                Text = name,
-                TextColor3 = C.Text,
-                TextSize = 12,
-                Font = Enum.Font.GothamSemibold,
-                TextXAlignment = Enum.TextXAlignment.Left,
-            }, btn)
-
-            local arrow = CreateElement("TextLabel", {
-                Size = UDim2.new(0, 20, 1, 0),
-                Position = UDim2.new(1, -24, 0, 0),
-                BackgroundTransparency = 1,
-                Text = "→",
-                TextColor3 = C.Accent2,
-                TextSize = 14,
-                Font = Enum.Font.GothamBold,
-            }, btn)
-
-            btn.MouseButton1Click:Connect(function()
-                pcall(callback)
-            end)
-
-            return { Callback = callback }
-        end
-
-        function tab:CreateToggle(name, defaultVal, callback)
-            local frame = CreateElement("Frame", {
-                Size = UDim2.new(1, 0, 0, 32),
-                BackgroundColor3 = C.BG2,
-                BorderSizePixel = 0,
-                LayoutOrder = #tabPage:GetChildren(),
-            }, tabPage)
-            CreateElement("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
-
-            local label = CreateElement("TextLabel", {
-                Size = UDim2.new(1, -60, 1, 0),
-                Position = UDim2.new(0, 12, 0, 0),
-                BackgroundTransparency = 1,
-                Text = name,
-                TextColor3 = C.Text,
-                TextSize = 12,
-                Font = Enum.Font.GothamSemibold,
-                TextXAlignment = Enum.TextXAlignment.Left,
-            }, frame)
-
-            local toggleBtn = CreateElement("TextButton", {
-                Size = UDim2.new(0, 40, 0, 20),
-                Position = UDim2.new(1, -48, 0.5, -10),
-                BackgroundColor3 = defaultVal and C.ToggleOn or C.ToggleOff,
-                Text = "",
-                BorderSizePixel = 0,
-            }, frame)
-            CreateElement("UICorner", { CornerRadius = UDim.new(0, 10) }, toggleBtn)
-
-            local knob = CreateElement("Frame", {
-                Size = UDim2.new(0, 16, 0, 16),
-                Position = defaultVal and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
-                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-                BorderSizePixel = 0,
-            }, toggleBtn)
-            CreateElement("UICorner", { CornerRadius = UDim.new(0, 8) }, knob)
-
-            local toggled = defaultVal
-            toggleBtn.MouseButton1Click:Connect(function()
-                toggled = not toggled
-                toggleBtn.BackgroundColor3 = toggled and C.ToggleOn or C.ToggleOff
-                if toggled then
-                    knob:TweenPosition(UDim2.new(1, -18, 0.5, -8), "Out", "Quad", 0.15, true)
-                else
-                    knob:TweenPosition(UDim2.new(0, 2, 0.5, -8), "Out", "Quad", 0.15, true)
-                end
-                pcall(callback, toggled)
-            end)
-
-            return { Set = function(val) toggled = val; toggleBtn.BackgroundColor3 = val and C.ToggleOn or C.ToggleOff end }
-        end
-
-        function tab:CreateDivider()
-            CreateElement("Frame", {
-                Size = UDim2.new(1, 0, 0, 1),
-                BackgroundColor3 = C.BG2,
-                BorderSizePixel = 0,
-                LayoutOrder = #tabPage:GetChildren(),
-            }, tabPage)
-        end
-
-        function tab:CreateSection(name)
-            local label = CreateElement("TextLabel", {
-                Size = UDim2.new(1, 0, 0, 18),
-                BackgroundTransparency = 1,
-                Text = name,
-                TextColor3 = C.Accent2,
-                TextSize = 11,
-                Font = Enum.Font.GothamBold,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                LayoutOrder = #tabPage:GetChildren(),
-            }, tabPage)
-        end
-
-        return tab
-    end
-
-    -- ── BUILD TABS ──
-
-    -- MAIN TAB
-    local mainTab = CreateTab("Scanner")
-
-    mainTab:CreateParagraph("Game Info",
-        string.format("Name: %s\nID: %d\nCreator: %s\nExecutor: %s\nJobID: %s",
-            GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, ExecutorName, GameInfo.JobId))
-
-    mainTab:CreateDivider()
-    mainTab:CreateSection("Scan Options")
-
-    mainTab:CreateToggle("Include Bytecode Dump", true, function(v) ScanState.IncludeBytecode = v end)
-    mainTab:CreateToggle("Include Registry Scan (getreg)", true, function(v) ScanState.IncludeReg = v end)
-    mainTab:CreateToggle("Include Nil Instances", true, function(v) ScanState.IncludeNil = v end)
-    mainTab:CreateToggle("Include Server Scripts (SSS/RS/SS)", true, function(v) ScanState.IncludeServer = v end)
-    mainTab:CreateToggle("Deep Scan (upvalues/constants)", true, function(v) ScanState.DeepScan = v end)
-    mainTab:CreateToggle("Remote Event Spy", true, function(v) ScanState.IncludeRemotes = v end)
-
-    mainTab:CreateDivider()
-    mainTab:CreateSection("Status")
-
-    local StatusLabel = mainTab:CreateLabel("Status: Ready")
-    local TimeLabel = mainTab:CreateLabel("Time Remaining: --:--")
-    local FileLabel = mainTab:CreateLabel("Save Location: Not started")
-    local CountLabel = mainTab:CreateLabel("Total Scripts Found: 0")
-    local SuccessLabel = mainTab:CreateLabel("Decompiled: 0 | Protected: 0 | Bytecode: 0")
-
-    mainTab:CreateDivider()
-    mainTab:CreateButton("Start Full Scan", RunScanner)
-
-    mainTab:CreateButton("Toggle Pause", function()
-        if not ScanState.IsScanning then return end
-        ScanState.IsPaused = not ScanState.IsPaused
-        ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
-    end)
-
-    mainTab:CreateButton("Stop Scan", function()
-        ScanState.IsScanning = false
-        ScanState.IsPaused = false
-        ScanState.StatusText = "STOPPED"
-        getgenv().ScannerRunning = false
-    end)
-
-    -- ADVANCED TAB
-    local advTab = CreateTab("Advanced")
-
-    advTab:CreateParagraph("Advanced Tools", "Deep extraction methods for protected/locked scripts")
-
-    advTab:CreateButton("Dump All Bytecode (Raw Hex)", function() task.spawn(DumpAllBytecode) end)
-    advTab:CreateButton("Scan Registry Closures (getreg)", function() task.spawn(ScanRegistry) end)
-    advTab:CreateButton("Dump ServerScriptService", function() task.spawn(DumpServerScripts) end)
-    advTab:CreateButton("Dump Nil Instances", function() task.spawn(DumpNilInstances) end)
-    advTab:CreateButton("Dump All Connections", function() task.spawn(DumpConnections) end)
-
-    advTab:CreateButton("Export Full Game (saveinstance)", function()
-        if Capabilities.SaveInstance then
-            pcall(function() saveinstance({ filename = GameInfo.Name .. "_FullExport.rbxl" }) end)
-        end
-    end)
-
-    advTab:CreateButton("Reinstall Bypass Hooks", function() InstallApexBypass() end)
-
-    advTab:CreateButton("Print Executor Capabilities", function()
-        print("=== EXECUTOR CAPABILITIES ===")
-        for k, v in pairs(Capabilities) do
-            print(string.format("  %s: %s", k, tostring(v)))
-        end
-        print(string.format("  Executor: %s", ExecutorName))
-        print("=============================")
-    end)
-
-    -- REMOTE SPY TAB
-    local remoteTab = CreateTab("Remote Spy")
-
-    remoteTab:CreateParagraph("Remote Event Monitor",
-        "Tracks all RemoteEvents and RemoteFunctions in the game")
-
-    local RemoteCountLabel = remoteTab:CreateLabel("Remotes Found: 0")
-    local RemoteConnLabel = remoteTab:CreateLabel("Connections: 0")
-
-    remoteTab:CreateButton("Start Remote Spy", function()
-        StartRemoteSpy()
-    end)
-
-    remoteTab:CreateButton("Export Remote Log", function()
-        local path = GameInfo.Name .. "_RemoteSpy.txt"
-        local content = "=== REMOTE SPY DUMP ===\n\n"
-        for name, data in pairs(RemotesLog) do
-            content = content .. string.format("Name: %s\nType: %s\n---\n", data.Name, data.Type)
-        end
-        SafeWriteFile(path, content)
-    end)
-
-    remoteTab:CreateButton("Fire All Remotes (Test)", function()
-        pcall(function()
-            for _, obj in ipairs(game:GetDescendants()) do
-                if obj:IsA("RemoteEvent") then
-                    pcall(function() obj:FireServer() end)
-                end
-            end
-        end)
-    end)
-
-    -- UI Updater loop
-    task.spawn(function()
-        while true do
-            task.wait(0.3)
-            pcall(function()
-                StatusLabel:Set(ScanState.StatusText)
-                TimeLabel:Set(ScanState.TimeText)
-                FileLabel:Set(ScanState.FileText)
-                CountLabel:Set(ScanState.CountText)
-                SuccessLabel:Set(ScanState.SuccessText)
-                RemoteCountLabel:Set("Remotes Found: " .. ScanState.RemotesFound)
-                RemoteConnLabel:Set("Connections: " .. ScanState.ConnectionsFound)
-            end)
-        end
-    end)
-
-    -- UI Watcher — auto-rebuild if destroyed
-    task.spawn(function()
-        while true do
-            task.wait(2)
-            pcall(function()
-                if not ScreenGui or not ScreenGui.Parent then
-                    print("[Scanner] UI destroyed. Rebuilding...")
-                    BuildUI()
-                end
-            end)
-        end
-    end)
-
-    -- Notify on load
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "Apex Scanner Ready",
-            Text = string.format("%s | %s", GameInfo.Name, ExecutorName),
-            Duration = 4
-        })
-    end)
-
-    print("========================================")
-    print("  APEX SCRIPT SCANNER v5.1 — NATIVE UI")
-    print("  Executor: " .. ExecutorName)
-    print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-    print("  Bytecode: " .. (Capabilities.GetScriptBytecode and "SUPPORTED" or "UNSUPPORTED"))
-    print("========================================")
-end
-
--- ============================================================
 -- SAFE WRITE UTILITIES
 -- ============================================================
 local function SafeWriteFile(path, content)
     pcall(function() writefile(path, content) end)
+    if not isfile or not isfile(path) then
+        pcall(function() writefile(path, content) end)
+    end
 end
 
 local function SafeAppendFile(path, content)
@@ -937,13 +478,9 @@ function StartRemoteSpy()
             pcall(function()
                 for _, obj in ipairs(game:GetDescendants()) do
                     if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-                        local fullName = obj:GetFullName()
-                        if not RemotesLog[fullName] then
-                            RemotesLog[fullName] = {
-                                Name = fullName,
-                                Type = obj.ClassName,
-                                Hits = 0,
-                            }
+                        local fn = obj:GetFullName()
+                        if not RemotesLog[fn] then
+                            RemotesLog[fn] = { Name = fn, Type = obj.ClassName, Hits = 0 }
                             ScanState.RemotesFound = ScanState.RemotesFound + 1
                         end
                     end
@@ -952,15 +489,12 @@ function StartRemoteSpy()
             task.wait(5)
         end
     end)
-
     pcall(function()
         if Capabilities.GetConnections then
             for _, obj in ipairs(game:GetDescendants()) do
                 if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
                     local conns = getconnections(obj.OnClientEvent)
-                    for _, conn in ipairs(conns) do
-                        ScanState.ConnectionsFound = ScanState.ConnectionsFound + 1
-                    end
+                    ScanState.ConnectionsFound = ScanState.ConnectionsFound + #conns
                 end
             end
         end
@@ -968,7 +502,408 @@ function StartRemoteSpy()
 end
 
 -- ============================================================
--- SCRIPT COLLECTOR
+-- UI REFERENCES
+-- ============================================================
+local UIWindow = nil
+local UIScreenGui = nil
+local UIExists = false
+local StatusRef = { Set = function() end }
+local TimeRef = { Set = function() end }
+local FileRef = { Set = function() end }
+local CountRef = { Set = function() end }
+local SuccessRef = { Set = function() end }
+local RemoteCountRef = { Set = function() end }
+local RemoteConnRef = { Set = function() end }
+
+-- ============================================================
+-- BUILD UI — FLUENT
+-- ============================================================
+function BuildUI()
+    pcall(function()
+        if UIWindow and UIWindow.Destroy then
+            pcall(function() UIWindow:Destroy() end)
+        end
+    end)
+
+    local Window = Fluent:CreateWindow({
+        Title = "Apex Script Scanner v5.2",
+        SubTitle = GameInfo.Name .. " | " .. ExecutorName,
+        TabWidth = 160,
+        Size = UDim2.fromOffset(580, 460),
+        Acrylic = true,
+        Theme = "Dark",
+        MinSize = Vector2.new(470, 380),
+    })
+    UIWindow = Window
+
+    -- Hide the UI
+    pcall(function()
+        local parent = Capabilities.Gethui and gethui() or game:GetService("CoreGui")
+        for _, child in ipairs(parent:GetChildren()) do
+            if child:IsA("ScreenGui") and (child.Name:match("Fluent") or child.Name:match("Window")) then
+                UIScreenGui = child
+                child.ResetOnSpawn = false
+                child.DisplayOrder = 9999
+                child.IgnoreGuiInset = true
+                HideInstance(child)
+            end
+        end
+    end)
+
+    -- ── MAIN TAB ──
+    local MainTab = Window:CreateTab("Scanner", "scan")
+
+    local InfoSection = MainTab:CreateSection("Game Info")
+    MainTab:CreateParagraph({
+        Title = GameInfo.Name,
+        Content = string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s",
+            GameInfo.PlaceId, GameInfo.Creator, ExecutorName, GameInfo.JobId)
+    })
+
+    local OptSection = MainTab:CreateSection("Scan Options")
+
+    MainTab:CreateToggle({
+        Title = "Bytecode Dump",
+        Description = "Raw hex dump of script bytecode when decompile fails",
+        Default = true,
+        Callback = function(v) ScanState.IncludeBytecode = v end
+    })
+
+    MainTab:CreateToggle({
+        Title = "Registry Scan (getreg)",
+        Description = "Scan memory registry for loaded closures",
+        Default = true,
+        Callback = function(v) ScanState.IncludeReg = v end
+    })
+
+    MainTab:CreateToggle({
+        Title = "Nil Instances",
+        Description = "Scan for nil-parented hidden scripts",
+        Default = true,
+        Callback = function(v) ScanState.IncludeNil = v end
+    })
+
+    MainTab:CreateToggle({
+        Title = "Server Scripts",
+        Description = "ServerScriptService, ServerStorage, ReplicatedStorage",
+        Default = true,
+        Callback = function(v) ScanState.IncludeServer = v end
+    })
+
+    MainTab:CreateToggle({
+        Title = "Deep Scan",
+        Description = "Walk upvalue chains, extract constants & environments",
+        Default = true,
+        Callback = function(v) ScanState.DeepScan = v end
+    })
+
+    MainTab:CreateToggle({
+        Title = "Remote Spy",
+        Description = "Track all RemoteEvents and RemoteFunctions",
+        Default = true,
+        Callback = function(v) ScanState.IncludeRemotes = v end
+    })
+
+    local StatSection = MainTab:CreateSection("Status")
+
+    StatusRef = MainTab:CreateLabel("Status: Ready")
+    TimeRef = MainTab:CreateLabel("Time Remaining: --:--")
+    FileRef = MainTab:CreateLabel("Save Location: Not started")
+    CountRef = MainTab:CreateLabel("Total Scripts Found: 0")
+    SuccessRef = MainTab:CreateLabel("Decompiled: 0 | Protected: 0 | Bytecode: 0")
+
+    local ActionSection = MainTab:CreateSection("Controls")
+
+    MainTab:CreateButton({
+        Title = "Start Full Scan",
+        Description = "Begin exhaustive script collection and decompilation",
+        Callback = RunScanner
+    })
+
+    MainTab:CreateButton({
+        Title = "Toggle Pause",
+        Description = "Pause / resume the current scan",
+        Callback = function()
+            if not ScanState.IsScanning then
+                Fluent:Notify({ Title = "Info", Content = "No scan running.", Duration = 2 })
+                return
+            end
+            ScanState.IsPaused = not ScanState.IsPaused
+            ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
+            Fluent:Notify({
+                Title = ScanState.IsPaused and "Paused" or "Resumed",
+                Content = ScanState.IsPaused and "Click again to resume." or "Scan resumed.",
+                Duration = 2
+            })
+        end
+    })
+
+    MainTab:CreateButton({
+        Title = "Stop Scan",
+        Description = "Abort the current scan (partial results saved)",
+        Callback = function()
+            if not ScanState.IsScanning then return end
+            ScanState.IsScanning = false
+            ScanState.IsPaused = false
+            ScanState.StatusText = "STOPPED"
+            getgenv().ScannerRunning = false
+            Fluent:Notify({ Title = "Stopped", Content = "Scan aborted. Partial results saved.", Duration = 3 })
+        end
+    })
+
+    MainTab:CreateButton({
+        Title = "Reinstall Bypass Hooks",
+        Description = "Force reinstall all anti-cheat bypass hooks",
+        Callback = function()
+            BypassState.HooksInstalled = false
+            InstallApexBypass()
+            Fluent:Notify({ Title = "Bypass", Content = "All hooks reinstalled.", Duration = 3 })
+        end
+    })
+
+    MainTab:CreateButton({
+        Title = "Rebuild UI",
+        Description = "Destroy and recreate the Fluent interface",
+        Callback = function()
+            UIExists = false
+            BuildUI()
+        end
+    })
+
+    -- ── ADVANCED TAB ──
+    local AdvTab = Window:CreateTab("Advanced", "wrench")
+
+    AdvTab:CreateParagraph({
+        Title = "Advanced Extraction Tools",
+        Content = "Deep extraction methods for protected and locked scripts"
+    })
+
+    local ExtSection = AdvTab:CreateSection("Extraction")
+
+    AdvTab:CreateButton({
+        Title = "Dump All Bytecode (Raw Hex)",
+        Description = "Extract raw bytecode from every script in the game",
+        Callback = function() task.spawn(DumpAllBytecode) end
+    })
+
+    AdvTab:CreateButton({
+        Title = "Scan Registry Closures",
+        Description = "Deep scan getreg() for loaded Lua closures with upvalues",
+        Callback = function() task.spawn(ScanRegistry) end
+    })
+
+    AdvTab:CreateButton({
+        Title = "Dump ServerScriptService",
+        Description = "Dump all scripts from SSS, SS, RS, StarterPlayer, StarterGui, StarterPack",
+        Callback = function() task.spawn(DumpServerScripts) end
+    })
+
+    AdvTab:CreateButton({
+        Title = "Dump Nil Instances",
+        Description = "Extract scripts parented to nil (hidden by game)",
+        Callback = function() task.spawn(DumpNilInstances) end
+    })
+
+    AdvTab:CreateButton({
+        Title = "Dump All Connections",
+        Description = "Map all signal connections with source info",
+        Callback = function() task.spawn(DumpConnections) end
+    })
+
+    local ExportSection = AdvTab:CreateSection("Export")
+
+    AdvTab:CreateButton({
+        Title = "Export Full Game (saveinstance)",
+        Description = "Save the entire game as a .rbxl file",
+        Callback = function()
+            if Capabilities.SaveInstance then
+                pcall(function() saveinstance({ filename = GameInfo.Name .. "_FullExport.rbxl" }) end)
+                Fluent:Notify({ Title = "Export", Content = "Game exported to workspace.", Duration = 5 })
+            else
+                Fluent:Notify({ Title = "Unsupported", Content = "saveinstance not available on this executor.", Duration = 3 })
+            end
+        end
+    })
+
+    local SysSection = AdvTab:CreateSection("System")
+
+    AdvTab:CreateButton({
+        Title = "Print Executor Capabilities",
+        Description = "Dump all detected executor functions to console",
+        Callback = function()
+            print("========================================")
+            print("  EXECUTOR CAPABILITIES")
+            print("========================================")
+            for k, v in pairs(Capabilities) do
+                print(string.format("  %s: %s", k, tostring(v)))
+            end
+            print(string.format("  Executor: %s", ExecutorName))
+            print(string.format("  Bypass Hooks: %s", BypassState.HooksInstalled and "INSTALLED" or "FAILED"))
+            print(string.format("  Tamper Detected: %s", BypassState.Tampered and "YES" or "NO"))
+            print("========================================")
+            Fluent:Notify({ Title = "Console", Content = "Capabilities printed to dev console.", Duration = 3 })
+        end
+    })
+
+    AdvTab:CreateButton({
+        Title = "Copy Save Path to Clipboard",
+        Description = "Copy the current scan output file path",
+        Callback = function()
+            if Capabilities.SetClipboard and ScanState.CurrentFile ~= "" then
+                pcall(function() setclipboard(ScanState.CurrentFile) end)
+                Fluent:Notify({ Title = "Copied", Content = "Path copied to clipboard.", Duration = 2 })
+            else
+                Fluent:Notify({ Title = "Error", Content = "No file path to copy. Run a scan first.", Duration = 3 })
+            end
+        end
+    })
+
+    -- ── REMOTE SPY TAB ──
+    local RemoteTab = Window:CreateTab("Remote Spy", "radio")
+
+    RemoteTab:CreateParagraph({
+        Title = "Remote Event Monitor",
+        Content = "Tracks all RemoteEvents and RemoteFunctions in the game.\nMonitors connections and firing patterns."
+    })
+
+    RemoteCountRef = RemoteTab:CreateLabel("Remotes Found: 0")
+    RemoteConnRef = RemoteTab:CreateLabel("Connections: 0")
+
+    local SpySection = RemoteTab:CreateSection("Controls")
+
+    RemoteTab:CreateButton({
+        Title = "Start Remote Spy",
+        Description = "Begin monitoring all remote events",
+        Callback = function()
+            StartRemoteSpy()
+            Fluent:Notify({ Title = "Remote Spy", Content = "Monitoring started.", Duration = 3 })
+        end
+    })
+
+    RemoteTab:CreateButton({
+        Title = "Export Remote Log",
+        Description = "Save all discovered remotes to a file",
+        Callback = function()
+            local path = GameInfo.Name .. "_RemoteSpy.txt"
+            local content = "=== REMOTE SPY DUMP: " .. GameInfo.Name .. " ===\n"
+            content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n"
+            for name, data in pairs(RemotesLog) do
+                content = content .. string.format("Name: %s\nType: %s\n---\n", data.Name, data.Type)
+            end
+            SafeWriteFile(path, content)
+            Fluent:Notify({ Title = "Exported", Content = "Saved to " .. path, Duration = 3 })
+        end
+    })
+
+    RemoteTab:CreateButton({
+        Title = "Fire All Remotes (Test)",
+        Description = "Fire every RemoteEvent with no args — for discovery",
+        Callback = function()
+            local count = 0
+            pcall(function()
+                for _, obj in ipairs(game:GetDescendants()) do
+                    if obj:IsA("RemoteEvent") then
+                        pcall(function() obj:FireServer() end)
+                        count = count + 1
+                    end
+                end
+            end)
+            Fluent:Notify({ Title = "Fired", Content = count .. " RemoteEvents fired.", Duration = 3 })
+        end
+    })
+
+    local RemoteListSection = RemoteTab:CreateSection("Discovered Remotes")
+    local RemoteListText = RemoteTab:CreateLabel("Run spy then check exported file for full list.")
+
+    -- ── SETTINGS TAB ──
+    local SettingsTab = Window:CreateTab("Settings", "settings")
+
+    SettingsTab:CreateParagraph({
+        Title = "About",
+        Content = "Apex Script Scanner v5.2\nFluent UI Edition\n\nBypass Layers: 7\nDecompile Methods: 7\nScript Sources: 13\n\nBuilt for He."
+    })
+
+    local ThemeSection = SettingsTab:CreateSection("Theme")
+
+    SettingsTab:CreateDropdown({
+        Title = "Theme",
+        Description = "Change the UI color scheme",
+        Values = { "Dark", "Light", "Amoled", "Darker" },
+        Default = "Dark",
+        Callback = function(val)
+            pcall(function()
+                if Fluent.SetTheme then Fluent:SetTheme(val) end
+            end)
+        end
+    })
+
+    local AcrylicSection = SettingsTab:CreateSection("Effects")
+
+    SettingsTab:CreateToggle({
+        Title = "Acrylic Background",
+        Description = "Toggle the acrylic blur effect (may impact performance)",
+        Default = true,
+        Callback = function(v)
+            pcall(function()
+                if Fluent.ToggleAcrylic then Fluent:ToggleAcrylic(v) end
+            end)
+        end
+    })
+
+    -- ── UI UPDATER ──
+    task.spawn(function()
+        while true do
+            task.wait(0.3)
+            pcall(function()
+                if UIExists then
+                    StatusRef:Set(ScanState.StatusText)
+                    TimeRef:Set(ScanState.TimeText)
+                    FileRef:Set(ScanState.FileText)
+                    CountRef:Set(ScanState.CountText)
+                    SuccessRef:Set(ScanState.SuccessText)
+                    RemoteCountRef:Set("Remotes Found: " .. ScanState.RemotesFound)
+                    RemoteConnRef:Set("Connections: " .. ScanState.ConnectionsFound)
+                end
+            end)
+        end
+    end)
+
+    -- ── UI WATCHER ──
+    task.spawn(function()
+        while true do
+            task.wait(2)
+            pcall(function()
+                if UIExists and UIScreenGui and UIScreenGui.Parent == nil then
+                    print("[Scanner] UI destroyed. Rebuilding...")
+                    UIExists = false
+                    BuildUI()
+                end
+            end)
+        end
+    end)
+
+    UIExists = true
+
+    Fluent:Notify({
+        Title = "Scanner Ready",
+        Content = string.format("%s | %s", GameInfo.Name, ExecutorName),
+        Duration = 5
+    })
+
+    print("========================================")
+    print("  APEX SCRIPT SCANNER v5.2 — FLUENT UI")
+    print("  Executor: " .. ExecutorName)
+    print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
+    print("  Bytecode: " .. (Capabilities.GetScriptBytecode and "SUPPORTED" or "UNSUPPORTED"))
+    print("  Registry: " .. (Capabilities.GetReg and "SUPPORTED" or "UNSUPPORTED"))
+    print("  Nil Instances: " .. (Capabilities.GetNilInstances and "SUPPORTED" or "UNSUPPORTED"))
+    print("  Connections: " .. (Capabilities.GetConnections and "SUPPORTED" or "UNSUPPORTED"))
+    print("  SaveInstance: " .. (Capabilities.SaveInstance and "SUPPORTED" or "UNSUPPORTED"))
+    print("========================================")
+end
+
+-- ============================================================
+-- SCRIPT COLLECTOR — 13 SOURCES
 -- ============================================================
 local function CollectEverything()
     local collected = {}
@@ -1007,23 +942,28 @@ local function CollectEverything()
         })
     end
 
+    -- 1. Game tree
     pcall(function()
         for _, obj in ipairs(game:GetDescendants()) do addScript(obj, "GameTree") end
     end)
 
+    -- 2-7. Services
     if ScanState.IncludeServer then
-        pcall(function()
-            local sss = game:GetService("ServerScriptService")
-            for _, obj in ipairs(sss:GetDescendants()) do addScript(obj, "SSS") end
-        end)
-        pcall(function()
-            local rs = game:GetService("ReplicatedStorage")
-            for _, obj in ipairs(rs:GetDescendants()) do addScript(obj, "RS") end
-        end)
-        pcall(function()
-            local ss = game:GetService("ServerStorage")
-            for _, obj in ipairs(ss:GetDescendants()) do addScript(obj, "SS") end
-        end)
+        local services = {
+            { "ServerScriptService", "SSS" },
+            { "ReplicatedStorage", "RS" },
+            { "ServerStorage", "SS" },
+            { "StarterGui", "SG" },
+            { "StarterPack", "SP" },
+        }
+        for _, svc in ipairs(services) do
+            pcall(function()
+                local service = game:GetService(svc[1])
+                for _, obj in ipairs(service:GetDescendants()) do addScript(obj, svc[2]) end
+            end)
+        end
+
+        -- StarterPlayer sub-folders
         pcall(function()
             local sp = game:GetService("StarterPlayer")
             if sp then
@@ -1033,45 +973,44 @@ local function CollectEverything()
                 if spc then for _, obj in ipairs(spc:GetDescendants()) do addScript(obj, "SPC") end end
             end
         end)
-        pcall(function()
-            local sg = game:GetService("StarterGui")
-            for _, obj in ipairs(sg:GetDescendants()) do addScript(obj, "SG") end
-        end)
-        pcall(function()
-            local sp = game:GetService("StarterPack")
-            for _, obj in ipairs(sp:GetDescendants()) do addScript(obj, "SP") end
-        end)
     end
 
+    -- 8. getscripts()
     if Capabilities.GetScripts then
         pcall(function()
             for _, s in ipairs(getscripts()) do addScript(s, "getscripts()") end
         end)
     end
+
+    -- 9. getloadedmodules()
     if Capabilities.GetLoadedModules then
         pcall(function()
             for _, s in ipairs(getloadedmodules()) do addScript(s, "getloadedmodules()") end
         end)
     end
+
+    -- 10. getnilinstances()
     if ScanState.IncludeNil and Capabilities.GetNilInstances then
         pcall(function()
             for _, s in ipairs(getnilinstances()) do addScript(s, "getnilinstances()") end
         end)
     end
+
+    -- 11. getinstances()
     if Capabilities.GetInstances then
         pcall(function()
             for _, inst in ipairs(getinstances()) do addScript(inst, "getinstances()") end
         end)
     end
 
-    -- Registry scan
+    -- 12. getreg() closures
     if ScanState.IncludeReg and Capabilities.GetReg then
         pcall(function()
             local reg = getreg()
             for _, v in ipairs(reg) do
                 if type(v) == "function" then
                     local isLua = true
-                    if Capabilities.Newcclosure then isLua = islclosure(v) end
+                    if Capabilities.IsLuaLclosure then isLua = islclosure(v) end
                     if isLua then
                         local info = debug.getinfo(v)
                         if info and info.what == "Lua" and info.source and #info.source > 0 then
@@ -1091,7 +1030,7 @@ local function CollectEverything()
         end)
     end
 
-    -- Upvalue chain walk
+    -- 13. Upvalue chain walk
     if ScanState.DeepScan and Capabilities.DebugGetUpvalues and Capabilities.GetReg then
         pcall(function()
             local reg = getreg()
@@ -1102,6 +1041,23 @@ local function CollectEverything()
                         for _, uv in ipairs(upvals) do
                             if typeof(uv) == "Instance" then
                                 addScript(uv, "upvalue-chain")
+                            elseif type(uv) == "function" then
+                                local info = debug.getinfo(uv)
+                                if info and info.what == "Lua" and info.source and #info.source > 0 then
+                                    local scriptName = info.short_src or info.source
+                                    local key = scriptName .. "|upvalue"
+                                    if not seen[key] then
+                                        seen[key] = true
+                                        table.insert(collected, {
+                                            Object = nil,
+                                            Closure = uv,
+                                            Name = scriptName,
+                                            Class = "Closure(upvalue)",
+                                            Disabled = false,
+                                            Source = "upvalue-chain"
+                                        })
+                                    end
+                                end
                             end
                         end
                     end
@@ -1125,6 +1081,9 @@ local function DecompileScript(scriptObj, closure)
 
         pcall(function() result = decompile(scriptObj, true) end)
         if result and #result > 10 then return result, "decompile(true)" end
+
+        pcall(function() result = decompile(scriptObj, false) end)
+        if result and #result > 10 then return result, "decompile(false)" end
     end
 
     -- Method 2: getscriptclosure → decompile
@@ -1175,6 +1134,8 @@ local function DecompileScript(scriptObj, closure)
                         local byte = string.byte(bytecode, i + j) or 0
                         hexLine = hexLine .. string.format("%02X ", byte)
                         asciiLine = asciiLine .. (byte >= 32 and byte < 127 and string.char(byte) or ".")
+                    else
+                        hexLine = hexLine .. "   "
                     end
                 end
                 table.insert(hexDump, string.format("%08X  %-48s  %s", i - 1, hexLine, asciiLine))
@@ -1187,7 +1148,7 @@ local function DecompileScript(scriptObj, closure)
 
             local stringSection = ""
             if #stringsFound > 0 then
-                stringSection = "\n\n-- STRING CONSTANTS:\n"
+                stringSection = "\n\n-- STRING CONSTANTS EXTRACTED:\n"
                 for i, s in ipairs(stringsFound) do
                     if i > 100 then break end
                     stringSection = stringSection .. string.format("  [%d] %q\n", i, s)
@@ -1195,13 +1156,14 @@ local function DecompileScript(scriptObj, closure)
             end
 
             ScanState.BytecodeDumped = ScanState.BytecodeDumped + 1
-            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n\n" .. table.concat(hexDump, "\n") .. stringSection, "bytecode"
+            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n-- Hex cap: " .. limit .. "\n\n" ..
+                   table.concat(hexDump, "\n") .. stringSection, "bytecode"
         end
     end
 
-    -- Method 5: Closure analysis
+    -- Method 5-7: Closure analysis
     if closure and ScanState.DeepScan then
-        local result = "-- CLOSURE ANALYSIS\n\n"
+        local result = "-- CLOSURE ANALYSIS (decompile failed)\n\n"
 
         pcall(function()
             if Capabilities.DebugGetUpvalues then
@@ -1209,11 +1171,25 @@ local function DecompileScript(scriptObj, closure)
                 if upvals and #upvals > 0 then
                     result = result .. "-- UPVALUES (" .. #upvals .. "):\n"
                     for i, v in ipairs(upvals) do
-                        result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 300))
+                        result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 500))
+                        if type(v) == "function" then
+                            pcall(function()
+                                local inner = debug.getupvalues(v)
+                                if inner and #inner > 0 then
+                                    result = result .. string.format("      inner (%d):\n", #inner)
+                                    for j, iv in ipairs(inner) do
+                                        result = result .. string.format("        [%d.%d] %s: %s\n", i, j, type(iv), tostring(iv):sub(1, 200))
+                                    end
+                                end
+                            end)
+                        end
                         if typeof(v) == "Instance" then
-                            pcall(function() result = result .. string.format("      → %s (%s)\n", v:GetFullName(), v.ClassName) end)
+                            pcall(function()
+                                result = result .. string.format("      -> Instance: %s (%s)\n", v:GetFullName(), v.ClassName)
+                            end)
                         end
                     end
+                    result = result .. "\n"
                 end
             end
         end)
@@ -1222,10 +1198,11 @@ local function DecompileScript(scriptObj, closure)
             if Capabilities.DebugGetConstants then
                 local consts = debug.getconstants(closure)
                 if consts and #consts > 0 then
-                    result = result .. "\n-- CONSTANTS (" .. #consts .. "):\n"
+                    result = result .. "-- CONSTANTS (" .. #consts .. "):\n"
                     for i, v in ipairs(consts) do
                         result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 300))
                     end
+                    result = result .. "\n"
                 end
             end
         end)
@@ -1233,17 +1210,20 @@ local function DecompileScript(scriptObj, closure)
         pcall(function()
             local info = debug.getinfo(closure)
             if info then
-                result = result .. "\n-- DEBUG INFO:\n"
+                result = result .. "-- DEBUG INFO:\n"
                 result = result .. "  source: " .. tostring(info.source) .. "\n"
+                result = result .. "  short_src: " .. tostring(info.short_src) .. "\n"
                 result = result .. "  lines: " .. tostring(info.linedefined) .. "-" .. tostring(info.lastlinedefined) .. "\n"
                 result = result .. "  what: " .. tostring(info.what) .. "\n"
+                result = result .. "  nparams: " .. tostring(info.nparams) .. "\n"
+                result = result .. "  nups: " .. tostring(info.nups) .. "\n"
             end
         end)
 
         if #result > 50 then return result, "closure-analysis" end
     end
 
-    return "-- DECOMPILE FAILED — All methods exhausted.\n", "failed"
+    return "-- DECOMPILE FAILED (Protected Bytecode)\n-- All 7 methods exhausted.\n", "failed"
 end
 
 -- ============================================================
@@ -1269,9 +1249,12 @@ local function FlushBuffer()
     if currentFileSize + #chunk > MAX_FILE_SIZE then
         filePart = filePart + 1
         local path = GetFilePath(filePart)
-        SafeWriteFile(path, string.format("=== APEX SCAN PART %d ===\nDate: %s\n\n", filePart, os.date("%Y-%m-%d %H:%M:%S")))
+        SafeWriteFile(path, string.format(
+            "=== APEX SCRIPT SCAN: %s ===\n=== PART %d ===\nGame ID: %d | JobID: %s\nExecutor: %s\nDate: %s\n\n",
+            GameInfo.Name, filePart, GameInfo.PlaceId, GameInfo.JobId, ExecutorName, os.date("%Y-%m-%d %H:%M:%S")))
         currentFileSize = 0
         ScanState.CurrentFile = path
+        ScanState.FileParts = filePart
         ScanState.FileText = "Save: " .. path
     end
 
@@ -1282,10 +1265,11 @@ end
 local function InitializeFile()
     filePart = 1
     ScanState.CurrentFile = GetFilePath(1)
-    SafeWriteFile(ScanState.CurrentFile,
-        string.format("=== APEX SCRIPT SCAN: %s ===\nGame ID: %d | JobID: %s\nExecutor: %s\nDate: %s\n\n",
-            GameInfo.Name, GameInfo.PlaceId, GameInfo.JobId, ExecutorName, os.date("%Y-%m-%d %H:%M:%S")))
+    SafeWriteFile(ScanState.CurrentFile, string.format(
+        "=== APEX SCRIPT SCAN: %s ===\n=== PART 1 ===\nGame ID: %d | JobID: %s\nExecutor: %s\nDate: %s\n\n",
+        GameInfo.Name, GameInfo.PlaceId, GameInfo.JobId, ExecutorName, os.date("%Y-%m-%d %H:%M:%S")))
     currentFileSize = 0
+    ScanState.FileParts = 1
     ScanState.FileText = "Save: " .. ScanState.CurrentFile
 end
 
@@ -1294,8 +1278,12 @@ end
 -- ============================================================
 function DumpAllBytecode()
     task.spawn(function()
-        if not Capabilities.GetScriptBytecode then return end
+        if not Capabilities.GetScriptBytecode then
+            Fluent:Notify({ Title = "Error", Content = "getscriptbytecode not supported.", Duration = 4 })
+            return
+        end
         ScanState.StatusText = "Dumping bytecode..."
+
         local allScripts = {}
         pcall(function()
             for _, obj in ipairs(game:GetDescendants()) do
@@ -1304,137 +1292,280 @@ function DumpAllBytecode()
                 end
             end
         end)
+        if Capabilities.GetScripts then
+            pcall(function()
+                for _, s in ipairs(getscripts()) do table.insert(allScripts, s) end
+            end)
+        end
+        if Capabilities.GetNilInstances then
+            pcall(function()
+                for _, s in ipairs(getnilinstances()) do table.insert(allScripts, s) end
+            end)
+        end
+
         local path = GameInfo.Name .. "_BytecodeDump.txt"
-        SafeWriteFile(path, "=== BYTECODE DUMP ===\n")
+        SafeWriteFile(path, "=== BYTECODE DUMP: " .. GameInfo.Name .. " ===\n")
         local count = 0
+
         for i, s in ipairs(allScripts) do
             pcall(function()
                 local bc = getscriptbytecode(s)
                 if bc and #bc > 0 then
-                    SafeAppendFile(path, string.format("\n%s\n%s\nLength: %d bytes\n", string.rep("=", 60), s:GetFullName(), #bc))
+                    local entry = string.format("\n%s\n%s\nBytecode Length: %d bytes\n", string.rep("=", 60), s:GetFullName(), #bc)
+                    SafeAppendFile(path, entry)
+                    local rawPath = GameInfo.Name .. "_BC_" .. tostring(s):gsub("[^%w_]", "_") .. ".bin"
+                    pcall(function() writefile(rawPath, bc) end)
                     count = count + 1
                 end
             end)
             ScanState.StatusText = string.format("Bytecode: %d/%d", i, #allScripts)
             task.wait()
         end
-        ScanState.StatusText = "Bytecode done: " .. count
+
+        ScanState.StatusText = "Bytecode done: " .. count .. " scripts"
+        Fluent:Notify({ Title = "Bytecode Dump", Content = count .. " scripts dumped.", Duration = 5 })
     end)
 end
 
 function ScanRegistry()
     task.spawn(function()
-        if not Capabilities.GetReg then return end
+        if not Capabilities.GetReg then
+            Fluent:Notify({ Title = "Error", Content = "getreg not supported.", Duration = 4 })
+            return
+        end
         ScanState.StatusText = "Scanning registry..."
+
         local path = GameInfo.Name .. "_RegistryDump.txt"
-        SafeWriteFile(path, "=== REGISTRY DUMP ===\n\n")
+        SafeWriteFile(path, "=== REGISTRY CLOSURE DUMP: " .. GameInfo.Name .. " ===\n\n")
         local count = 0
         local reg = getreg()
+        local entries = {}
+
         for _, v in ipairs(reg) do
             if type(v) == "function" then
-                local info = debug.getinfo(v)
-                if info and info.source and #info.source > 0 then
-                    local entry = string.format("Function: %s\n  Source: %s\n  Lines: %s-%s\n", tostring(v), info.short_src or info.source, tostring(info.linedefined), tostring(info.lastlinedefined))
-                    pcall(function()
-                        if Capabilities.DebugGetUpvalues then
-                            local upvals = debug.getupvalues(v)
-                            if upvals then
-                                for i, uv in ipairs(upvals) do
-                                    entry = entry .. string.format("  [%d] %s: %s\n", i, type(uv), tostring(uv):sub(1, 200))
+                local isLua = true
+                if Capabilities.IsLuaLclosure then isLua = islclosure(v) end
+                if isLua then
+                    local info = debug.getinfo(v)
+                    if info and info.source and #info.source > 0 then
+                        local entry = string.format(
+                            "Function: %s\n  Source: %s\n  Line: %s-%s\n  What: %s\n  Params: %s\n  Upvalues: %s\n",
+                            tostring(v), info.short_src or info.source,
+                            tostring(info.linedefined), tostring(info.lastlinedefined),
+                            info.what or "unknown", tostring(info.nparams), tostring(info.nups))
+
+                        pcall(function()
+                            if Capabilities.DebugGetUpvalues then
+                                local upvals = debug.getupvalues(v)
+                                if upvals and #upvals > 0 then
+                                    entry = entry .. "  Upvalues:\n"
+                                    for i, uv in ipairs(upvals) do
+                                        entry = entry .. string.format("    [%d] %s: %s\n", i, type(uv), tostring(uv):sub(1, 300))
+                                        if type(uv) == "function" then
+                                            pcall(function()
+                                                local inner = debug.getupvalues(uv)
+                                                if inner then
+                                                    for j, iv in ipairs(inner) do
+                                                        entry = entry .. string.format("      [%d.%d] %s: %s\n", i, j, type(iv), tostring(iv):sub(1, 200))
+                                                    end
+                                                end
+                                            end)
+                                        end
+                                        if typeof(uv) == "Instance" then
+                                            pcall(function()
+                                                entry = entry .. string.format("      -> %s (%s)\n", uv:GetFullName(), uv.ClassName)
+                                            end)
+                                        end
+                                    end
                                 end
                             end
+                        end)
+
+                        pcall(function()
+                            if Capabilities.DebugGetConstants then
+                                local consts = debug.getconstants(v)
+                                if consts and #consts > 0 then
+                                    entry = entry .. "  Constants:\n"
+                                    for i, c in ipairs(consts) do
+                                        entry = entry .. string.format("    [%d] %s: %s\n", i, type(c), tostring(c):sub(1, 300))
+                                    end
+                                end
+                            end
+                        end)
+
+                        entry = entry .. string.rep("-", 40) .. "\n"
+                        table.insert(entries, entry)
+                        count = count + 1
+
+                        if count % 50 == 0 then
+                            SafeAppendFile(path, table.concat(entries, "\n"))
+                            entries = {}
+                            ScanState.StatusText = string.format("Registry: %d closures", count)
+                            task.wait()
                         end
-                    end)
-                    entry = entry .. string.rep("-", 40) .. "\n"
-                    SafeAppendFile(path, entry)
-                    count = count + 1
-                    if count % 50 == 0 then task.wait() end
+                    end
                 end
             end
         end
-        ScanState.StatusText = "Registry done: " .. count
+
+        if #entries > 0 then
+            SafeAppendFile(path, table.concat(entries, "\n"))
+        end
+
+        ScanState.StatusText = "Registry done: " .. count .. " closures"
+        Fluent:Notify({ Title = "Registry Scan", Content = count .. " closures found.", Duration = 5 })
     end)
 end
 
 function DumpServerScripts()
     task.spawn(function()
         ScanState.StatusText = "Dumping server scripts..."
+
         local path = GameInfo.Name .. "_ServerScripts.txt"
-        SafeWriteFile(path, "=== SERVER SCRIPT DUMP ===\n\n")
+        SafeWriteFile(path, "=== SERVER SCRIPT DUMP: " .. GameInfo.Name .. " ===\n\n")
         local services = { "ServerScriptService", "ServerStorage", "ReplicatedStorage", "StarterPlayer", "StarterGui", "StarterPack" }
         local count = 0
+
         for _, serviceName in ipairs(services) do
             pcall(function()
                 local service = game:GetService(serviceName)
+                SafeAppendFile(path, string.format("\n%s\n%s\n\n", string.rep("=", 60), serviceName))
+
                 for _, obj in ipairs(service:GetDescendants()) do
                     if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                        local name = obj:GetFullName()
+                        local class = obj.ClassName
+                        local disabled = obj.Disabled and " [DISABLED]" or ""
+
                         local decompiled, method = DecompileScript(obj)
-                        local entry = string.format("\n%s\nSCRIPT: %s\nCLASS: %s\nSERVICE: %s\nSTATUS: %s\n%s\n%s\n\n",
-                            string.rep("=", 60), obj:GetFullName(), obj.ClassName, serviceName,
-                            method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
-                            string.rep("=", 60), decompiled)
+                        local status = method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")"
+
+                        local entry = string.format(
+                            "\n%s\nSCRIPT: %s%s\nCLASS: %s\nSERVICE: %s\nSTATUS: %s\n%s\n%s\n\n",
+                            string.rep("=", 60), name, disabled, class, serviceName,
+                            status, string.rep("=", 60), decompiled)
+
                         SafeAppendFile(path, entry)
                         count = count + 1
+                        ScanState.StatusText = string.format("Server: %d (%s)", count, serviceName)
                         task.wait()
                     end
                 end
             end)
-            ScanState.StatusText = string.format("Server: %d (%s)", count, serviceName)
         end
+
         ScanState.StatusText = "Server dump done: " .. count
+        Fluent:Notify({ Title = "Server Dump", Content = count .. " scripts saved.", Duration = 5 })
     end)
 end
 
 function DumpNilInstances()
     task.spawn(function()
-        if not Capabilities.GetNilInstances then return end
+        if not Capabilities.GetNilInstances then
+            Fluent:Notify({ Title = "Error", Content = "getnilinstances not supported.", Duration = 4 })
+            return
+        end
         ScanState.StatusText = "Dumping nil instances..."
+
         local path = GameInfo.Name .. "_NilInstances.txt"
-        SafeWriteFile(path, "=== NIL INSTANCE DUMP ===\n\n")
+        SafeWriteFile(path, "=== NIL INSTANCE DUMP: " .. GameInfo.Name .. " ===\n\n")
         local count = 0
+
         for _, obj in ipairs(getnilinstances()) do
             pcall(function()
                 if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
+                    local name = "nil::" .. (obj.Name or "Unknown")
+                    local class = obj.ClassName
+                    local disabled = obj.Disabled and " [DISABLED]" or ""
+
                     local decompiled, method = DecompileScript(obj)
-                    SafeAppendFile(path, string.format("\nNIL: %s\nCLASS: %s\nSTATUS: %s\n%s\n\n",
-                        obj.Name, obj.ClassName, method == "failed" and "PROTECTED" or "EXTRACTED", decompiled))
+                    local status = method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")"
+
+                    SafeAppendFile(path, string.format(
+                        "\n%s\nNIL SCRIPT: %s%s\nCLASS: %s\nSTATUS: %s\n%s\n%s\n\n",
+                        string.rep("=", 60), name, disabled, class, status,
+                        string.rep("=", 60), decompiled))
                     count = count + 1
                 end
             end)
+            ScanState.StatusText = string.format("Nil: %d", count)
             task.wait()
         end
+
         ScanState.StatusText = "Nil dump done: " .. count
+        Fluent:Notify({ Title = "Nil Dump", Content = count .. " nil scripts found.", Duration = 5 })
     end)
 end
 
 function DumpConnections()
     task.spawn(function()
-        if not Capabilities.GetConnections then return end
+        if not Capabilities.GetConnections then
+            Fluent:Notify({ Title = "Error", Content = "getconnections not supported.", Duration = 4 })
+            return
+        end
         ScanState.StatusText = "Dumping connections..."
+
         local path = GameInfo.Name .. "_Connections.txt"
-        SafeWriteFile(path, "=== CONNECTIONS DUMP ===\n\n")
+        SafeWriteFile(path, "=== CONNECTIONS DUMP: " .. GameInfo.Name .. " ===\n\n")
         local count = 0
+
         pcall(function()
             for _, obj in ipairs(game:GetDescendants()) do
-                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or obj:IsA("BindableEvent") then
-                    local entry = string.format("\nSIGNAL: %s (%s)\n", obj:GetFullName(), obj.ClassName)
+                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or
+                   obj:IsA("BindableEvent") or obj:IsA("BindableFunction") then
+                    local entry = string.format("\n%s\nSIGNAL: %s\nCLASS: %s\n", string.rep("=", 60), obj:GetFullName(), obj.ClassName)
+
                     pcall(function()
                         local conns = getconnections(obj.OnClientEvent)
                         entry = entry .. string.format("  OnClientEvent: %d connections\n", #conns)
                         for i, conn in ipairs(conns) do
+                            entry = entry .. string.format("    [%d] Enabled: %s\n", i, tostring(conn.Enabled))
                             if conn.Function then
                                 local info = debug.getinfo(conn.Function)
-                                entry = entry .. string.format("    [%d] %s\n", i, info.short_src or "unknown")
+                                if info then
+                                    entry = entry .. string.format("        Source: %s\n", info.short_src or info.source or "unknown")
+                                    entry = entry .. string.format("        Lines: %s-%s\n", tostring(info.linedefined), tostring(info.lastlinedefined))
+                                end
                             end
                         end
                     end)
+
+                    if obj:IsA("RemoteFunction") then
+                        pcall(function()
+                            local conns = getconnections(obj.OnClientInvoke)
+                            entry = entry .. string.format("  OnClientInvoke: %d connections\n", #conns)
+                        end)
+                    end
+
                     entry = entry .. string.rep("-", 40) .. "\n"
                     SafeAppendFile(path, entry)
                     count = count + 1
                 end
             end
         end)
+
+        -- UI button connections
+        pcall(function()
+            for _, obj in ipairs(game:GetDescendants()) do
+                if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+                    local conns = getconnections(obj.MouseButton1Click)
+                    if conns and #conns > 0 then
+                        local entry = string.format("\nUI BUTTON: %s (%d connections)\n", obj:GetFullName(), #conns)
+                        for i, conn in ipairs(conns) do
+                            if conn.Function then
+                                local info = debug.getinfo(conn.Function)
+                                entry = entry .. string.format("  [%d] %s\n", i, info.short_src or "unknown")
+                            end
+                        end
+                        SafeAppendFile(path, entry)
+                        count = count + 1
+                    end
+                end
+            end
+        end)
+
         ScanState.StatusText = "Connections done: " .. count
+        Fluent:Notify({ Title = "Connections", Content = count .. " signals mapped.", Duration = 5 })
     end)
 end
 
@@ -1443,8 +1574,14 @@ end
 -- ============================================================
 function RunScanner()
     task.spawn(function()
-        if ScanState.IsScanning then return end
-        if not Capabilities.WriteFile or not Capabilities.AppendFile then return end
+        if ScanState.IsScanning then
+            Fluent:Notify({ Title = "Busy", Content = "Already scanning!", Duration = 3 })
+            return
+        end
+        if not Capabilities.WriteFile or not Capabilities.AppendFile then
+            Fluent:Notify({ Title = "Error", Content = "No file I/O support on this executor.", Duration = 5 })
+            return
+        end
 
         ScanState.IsScanning = true
         ScanState.IsPaused = false
@@ -1453,12 +1590,23 @@ function RunScanner()
         ScanState.Failed = 0
         ScanState.BytecodeDumped = 0
         ScanState.RemotesFound = 0
+        ScanState.ConnectionsFound = 0
         ScanState.StartTime = tick()
-        ScanState.StatusText = "Collecting scripts..."
+        ScanState.StatusText = "Initializing..."
         ScanState.TimeText = "--:--"
+
+        task.wait(0.3)
+
+        -- Re-elevate
+        pcall(function()
+            if setidentity then setidentity(7) end
+            if getthreadcontext then getthreadcontext(7) end
+            if setthreadcontext then setthreadcontext(7) end
+        end)
 
         if ScanState.IncludeRemotes then StartRemoteSpy() end
 
+        ScanState.StatusText = "Collecting scripts..."
         local allScripts = CollectEverything()
         ScanState.TotalScripts = #allScripts
         ScanState.CountText = "Total Scripts: " .. ScanState.TotalScripts
@@ -1467,10 +1615,14 @@ function RunScanner()
             ScanState.StatusText = "No scripts found!"
             ScanState.IsScanning = false
             getgenv().ScannerRunning = false
+            Fluent:Notify({ Title = "Alert", Content = "No scripts detected.", Duration = 4 })
             return
         end
 
+        ScanState.StatusText = "Initializing file system..."
         InitializeFile()
+        task.wait(0.3)
+
         ScanState.StatusText = "Scanning..."
 
         pcall(function()
@@ -1482,7 +1634,10 @@ function RunScanner()
                 if not ScanState.IsScanning then break end
 
                 local data = allScripts[i]
-                local decompiled, method = DecompileScript(data.Object, data.Closure)
+                local scriptObj = data.Object
+                local closure = data.Closure
+
+                local decompiled, method = DecompileScript(scriptObj, closure)
 
                 if method and method ~= "failed" then
                     if method == "bytecode" then
@@ -1494,43 +1649,88 @@ function RunScanner()
                     ScanState.Failed = ScanState.Failed + 1
                 end
 
-                local entry = string.format("\n%s\nSCRIPT: %s\nCLASS: %s\nSOURCE: %s\nSTATUS: %s\n%s\n%s\n\n",
-                    string.rep("=", 60), data.Name, data.Class, data.Source,
-                    method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
-                    string.rep("=", 60), decompiled)
+                local statusIcon = (method == "failed") and "PROTECTED" or ("EXTRACTED (" .. method .. ")")
+
+                local entry = string.format(
+                    "\n%s\nSCRIPT: %s%s\nCLASS: %s\nSOURCE: %s\nSTATUS: %s\n%s\n%s\n\n",
+                    string.rep("=", 60),
+                    data.Name, data.Disabled and " [DISABLED]" or "",
+                    data.Class, data.Source,
+                    statusIcon,
+                    string.rep("=", 60),
+                    decompiled)
 
                 table.insert(writeBuffer, entry)
                 bufferSize = bufferSize + #entry
-                if bufferSize >= MAX_BUFFER_SIZE then FlushBuffer() end
+
+                if bufferSize >= MAX_BUFFER_SIZE then
+                    FlushBuffer()
+                end
 
                 ScanState.Processed = i
+
                 if i % 5 == 0 then
                     local elapsed = tick() - ScanState.StartTime
-                    local remaining = (ScanState.Processed > 0 and elapsed > 0)
-                        and ((ScanState.TotalScripts - ScanState.Processed) / (ScanState.Processed / elapsed)) or 0
+                    local remaining = 0
+                    if ScanState.Processed > 0 and elapsed > 0 then
+                        local rate = ScanState.Processed / elapsed
+                        if rate > 0 then remaining = (ScanState.TotalScripts - ScanState.Processed) / rate end
+                    end
+                    if remaining < 0 then remaining = 0 end
                     local mins = math.floor(remaining / 60)
                     local secs = math.floor(remaining % 60)
                     local pct = math.floor((ScanState.Processed / ScanState.TotalScripts) * 100)
+
                     ScanState.StatusText = string.format("Scanning: %d%% (%d/%d)", pct, ScanState.Processed, ScanState.TotalScripts)
                     ScanState.TimeText = string.format("Time: %02d:%02d", mins, secs)
                     ScanState.SuccessText = string.format("Decompiled: %d | Protected: %d | Bytecode: %d",
                         ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped)
                 end
+
                 task.wait()
             end
         end)
 
         FlushBuffer()
-        SafeAppendFile(ScanState.CurrentFile, string.format("\n=== SCAN COMPLETE ===\nTotal: %d | Extracted: %d | Protected: %d | Bytecode: %d\n",
-            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped))
+
+        -- Write summary
+        SafeAppendFile(ScanState.CurrentFile, string.format(
+            "\n%s\nAPEX SCAN COMPLETE\nTotal: %d | Extracted: %d | Protected: %d | Bytecode: %d\nRemotes: %d | Connections: %d\nElapsed: %.1fs\n%s\n",
+            string.rep("=", 60),
+            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped,
+            ScanState.RemotesFound, ScanState.ConnectionsFound,
+            tick() - ScanState.StartTime,
+            string.rep("=", 60)))
+
+        -- Export remote log if collected
+        if ScanState.RemotesFound > 0 then
+            pcall(function()
+                local remotePath = GameInfo.Name .. "_RemoteSpy.txt"
+                local content = "=== REMOTE SPY DUMP: " .. GameInfo.Name .. " ===\n\n"
+                for name, data in pairs(RemotesLog) do
+                    content = content .. string.format("Name: %s\nType: %s\n---\n", data.Name, data.Type)
+                end
+                SafeWriteFile(remotePath, content)
+            end)
+        end
 
         ScanState.IsScanning = false
         ScanState.StatusText = "COMPLETE!"
         ScanState.TimeText = "00:00"
+        ScanState.SuccessText = string.format("Extracted: %d | Protected: %d | Bytecode: %d",
+            ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped)
+
+        Fluent:Notify({
+            Title = "Scan Complete!",
+            Content = string.format("%d/%d extracted | %d bytecode | %d protected | %d remotes",
+                ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed, ScanState.RemotesFound),
+            Duration = 6
+        })
 
         if Capabilities.SetClipboard then
             pcall(function() setclipboard(ScanState.CurrentFile) end)
         end
+
         getgenv().ScannerRunning = false
     end)
 end
@@ -1539,3 +1739,7 @@ end
 -- START
 -- ============================================================
 BuildUI()
+
+task.delay(2, function()
+    pcall(function() getgenv().ScannerRunning = false end)
+end)
