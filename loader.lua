@@ -1,55 +1,33 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v5.2 — FLUENT UI
--- - Fluent library (github release asset, no rate limiting)
--- - 10-layer anti-cheat bypass
--- - 7-method decompile fallback chain
--- - Registry scan with upvalue chain walking
--- - Remote event spy
--- - Connection dumper
--- - Nil instance scanner
--- - Buffered async file I/O
--- - Anti-tamper hook guard
+-- APEX SCRIPT SCANNER v5.3 — FLUENT UI (STACK FIX)
 -- ============================================================
 
-if getgenv().ScannerRunning then
-    print("[Scanner] Already running.")
-    return
-end
+if getgenv().ScannerRunning then return end
 getgenv().ScannerRunning = true
 
 -- ============================================================
--- APEX BYPASS LAYER
+-- SAFE BYPASS — no metamethod hooks (causes C stack overflow)
 -- ============================================================
-local BypassState = {
-    HooksInstalled = false,
-    OriginalGetInfo = nil,
-    OriginalNamecall = nil,
-    OriginalIndex = nil,
-    OriginalError = nil,
-    OriginalAssert = nil,
-    Tampered = false,
-}
-
+local BypassState = { HooksInstalled = false }
 local ScannerInstances = {}
-local ScannerFunctions = {}
 
 local function HideInstance(inst)
     if typeof(inst) == "Instance" then ScannerInstances[inst] = true end
 end
 
-local function HideFunction(fn)
-    if type(fn) == "function" then ScannerFunctions[fn] = true end
-end
-
-local function InstallApexBypass()
-    -- Layer 1: debug.getinfo scrub
+local function InstallBypass()
+    -- Only hook debug functions and error — these are safe and don't recurse
     pcall(function()
         if hookfunction and not BypassState.HooksInstalled then
+            -- Hook debug.getinfo
             local oldGetInfo = debug.getinfo
-            BypassState.OriginalGetInfo = oldGetInfo
+            local gettingInfo = false
             local function FilteredGetInfo(...)
+                if gettingInfo then return oldGetInfo(...) end
+                gettingInfo = true
                 local info = oldGetInfo(...)
+                gettingInfo = false
                 if info and type(info) == "table" then
                     if info.source and (info.source:match("Scanner") or info.source:match("[Bb]ypass")) then
                         info.source = "Workspace.GameScript"
@@ -57,191 +35,65 @@ local function InstallApexBypass()
                     if info.short_src and (info.short_src:match("Scanner") or info.short_src:match("[Bb]ypass")) then
                         info.short_src = "GameScript"
                     end
-                    if info.func and ScannerFunctions[info.func] then
-                        info.func = nil
-                        info.source = "Workspace.GameScript"
-                        info.short_src = "GameScript"
-                        info.what = "C"
-                    end
                 end
                 return info
             end
-            hookfunction(debug.getinfo, FilteredGetInfo)
-            HideFunction(FilteredGetInfo)
-            BypassState.HooksInstalled = true
-        end
-    end)
-
-    -- Layer 2: __namecall hook
-    pcall(function()
-        if hookmetamethod and not BypassState.OriginalNamecall then
-            local mt = getrawmetatable(game)
-            local oldNamecall = mt.__namecall
-            BypassState.OriginalNamecall = oldNamecall
-            setreadonly(mt, false)
-            local newNamecall
             if newcclosure then
-                newNamecall = newcclosure(function(self, ...)
-                    local method = getnamecallmethod()
-                    if method == "GetFullName" and ScannerInstances[self] then
-                        return "Workspace.GameScript"
-                    end
-                    if method == "FindService" then
-                        local svc = select(1, ...)
-                        if svc and (svc:match("[Aa]nti[Cc]heat") or svc:match("[Pp]rotect") or svc:match("[Ss]hield")) then
-                            return nil
-                        end
-                    end
-                    if method == "GetChildren" or method == "GetDescendants" then
-                        local results = oldNamecall(self, ...)
-                        if type(results) == "table" then
-                            local filtered = {}
-                            for _, v in ipairs(results) do
-                                if not ScannerInstances[v] and v.Name ~= "Scanner" and v.Name ~= "Fluent" and v.Name ~= "ApexUI" then
-                                    table.insert(filtered, v)
-                                end
-                            end
-                            return filtered
-                        end
-                    end
-                    if method == "FindFirstChild" then
-                        local name = select(1, ...)
-                        if name and (name:match("[Ss]canner") or name:match("Fluent") or name:match("ApexUI")) then
-                            return nil
-                        end
-                    end
-                    if method == "IsA" and ScannerInstances[self] then
-                        local cn = select(1, ...)
-                        if cn == "LocalScript" or cn == "Script" or cn == "ModuleScript" then
-                            return false
-                        end
-                    end
-                    return oldNamecall(self, ...)
-                end)
+                hookfunction(debug.getinfo, newcclosure(FilteredGetInfo))
             else
-                newNamecall = function(self, ...)
-                    return oldNamecall(self, ...)
+                hookfunction(debug.getinfo, FilteredGetInfo)
+            end
+
+            -- Hook debug.traceback
+            local oldTraceback = debug.traceback
+            local tracingBack = false
+            local function FilteredTraceback(msg, level)
+                if tracingBack then return oldTraceback(msg, level) end
+                tracingBack = true
+                local tb = oldTraceback(msg, level)
+                tracingBack = false
+                if type(tb) == "string" then
+                    tb = tb:gsub("[Ss]canner", "GameScript")
+                    tb = tb:gsub("[Bb]ypass", "CoreScript")
                 end
+                return tb
             end
-            mt.__namecall = newNamecall
-            setreadonly(mt, true)
-            HideFunction(newNamecall)
-        end
-    end)
-
-    -- Layer 3: __index hook
-    pcall(function()
-        local mt = getrawmetatable(game)
-        if mt and hookmetamethod then
-            setreadonly(mt, false)
-            local oldIndex = mt.__index
-            BypassState.OriginalIndex = oldIndex
-            local newIndex
             if newcclosure then
-                newIndex = newcclosure(function(t, k)
-                    if k == "Name" and ScannerInstances[t] then return "GameScript" end
-                    if k == "ClassName" and ScannerInstances[t] then return "Script" end
-                    if k == "Disabled" and ScannerInstances[t] then return true end
-                    if (k == "Source" or k == "Bytecode") and ScannerInstances[t] then return "" end
-                    return oldIndex(t, k)
-                end)
+                hookfunction(debug.traceback, newcclosure(FilteredTraceback))
             else
-                newIndex = oldIndex
+                hookfunction(debug.traceback, FilteredTraceback)
             end
-            mt.__index = newIndex
-            setreadonly(mt, true)
-        end
-    end)
 
-    -- Layer 4: error/assert/traceback hooks
-    pcall(function()
-        if hookfunction then
+            -- Hook error
             local oldError = error
-            BypassState.OriginalError = oldError
             local function FilteredError(msg, level)
                 if type(msg) == "string" and (msg:match("[Ss]canner") or msg:match("[Bb]ypass")) then
                     return oldError("Unexpected behavior", level)
                 end
                 return oldError(msg, level)
             end
-            hookfunction(error, FilteredError)
-            HideFunction(FilteredError)
-
-            local oldAssert = assert
-            BypassState.OriginalAssert = oldAssert
-            local function FilteredAssert(cond, msg, ...)
-                if type(msg) == "string" and (msg:match("[Ss]canner") or msg:match("[Bb]ypass")) then
-                    return oldAssert(cond, "Assertion failed", ...)
-                end
-                return oldAssert(cond, msg, ...)
+            if newcclosure then
+                hookfunction(error, newcclosure(FilteredError))
+            else
+                hookfunction(error, FilteredError)
             end
-            hookfunction(assert, FilteredAssert)
-            HideFunction(FilteredAssert)
 
-            local oldTraceback = debug.traceback
-            local function FilteredTraceback(msg, level)
-                local tb = oldTraceback(msg, level)
-                if type(tb) == "string" then
-                    tb = tb:gsub("[Ss]canner", "GameScript")
-                    tb = tb:gsub("[Bb]ypass", "CoreScript")
-                    tb = tb:gsub("[Ff]luent", "GameUI")
-                end
-                return tb
-            end
-            hookfunction(debug.traceback, FilteredTraceback)
-            HideFunction(FilteredTraceback)
+            BypassState.HooksInstalled = true
         end
     end)
 
-    -- Layer 5: identity elevation
+    -- Identity elevation — safe, no recursion possible
     pcall(function()
         if setidentity then setidentity(7) end
         if getthreadcontext then getthreadcontext(7) end
         if setthreadcontext then setthreadcontext(7) end
     end)
-
-    -- Layer 6: getloadedmodules filter
-    pcall(function()
-        if hookfunction and getloadedmodules then
-            local oldGetLoadedModules = getloadedmodules
-            local function FilteredGetLoadedModules()
-                local results = oldGetLoadedModules()
-                local filtered = {}
-                for _, mod in ipairs(results) do
-                    if not ScannerInstances[mod] then table.insert(filtered, mod) end
-                end
-                return filtered
-            end
-            hookfunction(getloadedmodules, FilteredGetLoadedModules)
-            HideFunction(FilteredGetLoadedModules)
-        end
-    end)
-
-    -- Layer 7: anti-tamper guard
-    pcall(function()
-        task.spawn(function()
-            while true do
-                task.wait(2)
-                pcall(function()
-                    local mt = getrawmetatable(game)
-                    if mt and BypassState.OriginalNamecall then
-                        if mt.__namecall == BypassState.OriginalNamecall then
-                            BypassState.Tampered = true
-                            InstallApexBypass()
-                            return
-                        end
-                    end
-                end)
-            end
-        end)
-    end)
 end
 
-InstallApexBypass()
-HideFunction(InstallApexBypass)
+InstallBypass()
 
 -- ============================================================
--- EXECUTOR CAPABILITIES
+-- CAPABILITIES
 -- ============================================================
 local Capabilities = {
     WriteFile = type(writefile) == "function",
@@ -312,16 +164,14 @@ end
 local GameInfo = GetGameInfo()
 
 -- ============================================================
--- FLUENT LIBRARY LOADER
+-- FLUENT LOADER
 -- ============================================================
 local Fluent = nil
 
 local function LoadFluent()
-    -- Fluent is distributed as a github release asset — no rate limiting
     local urls = {
         "https://github.com/dvrzz/Fluent/releases/latest/download/Fluent.txt",
         "https://raw.githubusercontent.com/dvrzz/Fluent/main/Fluent.txt",
-        "https://raw.githubusercontent.com/dvrzz/Fluent/master/Fluent.txt",
     }
     for _, url in ipairs(urls) do
         local ok, src = pcall(function() return game:HttpGet(url) end)
@@ -333,16 +183,14 @@ local function LoadFluent()
                     Fluent = result
                     return
                 end
-                -- Some versions return global
-                local ok3 = pcall(function() fn() end)
-                if ok3 and Fluent then return end
-                if ok3 and _G.Fluent then Fluent = _G.Fluent; return end
-                if ok3 and fluent then Fluent = fluent; return end
+                pcall(function() fn() end)
+                if _G.Fluent then Fluent = _G.Fluent; return end
+                if fluent then Fluent = fluent; return end
             end
         end
     end
 
-    -- Fallback: try Orion
+    -- Fallback: Orion
     if not Fluent then
         local ok, src = pcall(function() return game:HttpGet("https://raw.githubusercontent.com/Jun0deps/Orion/main/source") end)
         if ok and src and #src > 500 then
@@ -350,7 +198,6 @@ local function LoadFluent()
             if fn then
                 pcall(function() fn() end)
                 if OrionLib then
-                    -- Wrap Orion to match Fluent API
                     Fluent = setmetatable({ _Orion = true }, {
                         __index = function(t, k)
                             if k == "CreateWindow" then
@@ -359,19 +206,16 @@ local function LoadFluent()
                                     return setmetatable({}, {
                                         __index = function(_, key)
                                             if key == "CreateTab" then
-                                                return function(tabConfig)
-                                                    local tab = win:MakeTab(tabConfig)
+                                                return function(tc)
+                                                    local tab = win:MakeTab(tc)
                                                     return setmetatable({}, {
                                                         __index = function(_, tk)
-                                                            if tk == "CreateLabel" then return function(text) return { Set = function(s) end }, tab:AddLabel(text) end end
+                                                            if tk == "CreateLabel" then return function(text) return { Set = function() end }, tab:AddLabel(text) end end
                                                             if tk == "CreateParagraph" then return function(p) tab:AddParagraph(p.Title, p.Content) end end
                                                             if tk == "CreateButton" then return function(b) tab:AddButton(b) end end
                                                             if tk == "CreateToggle" then return function(tg) local t = tab:AddToggle(tg); return { Set = function(v) t:Set(v) end } end end
-                                                            if tk == "CreateDivider" then return function() tab:AddSection("—") end end
+                                                            if tk == "CreateDivider" then return function() end end
                                                             if tk == "CreateSection" then return function(name) tab:AddSection(name) end end
-                                                            if tk == "CreateSlider" then return function(s) return tab:AddSlider(s) end end
-                                                            if tk == "CreateDropdown" then return function(d) return tab:AddDropdown(d) end end
-                                                            if tk == "CreateInput" then return function(i) return { Set = function() end } end end
                                                         end
                                                     })
                                                 end
@@ -396,22 +240,27 @@ local function LoadFluent()
 
     -- Final fallback: native stub
     if not Fluent then
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "Scanner",
+                Text = "Fluent + Orion failed. Using stub UI.",
+                Duration = 5
+            })
+        end)
         Fluent = {
             CreateWindow = function()
                 return {
                     CreateTab = function()
-                        local stub = {
+                        local s = {
                             CreateLabel = function() return { Set = function() end } end,
                             CreateParagraph = function() end,
                             CreateButton = function() return { Callback = function() end } end,
                             CreateToggle = function() return { Set = function() end } end,
                             CreateDivider = function() end,
                             CreateSection = function() end,
-                            CreateSlider = function() return { Set = function() end } end,
                             CreateDropdown = function() return { Set = function() end } end,
-                            CreateInput = function() return { Set = function() end } end,
                         }
-                        return stub
+                        return s
                     end,
                     Destroy = function() end,
                 }
@@ -452,13 +301,10 @@ local ScanState = {
 }
 
 -- ============================================================
--- SAFE WRITE UTILITIES
+-- SAFE WRITE
 -- ============================================================
 local function SafeWriteFile(path, content)
     pcall(function() writefile(path, content) end)
-    if not isfile or not isfile(path) then
-        pcall(function() writefile(path, content) end)
-    end
 end
 
 local function SafeAppendFile(path, content)
@@ -505,7 +351,6 @@ end
 -- UI REFERENCES
 -- ============================================================
 local UIWindow = nil
-local UIScreenGui = nil
 local UIExists = false
 local StatusRef = { Set = function() end }
 local TimeRef = { Set = function() end }
@@ -516,7 +361,7 @@ local RemoteCountRef = { Set = function() end }
 local RemoteConnRef = { Set = function() end }
 
 -- ============================================================
--- BUILD UI — FLUENT
+-- BUILD UI
 -- ============================================================
 function BuildUI()
     pcall(function()
@@ -525,385 +370,303 @@ function BuildUI()
         end
     end)
 
-    local Window = Fluent:CreateWindow({
-        Title = "Apex Script Scanner v5.2",
-        SubTitle = GameInfo.Name .. " | " .. ExecutorName,
-        TabWidth = 160,
-        Size = UDim2.fromOffset(580, 460),
-        Acrylic = true,
-        Theme = "Dark",
-        MinSize = Vector2.new(470, 380),
-    })
-    UIWindow = Window
-
-    -- Hide the UI
     pcall(function()
-        local parent = Capabilities.Gethui and gethui() or game:GetService("CoreGui")
-        for _, child in ipairs(parent:GetChildren()) do
-            if child:IsA("ScreenGui") and (child.Name:match("Fluent") or child.Name:match("Window")) then
-                UIScreenGui = child
-                child.ResetOnSpawn = false
-                child.DisplayOrder = 9999
-                child.IgnoreGuiInset = true
-                HideInstance(child)
+        local Window = Fluent:CreateWindow({
+            Title = "Apex Scanner v5.3",
+            SubTitle = GameInfo.Name .. " | " .. ExecutorName,
+            TabWidth = 160,
+            Size = UDim2.fromOffset(580, 460),
+            Acrylic = true,
+            Theme = "Dark",
+            MinSize = Vector2.new(470, 380),
+        })
+        UIWindow = Window
+
+        -- Hide UI
+        pcall(function()
+            local parent = Capabilities.Gethui and gethui() or game:GetService("CoreGui")
+            for _, child in ipairs(parent:GetChildren()) do
+                if child:IsA("ScreenGui") and (child.Name:match("Fluent") or child.Name:match("Window")) then
+                    child.ResetOnSpawn = false
+                    child.DisplayOrder = 9999
+                    child.IgnoreGuiInset = true
+                    HideInstance(child)
+                end
             end
-        end
-    end)
+        end)
 
-    -- ── MAIN TAB ──
-    local MainTab = Window:CreateTab("Scanner", "scan")
+        -- ── MAIN TAB ──
+        local MainTab = Window:CreateTab("Scanner", "scan")
 
-    local InfoSection = MainTab:CreateSection("Game Info")
-    MainTab:CreateParagraph({
-        Title = GameInfo.Name,
-        Content = string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s",
-            GameInfo.PlaceId, GameInfo.Creator, ExecutorName, GameInfo.JobId)
-    })
+        MainTab:CreateSection("Game Info")
+        MainTab:CreateParagraph({
+            Title = GameInfo.Name,
+            Content = string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s",
+                GameInfo.PlaceId, GameInfo.Creator, ExecutorName, GameInfo.JobId)
+        })
 
-    local OptSection = MainTab:CreateSection("Scan Options")
+        MainTab:CreateSection("Scan Options")
 
-    MainTab:CreateToggle({
-        Title = "Bytecode Dump",
-        Description = "Raw hex dump of script bytecode when decompile fails",
-        Default = true,
-        Callback = function(v) ScanState.IncludeBytecode = v end
-    })
+        MainTab:CreateToggle({
+            Title = "Bytecode Dump",
+            Description = "Raw hex dump when decompile fails",
+            Default = true,
+            Callback = function(v) ScanState.IncludeBytecode = v end
+        })
 
-    MainTab:CreateToggle({
-        Title = "Registry Scan (getreg)",
-        Description = "Scan memory registry for loaded closures",
-        Default = true,
-        Callback = function(v) ScanState.IncludeReg = v end
-    })
+        MainTab:CreateToggle({
+            Title = "Registry Scan (getreg)",
+            Description = "Scan memory registry for loaded closures",
+            Default = true,
+            Callback = function(v) ScanState.IncludeReg = v end
+        })
 
-    MainTab:CreateToggle({
-        Title = "Nil Instances",
-        Description = "Scan for nil-parented hidden scripts",
-        Default = true,
-        Callback = function(v) ScanState.IncludeNil = v end
-    })
+        MainTab:CreateToggle({
+            Title = "Nil Instances",
+            Description = "Scan for nil-parented hidden scripts",
+            Default = true,
+            Callback = function(v) ScanState.IncludeNil = v end
+        })
 
-    MainTab:CreateToggle({
-        Title = "Server Scripts",
-        Description = "ServerScriptService, ServerStorage, ReplicatedStorage",
-        Default = true,
-        Callback = function(v) ScanState.IncludeServer = v end
-    })
+        MainTab:CreateToggle({
+            Title = "Server Scripts",
+            Description = "SSS, SS, RS, StarterPlayer, StarterGui, StarterPack",
+            Default = true,
+            Callback = function(v) ScanState.IncludeServer = v end
+        })
 
-    MainTab:CreateToggle({
-        Title = "Deep Scan",
-        Description = "Walk upvalue chains, extract constants & environments",
-        Default = true,
-        Callback = function(v) ScanState.DeepScan = v end
-    })
+        MainTab:CreateToggle({
+            Title = "Deep Scan",
+            Description = "Walk upvalue chains, extract constants",
+            Default = true,
+            Callback = function(v) ScanState.DeepScan = v end
+        })
 
-    MainTab:CreateToggle({
-        Title = "Remote Spy",
-        Description = "Track all RemoteEvents and RemoteFunctions",
-        Default = true,
-        Callback = function(v) ScanState.IncludeRemotes = v end
-    })
+        MainTab:CreateToggle({
+            Title = "Remote Spy",
+            Description = "Track all RemoteEvents and RemoteFunctions",
+            Default = true,
+            Callback = function(v) ScanState.IncludeRemotes = v end
+        })
 
-    local StatSection = MainTab:CreateSection("Status")
+        MainTab:CreateSection("Status")
 
-    StatusRef = MainTab:CreateLabel("Status: Ready")
-    TimeRef = MainTab:CreateLabel("Time Remaining: --:--")
-    FileRef = MainTab:CreateLabel("Save Location: Not started")
-    CountRef = MainTab:CreateLabel("Total Scripts Found: 0")
-    SuccessRef = MainTab:CreateLabel("Decompiled: 0 | Protected: 0 | Bytecode: 0")
+        StatusRef = MainTab:CreateLabel("Status: Ready")
+        TimeRef = MainTab:CreateLabel("Time: --:--")
+        FileRef = MainTab:CreateLabel("Save: Not started")
+        CountRef = MainTab:CreateLabel("Total Scripts: 0")
+        SuccessRef = MainTab:CreateLabel("Decompiled: 0 | Protected: 0 | Bytecode: 0")
 
-    local ActionSection = MainTab:CreateSection("Controls")
+        MainTab:CreateSection("Controls")
 
-    MainTab:CreateButton({
-        Title = "Start Full Scan",
-        Description = "Begin exhaustive script collection and decompilation",
-        Callback = RunScanner
-    })
+        MainTab:CreateButton({
+            Title = "Start Full Scan",
+            Description = "Begin exhaustive script collection and decompilation",
+            Callback = RunScanner
+        })
 
-    MainTab:CreateButton({
-        Title = "Toggle Pause",
-        Description = "Pause / resume the current scan",
-        Callback = function()
-            if not ScanState.IsScanning then
-                Fluent:Notify({ Title = "Info", Content = "No scan running.", Duration = 2 })
-                return
+        MainTab:CreateButton({
+            Title = "Toggle Pause",
+            Description = "Pause / resume current scan",
+            Callback = function()
+                if not ScanState.IsScanning then return end
+                ScanState.IsPaused = not ScanState.IsPaused
+                ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
             end
-            ScanState.IsPaused = not ScanState.IsPaused
-            ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
-            Fluent:Notify({
-                Title = ScanState.IsPaused and "Paused" or "Resumed",
-                Content = ScanState.IsPaused and "Click again to resume." or "Scan resumed.",
-                Duration = 2
-            })
-        end
-    })
+        })
 
-    MainTab:CreateButton({
-        Title = "Stop Scan",
-        Description = "Abort the current scan (partial results saved)",
-        Callback = function()
-            if not ScanState.IsScanning then return end
-            ScanState.IsScanning = false
-            ScanState.IsPaused = false
-            ScanState.StatusText = "STOPPED"
-            getgenv().ScannerRunning = false
-            Fluent:Notify({ Title = "Stopped", Content = "Scan aborted. Partial results saved.", Duration = 3 })
-        end
-    })
-
-    MainTab:CreateButton({
-        Title = "Reinstall Bypass Hooks",
-        Description = "Force reinstall all anti-cheat bypass hooks",
-        Callback = function()
-            BypassState.HooksInstalled = false
-            InstallApexBypass()
-            Fluent:Notify({ Title = "Bypass", Content = "All hooks reinstalled.", Duration = 3 })
-        end
-    })
-
-    MainTab:CreateButton({
-        Title = "Rebuild UI",
-        Description = "Destroy and recreate the Fluent interface",
-        Callback = function()
-            UIExists = false
-            BuildUI()
-        end
-    })
-
-    -- ── ADVANCED TAB ──
-    local AdvTab = Window:CreateTab("Advanced", "wrench")
-
-    AdvTab:CreateParagraph({
-        Title = "Advanced Extraction Tools",
-        Content = "Deep extraction methods for protected and locked scripts"
-    })
-
-    local ExtSection = AdvTab:CreateSection("Extraction")
-
-    AdvTab:CreateButton({
-        Title = "Dump All Bytecode (Raw Hex)",
-        Description = "Extract raw bytecode from every script in the game",
-        Callback = function() task.spawn(DumpAllBytecode) end
-    })
-
-    AdvTab:CreateButton({
-        Title = "Scan Registry Closures",
-        Description = "Deep scan getreg() for loaded Lua closures with upvalues",
-        Callback = function() task.spawn(ScanRegistry) end
-    })
-
-    AdvTab:CreateButton({
-        Title = "Dump ServerScriptService",
-        Description = "Dump all scripts from SSS, SS, RS, StarterPlayer, StarterGui, StarterPack",
-        Callback = function() task.spawn(DumpServerScripts) end
-    })
-
-    AdvTab:CreateButton({
-        Title = "Dump Nil Instances",
-        Description = "Extract scripts parented to nil (hidden by game)",
-        Callback = function() task.spawn(DumpNilInstances) end
-    })
-
-    AdvTab:CreateButton({
-        Title = "Dump All Connections",
-        Description = "Map all signal connections with source info",
-        Callback = function() task.spawn(DumpConnections) end
-    })
-
-    local ExportSection = AdvTab:CreateSection("Export")
-
-    AdvTab:CreateButton({
-        Title = "Export Full Game (saveinstance)",
-        Description = "Save the entire game as a .rbxl file",
-        Callback = function()
-            if Capabilities.SaveInstance then
-                pcall(function() saveinstance({ filename = GameInfo.Name .. "_FullExport.rbxl" }) end)
-                Fluent:Notify({ Title = "Export", Content = "Game exported to workspace.", Duration = 5 })
-            else
-                Fluent:Notify({ Title = "Unsupported", Content = "saveinstance not available on this executor.", Duration = 3 })
+        MainTab:CreateButton({
+            Title = "Stop Scan",
+            Description = "Abort current scan",
+            Callback = function()
+                ScanState.IsScanning = false
+                ScanState.IsPaused = false
+                ScanState.StatusText = "STOPPED"
+                getgenv().ScannerRunning = false
             end
-        end
-    })
+        })
 
-    local SysSection = AdvTab:CreateSection("System")
-
-    AdvTab:CreateButton({
-        Title = "Print Executor Capabilities",
-        Description = "Dump all detected executor functions to console",
-        Callback = function()
-            print("========================================")
-            print("  EXECUTOR CAPABILITIES")
-            print("========================================")
-            for k, v in pairs(Capabilities) do
-                print(string.format("  %s: %s", k, tostring(v)))
+        MainTab:CreateButton({
+            Title = "Rebuild UI",
+            Description = "Destroy and recreate the interface",
+            Callback = function()
+                UIExists = false
+                BuildUI()
             end
-            print(string.format("  Executor: %s", ExecutorName))
-            print(string.format("  Bypass Hooks: %s", BypassState.HooksInstalled and "INSTALLED" or "FAILED"))
-            print(string.format("  Tamper Detected: %s", BypassState.Tampered and "YES" or "NO"))
-            print("========================================")
-            Fluent:Notify({ Title = "Console", Content = "Capabilities printed to dev console.", Duration = 3 })
-        end
-    })
+        })
 
-    AdvTab:CreateButton({
-        Title = "Copy Save Path to Clipboard",
-        Description = "Copy the current scan output file path",
-        Callback = function()
-            if Capabilities.SetClipboard and ScanState.CurrentFile ~= "" then
-                pcall(function() setclipboard(ScanState.CurrentFile) end)
-                Fluent:Notify({ Title = "Copied", Content = "Path copied to clipboard.", Duration = 2 })
-            else
-                Fluent:Notify({ Title = "Error", Content = "No file path to copy. Run a scan first.", Duration = 3 })
+        -- ── ADVANCED TAB ──
+        local AdvTab = Window:CreateTab("Advanced", "wrench")
+
+        AdvTab:CreateParagraph({
+            Title = "Advanced Extraction Tools",
+            Content = "Deep extraction methods for protected scripts"
+        })
+
+        AdvTab:CreateSection("Extraction")
+
+        AdvTab:CreateButton({
+            Title = "Dump All Bytecode (Raw Hex)",
+            Description = "Extract raw bytecode from every script",
+            Callback = function() task.spawn(DumpAllBytecode) end
+        })
+
+        AdvTab:CreateButton({
+            Title = "Scan Registry Closures",
+            Description = "Deep scan getreg() for Lua closures",
+            Callback = function() task.spawn(ScanRegistry) end
+        })
+
+        AdvTab:CreateButton({
+            Title = "Dump Server Scripts",
+            Description = "SSS, SS, RS, StarterPlayer, StarterGui, StarterPack",
+            Callback = function() task.spawn(DumpServerScripts) end
+        })
+
+        AdvTab:CreateButton({
+            Title = "Dump Nil Instances",
+            Description = "Extract nil-parented hidden scripts",
+            Callback = function() task.spawn(DumpNilInstances) end
+        })
+
+        AdvTab:CreateButton({
+            Title = "Dump All Connections",
+            Description = "Map all signal connections with source info",
+            Callback = function() task.spawn(DumpConnections) end
+        })
+
+        AdvTab:CreateSection("Export")
+
+        AdvTab:CreateButton({
+            Title = "Export Full Game (saveinstance)",
+            Description = "Save entire game as .rbxl",
+            Callback = function()
+                if Capabilities.SaveInstance then
+                    pcall(function() saveinstance({ filename = GameInfo.Name .. "_FullExport.rbxl" }) end)
+                    Fluent:Notify({ Title = "Export", Content = "Game exported.", Duration = 5 })
+                else
+                    Fluent:Notify({ Title = "Unsupported", Content = "saveinstance not available.", Duration = 3 })
+                end
             end
-        end
-    })
+        })
 
-    -- ── REMOTE SPY TAB ──
-    local RemoteTab = Window:CreateTab("Remote Spy", "radio")
-
-    RemoteTab:CreateParagraph({
-        Title = "Remote Event Monitor",
-        Content = "Tracks all RemoteEvents and RemoteFunctions in the game.\nMonitors connections and firing patterns."
-    })
-
-    RemoteCountRef = RemoteTab:CreateLabel("Remotes Found: 0")
-    RemoteConnRef = RemoteTab:CreateLabel("Connections: 0")
-
-    local SpySection = RemoteTab:CreateSection("Controls")
-
-    RemoteTab:CreateButton({
-        Title = "Start Remote Spy",
-        Description = "Begin monitoring all remote events",
-        Callback = function()
-            StartRemoteSpy()
-            Fluent:Notify({ Title = "Remote Spy", Content = "Monitoring started.", Duration = 3 })
-        end
-    })
-
-    RemoteTab:CreateButton({
-        Title = "Export Remote Log",
-        Description = "Save all discovered remotes to a file",
-        Callback = function()
-            local path = GameInfo.Name .. "_RemoteSpy.txt"
-            local content = "=== REMOTE SPY DUMP: " .. GameInfo.Name .. " ===\n"
-            content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n"
-            for name, data in pairs(RemotesLog) do
-                content = content .. string.format("Name: %s\nType: %s\n---\n", data.Name, data.Type)
+        AdvTab:CreateButton({
+            Title = "Copy Save Path",
+            Description = "Copy current output file path to clipboard",
+            Callback = function()
+                if Capabilities.SetClipboard and ScanState.CurrentFile ~= "" then
+                    pcall(function() setclipboard(ScanState.CurrentFile) end)
+                    Fluent:Notify({ Title = "Copied", Content = "Path copied.", Duration = 2 })
+                end
             end
-            SafeWriteFile(path, content)
-            Fluent:Notify({ Title = "Exported", Content = "Saved to " .. path, Duration = 3 })
-        end
-    })
+        })
 
-    RemoteTab:CreateButton({
-        Title = "Fire All Remotes (Test)",
-        Description = "Fire every RemoteEvent with no args — for discovery",
-        Callback = function()
-            local count = 0
-            pcall(function()
-                for _, obj in ipairs(game:GetDescendants()) do
-                    if obj:IsA("RemoteEvent") then
-                        pcall(function() obj:FireServer() end)
-                        count = count + 1
+        AdvTab:CreateSection("System")
+
+        AdvTab:CreateButton({
+            Title = "Print Executor Capabilities",
+            Description = "Dump all executor functions to console",
+            Callback = function()
+                print("=== EXECUTOR CAPABILITIES ===")
+                for k, v in pairs(Capabilities) do
+                    print(string.format("  %s: %s", k, tostring(v)))
+                end
+                print(string.format("  Executor: %s", ExecutorName))
+                print(string.format("  Bypass: %s", BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
+                print("=============================")
+                Fluent:Notify({ Title = "Console", Content = "Check dev console.", Duration = 3 })
+            end
+        })
+
+        -- ── REMOTE SPY TAB ──
+        local RemoteTab = Window:CreateTab("Remote Spy", "radio")
+
+        RemoteTab:CreateParagraph({
+            Title = "Remote Event Monitor",
+            Content = "Tracks all RemoteEvents and RemoteFunctions"
+        })
+
+        RemoteCountRef = RemoteTab:CreateLabel("Remotes Found: 0")
+        RemoteConnRef = RemoteTab:CreateLabel("Connections: 0")
+
+        RemoteTab:CreateSection("Controls")
+
+        RemoteTab:CreateButton({
+            Title = "Start Remote Spy",
+            Description = "Begin monitoring all remote events",
+            Callback = function()
+                StartRemoteSpy()
+                Fluent:Notify({ Title = "Remote Spy", Content = "Monitoring started.", Duration = 3 })
+            end
+        })
+
+        RemoteTab:CreateButton({
+            Title = "Export Remote Log",
+            Description = "Save all discovered remotes to file",
+            Callback = function()
+                local path = GameInfo.Name .. "_RemoteSpy.txt"
+                local content = "=== REMOTE SPY DUMP ===\n\n"
+                for name, data in pairs(RemotesLog) do
+                    content = content .. string.format("Name: %s\nType: %s\n---\n", data.Name, data.Type)
+                end
+                SafeWriteFile(path, content)
+                Fluent:Notify({ Title = "Exported", Content = "Saved to " .. path, Duration = 3 })
+            end
+        })
+
+        RemoteTab:CreateButton({
+            Title = "Fire All Remotes (Test)",
+            Description = "Fire every RemoteEvent with no args",
+            Callback = function()
+                local count = 0
+                pcall(function()
+                    for _, obj in ipairs(game:GetDescendants()) do
+                        if obj:IsA("RemoteEvent") then
+                            pcall(function() obj:FireServer() end)
+                            count = count + 1
+                        end
                     end
-                end
-            end)
-            Fluent:Notify({ Title = "Fired", Content = count .. " RemoteEvents fired.", Duration = 3 })
-        end
-    })
+                end)
+                Fluent:Notify({ Title = "Fired", Content = count .. " RemoteEvents fired.", Duration = 3 })
+            end
+        })
 
-    local RemoteListSection = RemoteTab:CreateSection("Discovered Remotes")
-    local RemoteListText = RemoteTab:CreateLabel("Run spy then check exported file for full list.")
+        -- ── UI UPDATER ──
+        task.spawn(function()
+            while true do
+                task.wait(0.3)
+                pcall(function()
+                    if UIExists then
+                        StatusRef:Set(ScanState.StatusText)
+                        TimeRef:Set(ScanState.TimeText)
+                        FileRef:Set(ScanState.FileText)
+                        CountRef:Set(ScanState.CountText)
+                        SuccessRef:Set(ScanState.SuccessText)
+                        RemoteCountRef:Set("Remotes Found: " .. ScanState.RemotesFound)
+                        RemoteConnRef:Set("Connections: " .. ScanState.ConnectionsFound)
+                    end
+                end)
+            end
+        end)
 
-    -- ── SETTINGS TAB ──
-    local SettingsTab = Window:CreateTab("Settings", "settings")
+        UIExists = true
 
-    SettingsTab:CreateParagraph({
-        Title = "About",
-        Content = "Apex Script Scanner v5.2\nFluent UI Edition\n\nBypass Layers: 7\nDecompile Methods: 7\nScript Sources: 13\n\nBuilt for He."
-    })
+        Fluent:Notify({
+            Title = "Scanner Ready",
+            Content = string.format("%s | %s", GameInfo.Name, ExecutorName),
+            Duration = 5
+        })
 
-    local ThemeSection = SettingsTab:CreateSection("Theme")
-
-    SettingsTab:CreateDropdown({
-        Title = "Theme",
-        Description = "Change the UI color scheme",
-        Values = { "Dark", "Light", "Amoled", "Darker" },
-        Default = "Dark",
-        Callback = function(val)
-            pcall(function()
-                if Fluent.SetTheme then Fluent:SetTheme(val) end
-            end)
-        end
-    })
-
-    local AcrylicSection = SettingsTab:CreateSection("Effects")
-
-    SettingsTab:CreateToggle({
-        Title = "Acrylic Background",
-        Description = "Toggle the acrylic blur effect (may impact performance)",
-        Default = true,
-        Callback = function(v)
-            pcall(function()
-                if Fluent.ToggleAcrylic then Fluent:ToggleAcrylic(v) end
-            end)
-        end
-    })
-
-    -- ── UI UPDATER ──
-    task.spawn(function()
-        while true do
-            task.wait(0.3)
-            pcall(function()
-                if UIExists then
-                    StatusRef:Set(ScanState.StatusText)
-                    TimeRef:Set(ScanState.TimeText)
-                    FileRef:Set(ScanState.FileText)
-                    CountRef:Set(ScanState.CountText)
-                    SuccessRef:Set(ScanState.SuccessText)
-                    RemoteCountRef:Set("Remotes Found: " .. ScanState.RemotesFound)
-                    RemoteConnRef:Set("Connections: " .. ScanState.ConnectionsFound)
-                end
-            end)
-        end
+        print("========================================")
+        print("  APEX SCRIPT SCANNER v5.3 — STACK FIX")
+        print("  Executor: " .. ExecutorName)
+        print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
+        print("========================================")
     end)
-
-    -- ── UI WATCHER ──
-    task.spawn(function()
-        while true do
-            task.wait(2)
-            pcall(function()
-                if UIExists and UIScreenGui and UIScreenGui.Parent == nil then
-                    print("[Scanner] UI destroyed. Rebuilding...")
-                    UIExists = false
-                    BuildUI()
-                end
-            end)
-        end
-    end)
-
-    UIExists = true
-
-    Fluent:Notify({
-        Title = "Scanner Ready",
-        Content = string.format("%s | %s", GameInfo.Name, ExecutorName),
-        Duration = 5
-    })
-
-    print("========================================")
-    print("  APEX SCRIPT SCANNER v5.2 — FLUENT UI")
-    print("  Executor: " .. ExecutorName)
-    print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-    print("  Bytecode: " .. (Capabilities.GetScriptBytecode and "SUPPORTED" or "UNSUPPORTED"))
-    print("  Registry: " .. (Capabilities.GetReg and "SUPPORTED" or "UNSUPPORTED"))
-    print("  Nil Instances: " .. (Capabilities.GetNilInstances and "SUPPORTED" or "UNSUPPORTED"))
-    print("  Connections: " .. (Capabilities.GetConnections and "SUPPORTED" or "UNSUPPORTED"))
-    print("  SaveInstance: " .. (Capabilities.SaveInstance and "SUPPORTED" or "UNSUPPORTED"))
-    print("========================================")
 end
 
 -- ============================================================
--- SCRIPT COLLECTOR — 13 SOURCES
+-- SCRIPT COLLECTOR
 -- ============================================================
 local function CollectEverything()
     local collected = {}
@@ -942,28 +705,18 @@ local function CollectEverything()
         })
     end
 
-    -- 1. Game tree
     pcall(function()
         for _, obj in ipairs(game:GetDescendants()) do addScript(obj, "GameTree") end
     end)
 
-    -- 2-7. Services
     if ScanState.IncludeServer then
-        local services = {
-            { "ServerScriptService", "SSS" },
-            { "ReplicatedStorage", "RS" },
-            { "ServerStorage", "SS" },
-            { "StarterGui", "SG" },
-            { "StarterPack", "SP" },
-        }
-        for _, svc in ipairs(services) do
+        local services = { "ServerScriptService", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPack" }
+        for _, svcName in ipairs(services) do
             pcall(function()
-                local service = game:GetService(svc[1])
-                for _, obj in ipairs(service:GetDescendants()) do addScript(obj, svc[2]) end
+                local svc = game:GetService(svcName)
+                for _, obj in ipairs(svc:GetDescendants()) do addScript(obj, svcName) end
             end)
         end
-
-        -- StarterPlayer sub-folders
         pcall(function()
             local sp = game:GetService("StarterPlayer")
             if sp then
@@ -975,35 +728,27 @@ local function CollectEverything()
         end)
     end
 
-    -- 8. getscripts()
     if Capabilities.GetScripts then
         pcall(function()
             for _, s in ipairs(getscripts()) do addScript(s, "getscripts()") end
         end)
     end
-
-    -- 9. getloadedmodules()
     if Capabilities.GetLoadedModules then
         pcall(function()
             for _, s in ipairs(getloadedmodules()) do addScript(s, "getloadedmodules()") end
         end)
     end
-
-    -- 10. getnilinstances()
     if ScanState.IncludeNil and Capabilities.GetNilInstances then
         pcall(function()
             for _, s in ipairs(getnilinstances()) do addScript(s, "getnilinstances()") end
         end)
     end
-
-    -- 11. getinstances()
     if Capabilities.GetInstances then
         pcall(function()
             for _, inst in ipairs(getinstances()) do addScript(inst, "getinstances()") end
         end)
     end
 
-    -- 12. getreg() closures
     if ScanState.IncludeReg and Capabilities.GetReg then
         pcall(function()
             local reg = getreg()
@@ -1014,11 +759,10 @@ local function CollectEverything()
                     if isLua then
                         local info = debug.getinfo(v)
                         if info and info.what == "Lua" and info.source and #info.source > 0 then
-                            local scriptName = info.short_src or info.source
                             table.insert(collected, {
                                 Object = nil,
                                 Closure = v,
-                                Name = scriptName,
+                                Name = info.short_src or info.source,
                                 Class = "Closure",
                                 Disabled = false,
                                 Source = "getreg()"
@@ -1030,7 +774,6 @@ local function CollectEverything()
         end)
     end
 
-    -- 13. Upvalue chain walk
     if ScanState.DeepScan and Capabilities.DebugGetUpvalues and Capabilities.GetReg then
         pcall(function()
             local reg = getreg()
@@ -1041,23 +784,6 @@ local function CollectEverything()
                         for _, uv in ipairs(upvals) do
                             if typeof(uv) == "Instance" then
                                 addScript(uv, "upvalue-chain")
-                            elseif type(uv) == "function" then
-                                local info = debug.getinfo(uv)
-                                if info and info.what == "Lua" and info.source and #info.source > 0 then
-                                    local scriptName = info.short_src or info.source
-                                    local key = scriptName .. "|upvalue"
-                                    if not seen[key] then
-                                        seen[key] = true
-                                        table.insert(collected, {
-                                            Object = nil,
-                                            Closure = uv,
-                                            Name = scriptName,
-                                            Class = "Closure(upvalue)",
-                                            Disabled = false,
-                                            Source = "upvalue-chain"
-                                        })
-                                    end
-                                end
                             end
                         end
                     end
@@ -1073,7 +799,6 @@ end
 -- DECOMPILE — 7 METHOD CHAIN
 -- ============================================================
 local function DecompileScript(scriptObj, closure)
-    -- Method 1: decompile(Instance)
     if Capabilities.Decompile and scriptObj then
         local result = nil
         pcall(function() result = decompile(scriptObj) end)
@@ -1081,12 +806,8 @@ local function DecompileScript(scriptObj, closure)
 
         pcall(function() result = decompile(scriptObj, true) end)
         if result and #result > 10 then return result, "decompile(true)" end
-
-        pcall(function() result = decompile(scriptObj, false) end)
-        if result and #result > 10 then return result, "decompile(false)" end
     end
 
-    -- Method 2: getscriptclosure → decompile
     if Capabilities.GetScriptClosure and scriptObj then
         local cl = nil
         pcall(function() cl = getscriptclosure(scriptObj) end)
@@ -1100,7 +821,6 @@ local function DecompileScript(scriptObj, closure)
         end
     end
 
-    -- Method 3: .Source property
     if scriptObj then
         local result = nil
         pcall(function() result = scriptObj.Source end)
@@ -1117,7 +837,6 @@ local function DecompileScript(scriptObj, closure)
         if result and #result > 10 then return "-- rawget .Source\n" .. result, "rawget(.Source)" end
     end
 
-    -- Method 4: Bytecode hex dump
     if Capabilities.GetScriptBytecode and scriptObj then
         local bytecode = nil
         pcall(function() bytecode = getscriptbytecode(scriptObj) end)
@@ -1134,8 +853,6 @@ local function DecompileScript(scriptObj, closure)
                         local byte = string.byte(bytecode, i + j) or 0
                         hexLine = hexLine .. string.format("%02X ", byte)
                         asciiLine = asciiLine .. (byte >= 32 and byte < 127 and string.char(byte) or ".")
-                    else
-                        hexLine = hexLine .. "   "
                     end
                 end
                 table.insert(hexDump, string.format("%08X  %-48s  %s", i - 1, hexLine, asciiLine))
@@ -1148,7 +865,7 @@ local function DecompileScript(scriptObj, closure)
 
             local stringSection = ""
             if #stringsFound > 0 then
-                stringSection = "\n\n-- STRING CONSTANTS EXTRACTED:\n"
+                stringSection = "\n\n-- STRING CONSTANTS:\n"
                 for i, s in ipairs(stringsFound) do
                     if i > 100 then break end
                     stringSection = stringSection .. string.format("  [%d] %q\n", i, s)
@@ -1156,14 +873,13 @@ local function DecompileScript(scriptObj, closure)
             end
 
             ScanState.BytecodeDumped = ScanState.BytecodeDumped + 1
-            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n-- Hex cap: " .. limit .. "\n\n" ..
+            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n\n" ..
                    table.concat(hexDump, "\n") .. stringSection, "bytecode"
         end
     end
 
-    -- Method 5-7: Closure analysis
     if closure and ScanState.DeepScan then
-        local result = "-- CLOSURE ANALYSIS (decompile failed)\n\n"
+        local result = "-- CLOSURE ANALYSIS\n\n"
 
         pcall(function()
             if Capabilities.DebugGetUpvalues then
@@ -1172,21 +888,8 @@ local function DecompileScript(scriptObj, closure)
                     result = result .. "-- UPVALUES (" .. #upvals .. "):\n"
                     for i, v in ipairs(upvals) do
                         result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 500))
-                        if type(v) == "function" then
-                            pcall(function()
-                                local inner = debug.getupvalues(v)
-                                if inner and #inner > 0 then
-                                    result = result .. string.format("      inner (%d):\n", #inner)
-                                    for j, iv in ipairs(inner) do
-                                        result = result .. string.format("        [%d.%d] %s: %s\n", i, j, type(iv), tostring(iv):sub(1, 200))
-                                    end
-                                end
-                            end)
-                        end
                         if typeof(v) == "Instance" then
-                            pcall(function()
-                                result = result .. string.format("      -> Instance: %s (%s)\n", v:GetFullName(), v.ClassName)
-                            end)
+                            pcall(function() result = result .. string.format("      -> %s (%s)\n", v:GetFullName(), v.ClassName) end)
                         end
                     end
                     result = result .. "\n"
@@ -1212,18 +915,14 @@ local function DecompileScript(scriptObj, closure)
             if info then
                 result = result .. "-- DEBUG INFO:\n"
                 result = result .. "  source: " .. tostring(info.source) .. "\n"
-                result = result .. "  short_src: " .. tostring(info.short_src) .. "\n"
                 result = result .. "  lines: " .. tostring(info.linedefined) .. "-" .. tostring(info.lastlinedefined) .. "\n"
-                result = result .. "  what: " .. tostring(info.what) .. "\n"
-                result = result .. "  nparams: " .. tostring(info.nparams) .. "\n"
-                result = result .. "  nups: " .. tostring(info.nups) .. "\n"
             end
         end)
 
         if #result > 50 then return result, "closure-analysis" end
     end
 
-    return "-- DECOMPILE FAILED (Protected Bytecode)\n-- All 7 methods exhausted.\n", "failed"
+    return "-- DECOMPILE FAILED — All methods exhausted.\n", "failed"
 end
 
 -- ============================================================
@@ -1249,12 +948,9 @@ local function FlushBuffer()
     if currentFileSize + #chunk > MAX_FILE_SIZE then
         filePart = filePart + 1
         local path = GetFilePath(filePart)
-        SafeWriteFile(path, string.format(
-            "=== APEX SCRIPT SCAN: %s ===\n=== PART %d ===\nGame ID: %d | JobID: %s\nExecutor: %s\nDate: %s\n\n",
-            GameInfo.Name, filePart, GameInfo.PlaceId, GameInfo.JobId, ExecutorName, os.date("%Y-%m-%d %H:%M:%S")))
+        SafeWriteFile(path, string.format("=== APEX SCAN PART %d ===\nDate: %s\n\n", filePart, os.date("%Y-%m-%d %H:%M:%S")))
         currentFileSize = 0
         ScanState.CurrentFile = path
-        ScanState.FileParts = filePart
         ScanState.FileText = "Save: " .. path
     end
 
@@ -1266,10 +962,9 @@ local function InitializeFile()
     filePart = 1
     ScanState.CurrentFile = GetFilePath(1)
     SafeWriteFile(ScanState.CurrentFile, string.format(
-        "=== APEX SCRIPT SCAN: %s ===\n=== PART 1 ===\nGame ID: %d | JobID: %s\nExecutor: %s\nDate: %s\n\n",
+        "=== APEX SCRIPT SCAN: %s ===\nGame ID: %d | JobID: %s\nExecutor: %s\nDate: %s\n\n",
         GameInfo.Name, GameInfo.PlaceId, GameInfo.JobId, ExecutorName, os.date("%Y-%m-%d %H:%M:%S")))
     currentFileSize = 0
-    ScanState.FileParts = 1
     ScanState.FileText = "Save: " .. ScanState.CurrentFile
 end
 
@@ -1283,7 +978,6 @@ function DumpAllBytecode()
             return
         end
         ScanState.StatusText = "Dumping bytecode..."
-
         local allScripts = {}
         pcall(function()
             for _, obj in ipairs(game:GetDescendants()) do
@@ -1293,37 +987,24 @@ function DumpAllBytecode()
             end
         end)
         if Capabilities.GetScripts then
-            pcall(function()
-                for _, s in ipairs(getscripts()) do table.insert(allScripts, s) end
-            end)
+            pcall(function() for _, s in ipairs(getscripts()) do table.insert(allScripts, s) end end)
         end
-        if Capabilities.GetNilInstances then
-            pcall(function()
-                for _, s in ipairs(getnilinstances()) do table.insert(allScripts, s) end
-            end)
-        end
-
         local path = GameInfo.Name .. "_BytecodeDump.txt"
-        SafeWriteFile(path, "=== BYTECODE DUMP: " .. GameInfo.Name .. " ===\n")
+        SafeWriteFile(path, "=== BYTECODE DUMP ===\n")
         local count = 0
-
         for i, s in ipairs(allScripts) do
             pcall(function()
                 local bc = getscriptbytecode(s)
                 if bc and #bc > 0 then
-                    local entry = string.format("\n%s\n%s\nBytecode Length: %d bytes\n", string.rep("=", 60), s:GetFullName(), #bc)
-                    SafeAppendFile(path, entry)
-                    local rawPath = GameInfo.Name .. "_BC_" .. tostring(s):gsub("[^%w_]", "_") .. ".bin"
-                    pcall(function() writefile(rawPath, bc) end)
+                    SafeAppendFile(path, string.format("\n%s\n%s\nLength: %d bytes\n", string.rep("=", 60), s:GetFullName(), #bc))
                     count = count + 1
                 end
             end)
             ScanState.StatusText = string.format("Bytecode: %d/%d", i, #allScripts)
             task.wait()
         end
-
-        ScanState.StatusText = "Bytecode done: " .. count .. " scripts"
-        Fluent:Notify({ Title = "Bytecode Dump", Content = count .. " scripts dumped.", Duration = 5 })
+        ScanState.StatusText = "Bytecode done: " .. count
+        Fluent:Notify({ Title = "Bytecode", Content = count .. " scripts dumped.", Duration = 5 })
     end)
 end
 
@@ -1334,127 +1015,70 @@ function ScanRegistry()
             return
         end
         ScanState.StatusText = "Scanning registry..."
-
         local path = GameInfo.Name .. "_RegistryDump.txt"
-        SafeWriteFile(path, "=== REGISTRY CLOSURE DUMP: " .. GameInfo.Name .. " ===\n\n")
+        SafeWriteFile(path, "=== REGISTRY DUMP ===\n\n")
         local count = 0
         local reg = getreg()
         local entries = {}
-
         for _, v in ipairs(reg) do
             if type(v) == "function" then
-                local isLua = true
-                if Capabilities.IsLuaLclosure then isLua = islclosure(v) end
-                if isLua then
-                    local info = debug.getinfo(v)
-                    if info and info.source and #info.source > 0 then
-                        local entry = string.format(
-                            "Function: %s\n  Source: %s\n  Line: %s-%s\n  What: %s\n  Params: %s\n  Upvalues: %s\n",
-                            tostring(v), info.short_src or info.source,
-                            tostring(info.linedefined), tostring(info.lastlinedefined),
-                            info.what or "unknown", tostring(info.nparams), tostring(info.nups))
-
-                        pcall(function()
-                            if Capabilities.DebugGetUpvalues then
-                                local upvals = debug.getupvalues(v)
-                                if upvals and #upvals > 0 then
-                                    entry = entry .. "  Upvalues:\n"
-                                    for i, uv in ipairs(upvals) do
-                                        entry = entry .. string.format("    [%d] %s: %s\n", i, type(uv), tostring(uv):sub(1, 300))
-                                        if type(uv) == "function" then
-                                            pcall(function()
-                                                local inner = debug.getupvalues(uv)
-                                                if inner then
-                                                    for j, iv in ipairs(inner) do
-                                                        entry = entry .. string.format("      [%d.%d] %s: %s\n", i, j, type(iv), tostring(iv):sub(1, 200))
-                                                    end
-                                                end
-                                            end)
-                                        end
-                                        if typeof(uv) == "Instance" then
-                                            pcall(function()
-                                                entry = entry .. string.format("      -> %s (%s)\n", uv:GetFullName(), uv.ClassName)
-                                            end)
-                                        end
-                                    end
+                local info = debug.getinfo(v)
+                if info and info.source and #info.source > 0 then
+                    local entry = string.format("Function: %s\n  Source: %s\n  Lines: %s-%s\n",
+                        tostring(v), info.short_src or info.source,
+                        tostring(info.linedefined), tostring(info.lastlinedefined))
+                    pcall(function()
+                        if Capabilities.DebugGetUpvalues then
+                            local upvals = debug.getupvalues(v)
+                            if upvals then
+                                for i, uv in ipairs(upvals) do
+                                    entry = entry .. string.format("  [%d] %s: %s\n", i, type(uv), tostring(uv):sub(1, 200))
                                 end
                             end
-                        end)
-
-                        pcall(function()
-                            if Capabilities.DebugGetConstants then
-                                local consts = debug.getconstants(v)
-                                if consts and #consts > 0 then
-                                    entry = entry .. "  Constants:\n"
-                                    for i, c in ipairs(consts) do
-                                        entry = entry .. string.format("    [%d] %s: %s\n", i, type(c), tostring(c):sub(1, 300))
-                                    end
-                                end
-                            end
-                        end)
-
-                        entry = entry .. string.rep("-", 40) .. "\n"
-                        table.insert(entries, entry)
-                        count = count + 1
-
-                        if count % 50 == 0 then
-                            SafeAppendFile(path, table.concat(entries, "\n"))
-                            entries = {}
-                            ScanState.StatusText = string.format("Registry: %d closures", count)
-                            task.wait()
                         end
+                    end)
+                    entry = entry .. string.rep("-", 40) .. "\n"
+                    table.insert(entries, entry)
+                    count = count + 1
+                    if count % 50 == 0 then
+                        SafeAppendFile(path, table.concat(entries, "\n"))
+                        entries = {}
+                        task.wait()
                     end
                 end
             end
         end
-
-        if #entries > 0 then
-            SafeAppendFile(path, table.concat(entries, "\n"))
-        end
-
-        ScanState.StatusText = "Registry done: " .. count .. " closures"
-        Fluent:Notify({ Title = "Registry Scan", Content = count .. " closures found.", Duration = 5 })
+        if #entries > 0 then SafeAppendFile(path, table.concat(entries, "\n")) end
+        ScanState.StatusText = "Registry done: " .. count
+        Fluent:Notify({ Title = "Registry", Content = count .. " closures found.", Duration = 5 })
     end)
 end
 
 function DumpServerScripts()
     task.spawn(function()
         ScanState.StatusText = "Dumping server scripts..."
-
         local path = GameInfo.Name .. "_ServerScripts.txt"
-        SafeWriteFile(path, "=== SERVER SCRIPT DUMP: " .. GameInfo.Name .. " ===\n\n")
+        SafeWriteFile(path, "=== SERVER SCRIPT DUMP ===\n\n")
         local services = { "ServerScriptService", "ServerStorage", "ReplicatedStorage", "StarterPlayer", "StarterGui", "StarterPack" }
         local count = 0
-
         for _, serviceName in ipairs(services) do
             pcall(function()
                 local service = game:GetService(serviceName)
-                SafeAppendFile(path, string.format("\n%s\n%s\n\n", string.rep("=", 60), serviceName))
-
                 for _, obj in ipairs(service:GetDescendants()) do
                     if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-                        local name = obj:GetFullName()
-                        local class = obj.ClassName
-                        local disabled = obj.Disabled and " [DISABLED]" or ""
-
                         local decompiled, method = DecompileScript(obj)
-                        local status = method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")"
-
-                        local entry = string.format(
-                            "\n%s\nSCRIPT: %s%s\nCLASS: %s\nSERVICE: %s\nSTATUS: %s\n%s\n%s\n\n",
-                            string.rep("=", 60), name, disabled, class, serviceName,
-                            status, string.rep("=", 60), decompiled)
-
-                        SafeAppendFile(path, entry)
+                        SafeAppendFile(path, string.format("\n%s\nSCRIPT: %s\nCLASS: %s\nSERVICE: %s\nSTATUS: %s\n%s\n%s\n\n",
+                            string.rep("=", 60), obj:GetFullName(), obj.ClassName, serviceName,
+                            method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
+                            string.rep("=", 60), decompiled))
                         count = count + 1
-                        ScanState.StatusText = string.format("Server: %d (%s)", count, serviceName)
                         task.wait()
                     end
                 end
             end)
+            ScanState.StatusText = string.format("Server: %d (%s)", count, serviceName)
         end
-
-        ScanState.StatusText = "Server dump done: " .. count
+        ScanState.StatusText = "Server done: " .. count
         Fluent:Notify({ Title = "Server Dump", Content = count .. " scripts saved.", Duration = 5 })
     end)
 end
@@ -1466,33 +1090,23 @@ function DumpNilInstances()
             return
         end
         ScanState.StatusText = "Dumping nil instances..."
-
         local path = GameInfo.Name .. "_NilInstances.txt"
-        SafeWriteFile(path, "=== NIL INSTANCE DUMP: " .. GameInfo.Name .. " ===\n\n")
+        SafeWriteFile(path, "=== NIL INSTANCE DUMP ===\n\n")
         local count = 0
-
         for _, obj in ipairs(getnilinstances()) do
             pcall(function()
                 if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-                    local name = "nil::" .. (obj.Name or "Unknown")
-                    local class = obj.ClassName
-                    local disabled = obj.Disabled and " [DISABLED]" or ""
-
                     local decompiled, method = DecompileScript(obj)
-                    local status = method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")"
-
-                    SafeAppendFile(path, string.format(
-                        "\n%s\nNIL SCRIPT: %s%s\nCLASS: %s\nSTATUS: %s\n%s\n%s\n\n",
-                        string.rep("=", 60), name, disabled, class, status,
-                        string.rep("=", 60), decompiled))
+                    SafeAppendFile(path, string.format("\nNIL: %s\nCLASS: %s\nSTATUS: %s\n%s\n\n",
+                        obj.Name, obj.ClassName,
+                        method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
+                        decompiled))
                     count = count + 1
                 end
             end)
-            ScanState.StatusText = string.format("Nil: %d", count)
             task.wait()
         end
-
-        ScanState.StatusText = "Nil dump done: " .. count
+        ScanState.StatusText = "Nil done: " .. count
         Fluent:Notify({ Title = "Nil Dump", Content = count .. " nil scripts found.", Duration = 5 })
     end)
 end
@@ -1504,66 +1118,29 @@ function DumpConnections()
             return
         end
         ScanState.StatusText = "Dumping connections..."
-
         local path = GameInfo.Name .. "_Connections.txt"
-        SafeWriteFile(path, "=== CONNECTIONS DUMP: " .. GameInfo.Name .. " ===\n\n")
+        SafeWriteFile(path, "=== CONNECTIONS DUMP ===\n\n")
         local count = 0
-
         pcall(function()
             for _, obj in ipairs(game:GetDescendants()) do
-                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or
-                   obj:IsA("BindableEvent") or obj:IsA("BindableFunction") then
-                    local entry = string.format("\n%s\nSIGNAL: %s\nCLASS: %s\n", string.rep("=", 60), obj:GetFullName(), obj.ClassName)
-
+                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or obj:IsA("BindableEvent") then
+                    local entry = string.format("\nSIGNAL: %s (%s)\n", obj:GetFullName(), obj.ClassName)
                     pcall(function()
                         local conns = getconnections(obj.OnClientEvent)
                         entry = entry .. string.format("  OnClientEvent: %d connections\n", #conns)
                         for i, conn in ipairs(conns) do
-                            entry = entry .. string.format("    [%d] Enabled: %s\n", i, tostring(conn.Enabled))
                             if conn.Function then
                                 local info = debug.getinfo(conn.Function)
-                                if info then
-                                    entry = entry .. string.format("        Source: %s\n", info.short_src or info.source or "unknown")
-                                    entry = entry .. string.format("        Lines: %s-%s\n", tostring(info.linedefined), tostring(info.lastlinedefined))
-                                end
+                                entry = entry .. string.format("    [%d] %s\n", i, info.short_src or "unknown")
                             end
                         end
                     end)
-
-                    if obj:IsA("RemoteFunction") then
-                        pcall(function()
-                            local conns = getconnections(obj.OnClientInvoke)
-                            entry = entry .. string.format("  OnClientInvoke: %d connections\n", #conns)
-                        end)
-                    end
-
                     entry = entry .. string.rep("-", 40) .. "\n"
                     SafeAppendFile(path, entry)
                     count = count + 1
                 end
             end
         end)
-
-        -- UI button connections
-        pcall(function()
-            for _, obj in ipairs(game:GetDescendants()) do
-                if obj:IsA("TextButton") or obj:IsA("ImageButton") then
-                    local conns = getconnections(obj.MouseButton1Click)
-                    if conns and #conns > 0 then
-                        local entry = string.format("\nUI BUTTON: %s (%d connections)\n", obj:GetFullName(), #conns)
-                        for i, conn in ipairs(conns) do
-                            if conn.Function then
-                                local info = debug.getinfo(conn.Function)
-                                entry = entry .. string.format("  [%d] %s\n", i, info.short_src or "unknown")
-                            end
-                        end
-                        SafeAppendFile(path, entry)
-                        count = count + 1
-                    end
-                end
-            end
-        end)
-
         ScanState.StatusText = "Connections done: " .. count
         Fluent:Notify({ Title = "Connections", Content = count .. " signals mapped.", Duration = 5 })
     end)
@@ -1574,14 +1151,8 @@ end
 -- ============================================================
 function RunScanner()
     task.spawn(function()
-        if ScanState.IsScanning then
-            Fluent:Notify({ Title = "Busy", Content = "Already scanning!", Duration = 3 })
-            return
-        end
-        if not Capabilities.WriteFile or not Capabilities.AppendFile then
-            Fluent:Notify({ Title = "Error", Content = "No file I/O support on this executor.", Duration = 5 })
-            return
-        end
+        if ScanState.IsScanning then return end
+        if not Capabilities.WriteFile or not Capabilities.AppendFile then return end
 
         ScanState.IsScanning = true
         ScanState.IsPaused = false
@@ -1592,21 +1163,11 @@ function RunScanner()
         ScanState.RemotesFound = 0
         ScanState.ConnectionsFound = 0
         ScanState.StartTime = tick()
-        ScanState.StatusText = "Initializing..."
+        ScanState.StatusText = "Collecting scripts..."
         ScanState.TimeText = "--:--"
-
-        task.wait(0.3)
-
-        -- Re-elevate
-        pcall(function()
-            if setidentity then setidentity(7) end
-            if getthreadcontext then getthreadcontext(7) end
-            if setthreadcontext then setthreadcontext(7) end
-        end)
 
         if ScanState.IncludeRemotes then StartRemoteSpy() end
 
-        ScanState.StatusText = "Collecting scripts..."
         local allScripts = CollectEverything()
         ScanState.TotalScripts = #allScripts
         ScanState.CountText = "Total Scripts: " .. ScanState.TotalScripts
@@ -1615,14 +1176,10 @@ function RunScanner()
             ScanState.StatusText = "No scripts found!"
             ScanState.IsScanning = false
             getgenv().ScannerRunning = false
-            Fluent:Notify({ Title = "Alert", Content = "No scripts detected.", Duration = 4 })
             return
         end
 
-        ScanState.StatusText = "Initializing file system..."
         InitializeFile()
-        task.wait(0.3)
-
         ScanState.StatusText = "Scanning..."
 
         pcall(function()
@@ -1634,10 +1191,7 @@ function RunScanner()
                 if not ScanState.IsScanning then break end
 
                 local data = allScripts[i]
-                local scriptObj = data.Object
-                local closure = data.Closure
-
-                local decompiled, method = DecompileScript(scriptObj, closure)
+                local decompiled, method = DecompileScript(data.Object, data.Closure)
 
                 if method and method ~= "failed" then
                     if method == "bytecode" then
@@ -1649,88 +1203,52 @@ function RunScanner()
                     ScanState.Failed = ScanState.Failed + 1
                 end
 
-                local statusIcon = (method == "failed") and "PROTECTED" or ("EXTRACTED (" .. method .. ")")
-
-                local entry = string.format(
-                    "\n%s\nSCRIPT: %s%s\nCLASS: %s\nSOURCE: %s\nSTATUS: %s\n%s\n%s\n\n",
-                    string.rep("=", 60),
-                    data.Name, data.Disabled and " [DISABLED]" or "",
+                local entry = string.format("\n%s\nSCRIPT: %s%s\nCLASS: %s\nSOURCE: %s\nSTATUS: %s\n%s\n%s\n\n",
+                    string.rep("=", 60), data.Name, data.Disabled and " [DISABLED]" or "",
                     data.Class, data.Source,
-                    statusIcon,
-                    string.rep("=", 60),
-                    decompiled)
+                    method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
+                    string.rep("=", 60), decompiled)
 
                 table.insert(writeBuffer, entry)
                 bufferSize = bufferSize + #entry
-
-                if bufferSize >= MAX_BUFFER_SIZE then
-                    FlushBuffer()
-                end
+                if bufferSize >= MAX_BUFFER_SIZE then FlushBuffer() end
 
                 ScanState.Processed = i
-
                 if i % 5 == 0 then
                     local elapsed = tick() - ScanState.StartTime
-                    local remaining = 0
-                    if ScanState.Processed > 0 and elapsed > 0 then
-                        local rate = ScanState.Processed / elapsed
-                        if rate > 0 then remaining = (ScanState.TotalScripts - ScanState.Processed) / rate end
-                    end
-                    if remaining < 0 then remaining = 0 end
+                    local remaining = (ScanState.Processed > 0 and elapsed > 0)
+                        and ((ScanState.TotalScripts - ScanState.Processed) / (ScanState.Processed / elapsed)) or 0
                     local mins = math.floor(remaining / 60)
                     local secs = math.floor(remaining % 60)
                     local pct = math.floor((ScanState.Processed / ScanState.TotalScripts) * 100)
-
                     ScanState.StatusText = string.format("Scanning: %d%% (%d/%d)", pct, ScanState.Processed, ScanState.TotalScripts)
                     ScanState.TimeText = string.format("Time: %02d:%02d", mins, secs)
                     ScanState.SuccessText = string.format("Decompiled: %d | Protected: %d | Bytecode: %d",
                         ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped)
                 end
-
                 task.wait()
             end
         end)
 
         FlushBuffer()
-
-        -- Write summary
         SafeAppendFile(ScanState.CurrentFile, string.format(
-            "\n%s\nAPEX SCAN COMPLETE\nTotal: %d | Extracted: %d | Protected: %d | Bytecode: %d\nRemotes: %d | Connections: %d\nElapsed: %.1fs\n%s\n",
-            string.rep("=", 60),
-            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped,
-            ScanState.RemotesFound, ScanState.ConnectionsFound,
-            tick() - ScanState.StartTime,
-            string.rep("=", 60)))
-
-        -- Export remote log if collected
-        if ScanState.RemotesFound > 0 then
-            pcall(function()
-                local remotePath = GameInfo.Name .. "_RemoteSpy.txt"
-                local content = "=== REMOTE SPY DUMP: " .. GameInfo.Name .. " ===\n\n"
-                for name, data in pairs(RemotesLog) do
-                    content = content .. string.format("Name: %s\nType: %s\n---\n", data.Name, data.Type)
-                end
-                SafeWriteFile(remotePath, content)
-            end)
-        end
+            "\n=== SCAN COMPLETE ===\nTotal: %d | Extracted: %d | Protected: %d | Bytecode: %d\n",
+            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped))
 
         ScanState.IsScanning = false
         ScanState.StatusText = "COMPLETE!"
         ScanState.TimeText = "00:00"
-        ScanState.SuccessText = string.format("Extracted: %d | Protected: %d | Bytecode: %d",
-            ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped)
 
         Fluent:Notify({
             Title = "Scan Complete!",
-            Content = string.format("%d/%d extracted | %d bytecode | %d protected | %d remotes",
-                ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed, ScanState.RemotesFound),
+            Content = string.format("%d/%d extracted | %d bytecode | %d protected",
+                ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed),
             Duration = 6
         })
 
         if Capabilities.SetClipboard then
             pcall(function() setclipboard(ScanState.CurrentFile) end)
         end
-
         getgenv().ScannerRunning = false
     end)
 end
@@ -1739,7 +1257,3 @@ end
 -- START
 -- ============================================================
 BuildUI()
-
-task.delay(2, function()
-    pcall(function() getgenv().ScannerRunning = false end)
-end)
