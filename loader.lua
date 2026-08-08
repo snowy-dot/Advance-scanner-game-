@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v7.1 -- RAYFIELD | SIMPLE & CLEAN
+-- APEX SCRIPT SCANNER v7.2 -- RAYFIELD (CLEAN)
 -- ============================================================
 
 if getgenv().ScannerRunning then return end
@@ -26,7 +26,6 @@ local function InstallBypass()
         if setthreadcontext then setthreadcontext(7) end
         if syn and syn.set_thread_identity then syn.set_thread_identity(7) end
     end)
-
     pcall(function()
         if hookfunction and not BypassState.HooksInstalled then
             local oldGetInfo = debug.getinfo
@@ -77,27 +76,21 @@ InstallBypass()
 local Capabilities = {
     WriteFile = type(writefile) == "function",
     AppendFile = type(appendfile) == "function",
-    IsFile = type(isfile) == "function",
-    ReadFile = type(readfile) == "function",
     MakeFolder = type(makefolder) == "function",
     Decompile = type(decompile) == "function",
     GetScripts = type(getscripts) == "function",
     GetLoadedModules = type(getloadedmodules) == "function",
     GetNilInstances = type(getnilinstances) == "function",
-    GetReg = type(getreg) == "function",
+    GetInstances = type(getinstances) == "function",
     GetScriptBytecode = type(getscriptbytecode) == "function",
     GetScriptClosure = type(getscriptclosure) == "function",
     GetSenv = type(getsenv) == "function",
     SaveInstance = type(saveinstance) == "function",
-    Loadstring = type(loadstring) == "function",
     HookFunction = type(hookfunction) == "function",
-    HookMeta = type(hookmetamethod) == "function",
     GetRawMetatable = type(getrawmetatable) == "function",
     SetReadOnly = type(setreadonly) == "function",
     DebugGetUpvalues = type(debug.getupvalues) == "function",
     DebugGetConstants = type(debug.getconstants) == "function",
-    CloneFunction = type(clonefunction) == "function",
-    GetInstances = type(getinstances) == "function",
     GetConnections = type(getconnections) == "function",
     SetClipboard = type(setclipboard) == "function",
     Gethui = type(gethui) == "function",
@@ -114,16 +107,8 @@ pcall(function()
     end
 end)
 if ExecutorName == "Unknown" then
-    if Capabilities.GetReg and Capabilities.GetScriptBytecode and Capabilities.CloneFunction then
-        ExecutorName = "Synapse X"
-    elseif Capabilities.GetReg and Capabilities.GetScriptBytecode then
-        ExecutorName = "Fluxus / Solara"
-    elseif Capabilities.GetReg then
-        ExecutorName = "Krnl / Hydrogen"
-    elseif Capabilities.GetScriptClosure then
-        ExecutorName = "Script-Ware"
-    elseif Capabilities.Newcclosure then
-        ExecutorName = "Wave / CodeX"
+    if Capabilities.GetScriptBytecode and Capabilities.Newcclosure then
+        ExecutorName = "Advanced"
     elseif Capabilities.WriteFile then
         ExecutorName = "Compatible"
     end
@@ -133,15 +118,9 @@ end
 -- GAME INFO
 -- ============================================================
 local function GetGameInfo()
-    local info = {
-        Name = "UnknownGame",
-        PlaceId = game.PlaceId,
-        Creator = "Unknown",
-        JobId = game.JobId or "N/A",
-    }
+    local info = { Name = "UnknownGame", PlaceId = game.PlaceId, Creator = "Unknown", JobId = game.JobId or "N/A" }
     pcall(function()
-        local mp = game:GetService("MarketplaceService")
-        local product = mp:GetProductInfo(game.PlaceId)
+        local product = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
         if product then
             info.Name = string.gsub(product.Name or "UnknownGame", "[^%w_]", "_")
             info.Creator = product.Creator and product.Creator.Name or "Unknown"
@@ -161,22 +140,23 @@ local GameInfo = GetGameInfo()
 local function Notify(title, text, dur)
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = title or "",
-            Text = text or "",
-            Duration = dur or 3,
+            Title = title or "", Text = text or "", Duration = dur or 3,
         })
     end)
 end
 
 -- ============================================================
--- RAYFIELD LOADER
+-- RAYFIELD LOADER -- NO LOCAL SHADOWING
 -- ============================================================
-local RayfieldLoaded = false
+local RayfieldReady = false
 
 local function LoadRayfield()
+    -- clear stale global
+    _G.Rayfield = nil
+    Rayfield = nil
+
     local urls = {
         "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
-        "https://raw.githubusercontent.com/shlexware/Rayfield/source",
         "https://github.com/shlexware/Rayfield/raw/main/source",
     }
     for _, url in ipairs(urls) do
@@ -186,17 +166,39 @@ local function LoadRayfield()
             if fn then
                 local ok2, err = pcall(fn)
                 if ok2 then
-                    RayfieldLoaded = true
-                    Notify("Apex Scanner", "Rayfield loaded.", 3)
-                    return
+                    -- check global directly, no local involved
+                    if Rayfield then
+                        RayfieldReady = true
+                        return
+                    end
+                    if _G.Rayfield then
+                        Rayfield = _G.Rayfield
+                        RayfieldReady = true
+                        return
+                    end
+                else
+                    print("[Apex] Rayfield exec error: " .. tostring(err):sub(1, 200))
                 end
             end
         end
     end
-    Notify("Apex Scanner", "Rayfield failed, using fallback.", 4)
+    print("[Apex] Rayfield failed to load, using fallback UI")
 end
 
 LoadRayfield()
+
+-- ============================================================
+-- UI WRAPPER
+-- ============================================================
+local function UINotify(title, content, dur)
+    if RayfieldReady and Rayfield then
+        pcall(function()
+            Rayfield:Notify({ Title = title, Content = content, Duration = dur or 3 })
+        end)
+    else
+        Notify(title, content, dur)
+    end
+end
 
 -- ============================================================
 -- STATE
@@ -227,7 +229,7 @@ ScanState.OutputFolder = GameInfo.Name .. "_APEX_Scan"
 SafeMakeFolder(ScanState.OutputFolder)
 
 -- ============================================================
--- SCRIPT COLLECTOR -- SIMPLE BUT COMPLETE
+-- SCRIPT COLLECTOR
 -- ============================================================
 local function CollectAllScripts()
     local collected = {}
@@ -235,7 +237,6 @@ local function CollectAllScripts()
 
     local function addScript(obj, source)
         if typeof(obj) ~= "Instance" then return end
-
         local isScript = false
         pcall(function()
             if obj:IsA("Script") or obj:IsA("LocalScript") or
@@ -259,67 +260,42 @@ local function CollectAllScripts()
         end)
 
         table.insert(collected, {
-            Object = obj,
-            Name = fullName,
-            Class = className,
-            Disabled = isDisabled,
-            Source = source or "Unknown",
+            Object = obj, Name = fullName, Class = className,
+            Disabled = isDisabled, Source = source or "Unknown",
         })
     end
 
-    -- 1. Walk the entire game tree (Workspace, ReplicatedStorage, etc.)
     pcall(function()
-        for _, obj in ipairs(game:GetDescendants()) do
-            addScript(obj, "GameTree")
-        end
+        for _, obj in ipairs(game:GetDescendants()) do addScript(obj, "GameTree") end
     end)
-
-    -- 2. getscripts() -- returns ALL running scripts including server-side
     if Capabilities.GetScripts then
-        pcall(function()
-            for _, s in ipairs(getscripts()) do addScript(s, "getscripts()") end
-        end)
+        pcall(function() for _, s in ipairs(getscripts()) do addScript(s, "getscripts()") end end)
     end
-
-    -- 3. getloadedmodules() -- returns all loaded ModuleScripts
     if Capabilities.GetLoadedModules then
-        pcall(function()
-            for _, s in ipairs(getloadedmodules()) do addScript(s, "getloadedmodules()") end
-        end)
+        pcall(function() for _, s in ipairs(getloadedmodules()) do addScript(s, "getloadedmodules()") end end)
     end
-
-    -- 4. getnilinstances() -- nil-parented scripts (hidden)
     if Capabilities.GetNilInstances then
-        pcall(function()
-            for _, s in ipairs(getnilinstances()) do addScript(s, "getnilinstances()") end
-        end)
+        pcall(function() for _, s in ipairs(getnilinstances()) do addScript(s, "getnilinstances()") end end)
     end
-
-    -- 5. getinstances() -- ALL instances in memory (server + client)
     if Capabilities.GetInstances then
-        pcall(function()
-            for _, inst in ipairs(getinstances()) do addScript(inst, "getinstances()") end
-        end)
+        pcall(function() for _, inst in ipairs(getinstances()) do addScript(inst, "getinstances()") end end)
     end
 
     return collected
 end
 
 -- ============================================================
--- DECOMPILE -- SIMPLE CHAIN
+-- DECOMPILE
 -- ============================================================
 local function DecompileScript(scriptObj)
-    -- Method 1: Direct decompile
     if Capabilities.Decompile and scriptObj then
         local result = nil
         pcall(function() result = decompile(scriptObj) end)
         if result and #result > 10 then return result, "decompiled" end
-
         pcall(function() result = decompile(scriptObj, true) end)
         if result and #result > 10 then return result, "decompile(true)" end
     end
 
-    -- Method 2: getscriptclosure + decompile
     if Capabilities.GetScriptClosure and scriptObj then
         local cl = nil
         pcall(function() cl = getscriptclosure(scriptObj) end)
@@ -330,12 +306,10 @@ local function DecompileScript(scriptObj)
         end
     end
 
-    -- Method 3: .Source property
     if scriptObj then
         local result = nil
         pcall(function() result = scriptObj.Source end)
         if result and #result > 10 then return "-- .Source\n" .. result, ".Source" end
-
         pcall(function()
             if Capabilities.GetRawMetatable and Capabilities.SetReadOnly then
                 local mt = getrawmetatable(scriptObj)
@@ -349,7 +323,6 @@ local function DecompileScript(scriptObj)
         if result and #result > 10 then return "-- rawget .Source\n" .. result, "rawget(.Source)" end
     end
 
-    -- Method 4: getsenv dump
     if Capabilities.GetSenv and scriptObj then
         local env = nil
         pcall(function() env = getsenv(scriptObj) end)
@@ -373,7 +346,6 @@ local function DecompileScript(scriptObj)
         end
     end
 
-    -- Method 5: Bytecode dump
     if Capabilities.GetScriptBytecode and scriptObj then
         local bytecode = nil
         pcall(function() bytecode = getscriptbytecode(scriptObj) end)
@@ -410,7 +382,6 @@ local function DecompileScript(scriptObj)
         end
     end
 
-    -- Method 6: Closure analysis
     if Capabilities.GetScriptClosure and scriptObj then
         local cl = nil
         pcall(function() cl = getscriptclosure(scriptObj) end)
@@ -457,13 +428,13 @@ local function DecompileScript(scriptObj)
         end
     end
 
-    -- Failed
     local fallback = "-- DECOMPILE FAILED\n"
     if scriptObj then
         pcall(function()
             fallback = fallback .. "-- Script: " .. scriptObj:GetFullName() .. "\n"
             fallback = fallback .. "-- Class: " .. scriptObj.ClassName .. "\n"
             fallback = fallback .. "-- Disabled: " .. tostring(scriptObj.Disabled) .. "\n"
+            fallback = fallback .. "-- Note: Server Scripts do not replicate source to client\n"
         end)
     end
     return fallback, "failed"
@@ -519,7 +490,7 @@ function RunScanner()
     task.spawn(function()
         if ScanState.IsScanning then return end
         if not Capabilities.WriteFile or not Capabilities.AppendFile then
-            Notify("Error", "writefile/appendfile not available.", 5)
+            UINotify("Error", "writefile/appendfile not available.", 5)
             return
         end
 
@@ -540,7 +511,7 @@ function RunScanner()
             ScanState.StatusText = "No scripts found!"
             ScanState.IsScanning = false
             getgenv().ScannerRunning = false
-            Notify("Scanner", "No scripts found.", 5)
+            UINotify("Scanner", "No scripts found.", 5)
             return
         end
 
@@ -604,7 +575,7 @@ function RunScanner()
         ScanState.StatusText = "COMPLETE!"
         ScanState.TimeText = "00:00"
 
-        Notify("Scan Complete!",
+        UINotify("Scan Complete!",
             string.format("%d/%d decompiled | %d bytecode | %d failed",
                 ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed),
             6)
@@ -618,7 +589,7 @@ function RunScanner()
 end
 
 -- ============================================================
--- BUILD UI (RAYFIELD + FALLBACK)
+-- BUILD UI
 -- ============================================================
 local StatusRef = { Set = function() end }
 local TimeRef = { Set = function() end }
@@ -626,22 +597,12 @@ local FileRef = { Set = function() end }
 local CountRef = { Set = function() end }
 local SuccessRef = { Set = function() end }
 
-local function UINotify(title, content, dur)
-    if RayfieldLoaded and Rayfield then
-        pcall(function()
-            Rayfield:Notify({ Title = title, Content = content, Duration = dur or 3 })
-        end)
-    else
-        Notify(title, content, dur)
-    end
-end
-
 local function BuildUI()
     local Window
 
-    if RayfieldLoaded and Rayfield then
+    if RayfieldReady and Rayfield then
         Window = Rayfield:CreateWindow({
-            Name = "Apex Scanner v7.1 | " .. GameInfo.Name,
+            Name = "Apex Scanner v7.2 | " .. GameInfo.Name,
             LoadingTitle = "Apex Scanner",
             LoadingSubtitle = "Loading...",
             Theme = "Default",
@@ -649,7 +610,7 @@ local function BuildUI()
             Keybind = Enum.KeyCode.RightControl,
         })
     else
-        -- Fallback: simple ScreenGui
+        -- Fallback UI
         local parent = nil
         pcall(function() parent = gethui() end)
         if not parent or not parent:IsA("Instance") then parent = game:GetService("CoreGui") end
@@ -677,7 +638,7 @@ local function BuildUI()
         local title = Instance.new("TextLabel")
         title.Size = UDim2.new(1, 0, 0, 35)
         title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-        title.Text = "  APEX SCANNER v7.1 (Fallback)"
+        title.Text = "  APEX SCANNER v7.2 (Fallback)"
         title.TextColor3 = Color3.fromRGB(255, 255, 255)
         title.Font = Enum.Font.GothamBold
         title.TextSize = 14
@@ -726,9 +687,7 @@ local function BuildUI()
             b.MouseButton1Click:Connect(function() pcall(cb) end)
         end
 
-        -- fake Window/tab interface
         local fakeTab = {}
-
         function fakeTab:CreateSection(name)
             local s = Instance.new("TextLabel")
             s.Size = UDim2.new(1, 0, 0, 22)
@@ -740,7 +699,6 @@ local function BuildUI()
             s.TextXAlignment = Enum.TextXAlignment.Left
             s.Parent = scroll
         end
-
         function fakeTab:CreateParagraph(p)
             local f = Instance.new("Frame")
             f.Size = UDim2.new(1, 0, 0, 0)
@@ -767,13 +725,8 @@ local function BuildUI()
             pad.PaddingLeft = UDim.new(0, 10)
             pad.PaddingRight = UDim.new(0, 10)
         end
-
         function fakeTab:CreateLabel(text) return mkLabel(text) end
         function fakeTab:CreateButton(b) mkButton(b.Title or "Button", b.Callback) end
-        function fakeTab:CreateToggle(b) mkButton("[Toggle] " .. (b.Title or ""), function()
-            b.Callback(not _G._toggleState)
-            _G._toggleState = not _G._toggleState
-        end) end
 
         Window = {
             CreateTab = function(_, tc)
@@ -797,9 +750,10 @@ local function BuildUI()
     MainTab:CreateSection("Game Info")
     MainTab:CreateParagraph({
         Title = GameInfo.Name,
-        Content = string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s\nBypass: %s",
+        Content = string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s\nBypass: %s\nUI: %s",
             GameInfo.PlaceId, GameInfo.Creator, ExecutorName, GameInfo.JobId,
-            BypassState.HooksInstalled and "ACTIVE" or "LIMITED")
+            BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
+            RayfieldReady and "Rayfield" or "Fallback")
     })
 
     MainTab:CreateSection("Status")
@@ -870,7 +824,7 @@ local function BuildUI()
             print("========================================")
             print("  EXECUTOR: " .. ExecutorName)
             print("  BYPASS: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-            print("  RAYFIELD: " .. (RayfieldLoaded and "LOADED" or "FALLBACK"))
+            print("  RAYFIELD: " .. (RayfieldReady and "LOADED" or "FALLBACK"))
             print("========================================")
             for k, v in pairs(Capabilities) do
                 print(string.format("  %-25s %s", k, tostring(v)))
@@ -894,13 +848,13 @@ local function BuildUI()
         end
     end)
 
-    UINotify("Apex Scanner", "Ready | " .. GameInfo.Name .. " | " .. ExecutorName, 5)
+    UINotify("Apex Scanner", "Ready | " .. GameInfo.Name .. " | " .. ExecutorName .. " | " .. (RayfieldReady and "Rayfield" or "Fallback"), 5)
 
     print("========================================")
-    print("  APEX SCANNER v7.1 -- RAYFIELD")
+    print("  APEX SCANNER v7.2 -- RAYFIELD")
     print("  Executor: " .. ExecutorName)
     print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-    print("  Rayfield: " .. (RayfieldLoaded and "LOADED" or "FALLBACK"))
+    print("  Rayfield: " .. (RayfieldReady and "LOADED" or "FALLBACK"))
     print("  Game: " .. GameInfo.Name .. " (" .. GameInfo.PlaceId .. ")")
     print("========================================")
 end
