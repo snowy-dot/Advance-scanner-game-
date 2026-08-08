@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v7.2 -- RAYFIELD (CLEAN)
+-- APEX SCRIPT SCANNER v7.4 -- DRAGGABLE SELF-CONTAINED UI
 -- ============================================================
 
 if getgenv().ScannerRunning then return end
@@ -24,7 +24,6 @@ local function InstallBypass()
         if setidentity then setidentity(7) end
         if getthreadcontext then getthreadcontext(7) end
         if setthreadcontext then setthreadcontext(7) end
-        if syn and syn.set_thread_identity then syn.set_thread_identity(7) end
     end)
     pcall(function()
         if hookfunction and not BypassState.HooksInstalled then
@@ -106,12 +105,8 @@ pcall(function()
         if name then ExecutorName = name .. (version and (" " .. version) or "") end
     end
 end)
-if ExecutorName == "Unknown" then
-    if Capabilities.GetScriptBytecode and Capabilities.Newcclosure then
-        ExecutorName = "Advanced"
-    elseif Capabilities.WriteFile then
-        ExecutorName = "Compatible"
-    end
+if ExecutorName == "Unknown" and Capabilities.WriteFile then
+    ExecutorName = "Compatible"
 end
 
 -- ============================================================
@@ -143,61 +138,6 @@ local function Notify(title, text, dur)
             Title = title or "", Text = text or "", Duration = dur or 3,
         })
     end)
-end
-
--- ============================================================
--- RAYFIELD LOADER -- NO LOCAL SHADOWING
--- ============================================================
-local RayfieldReady = false
-
-local function LoadRayfield()
-    -- clear stale global
-    _G.Rayfield = nil
-    Rayfield = nil
-
-    local urls = {
-        "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
-        "https://github.com/shlexware/Rayfield/raw/main/source",
-    }
-    for _, url in ipairs(urls) do
-        local ok, src = pcall(function() return game:HttpGet(url) end)
-        if ok and src and #src > 500 then
-            local fn = loadstring(src)
-            if fn then
-                local ok2, err = pcall(fn)
-                if ok2 then
-                    -- check global directly, no local involved
-                    if Rayfield then
-                        RayfieldReady = true
-                        return
-                    end
-                    if _G.Rayfield then
-                        Rayfield = _G.Rayfield
-                        RayfieldReady = true
-                        return
-                    end
-                else
-                    print("[Apex] Rayfield exec error: " .. tostring(err):sub(1, 200))
-                end
-            end
-        end
-    end
-    print("[Apex] Rayfield failed to load, using fallback UI")
-end
-
-LoadRayfield()
-
--- ============================================================
--- UI WRAPPER
--- ============================================================
-local function UINotify(title, content, dur)
-    if RayfieldReady and Rayfield then
-        pcall(function()
-            Rayfield:Notify({ Title = title, Content = content, Duration = dur or 3 })
-        end)
-    else
-        Notify(title, content, dur)
-    end
 end
 
 -- ============================================================
@@ -490,7 +430,7 @@ function RunScanner()
     task.spawn(function()
         if ScanState.IsScanning then return end
         if not Capabilities.WriteFile or not Capabilities.AppendFile then
-            UINotify("Error", "writefile/appendfile not available.", 5)
+            Notify("Error", "writefile/appendfile not available.", 5)
             return
         end
 
@@ -511,7 +451,7 @@ function RunScanner()
             ScanState.StatusText = "No scripts found!"
             ScanState.IsScanning = false
             getgenv().ScannerRunning = false
-            UINotify("Scanner", "No scripts found.", 5)
+            Notify("Scanner", "No scripts found.", 5)
             return
         end
 
@@ -575,7 +515,7 @@ function RunScanner()
         ScanState.StatusText = "COMPLETE!"
         ScanState.TimeText = "00:00"
 
-        UINotify("Scan Complete!",
+        Notify("Scan Complete!",
             string.format("%d/%d decompiled | %d bytecode | %d failed",
                 ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed),
             6)
@@ -589,7 +529,7 @@ function RunScanner()
 end
 
 -- ============================================================
--- BUILD UI
+-- UI BUILD -- FULLY DRAGGABLE, NO EXTERNAL DEPS
 -- ============================================================
 local StatusRef = { Set = function() end }
 local TimeRef = { Set = function() end }
@@ -597,244 +537,343 @@ local FileRef = { Set = function() end }
 local CountRef = { Set = function() end }
 local SuccessRef = { Set = function() end }
 
+local function getGuiParent()
+    local parent = nil
+    pcall(function() parent = gethui() end)
+    if parent and parent:IsA("Instance") then return parent end
+    return game:GetService("CoreGui")
+end
+
 local function BuildUI()
-    local Window
+    local parent = getGuiParent()
 
-    if RayfieldReady and Rayfield then
-        Window = Rayfield:CreateWindow({
-            Name = "Apex Scanner v7.2 | " .. GameInfo.Name,
-            LoadingTitle = "Apex Scanner",
-            LoadingSubtitle = "Loading...",
-            Theme = "Default",
-            ConfigurationSaving = { Enabled = false },
-            Keybind = Enum.KeyCode.RightControl,
-        })
-    else
-        -- Fallback UI
-        local parent = nil
-        pcall(function() parent = gethui() end)
-        if not parent or not parent:IsA("Instance") then parent = game:GetService("CoreGui") end
+    pcall(function()
+        local old = parent:FindFirstChild("ApexScanner")
+        if old then old:Destroy() end
+    end)
 
-        pcall(function()
-            local old = parent:FindFirstChild("ApexFallback")
-            if old then old:Destroy() end
-        end)
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "ApexScanner"
+    sg.ResetOnSpawn = false
+    sg.DisplayOrder = 9999
+    sg.IgnoreGuiInset = true
+    sg.Parent = parent
 
-        local sg = Instance.new("ScreenGui")
-        sg.Name = "ApexFallback"
-        sg.ResetOnSpawn = false
-        sg.DisplayOrder = 9999
-        sg.IgnoreGuiInset = true
-        sg.Parent = parent
+    -- Main frame
+    local mf = Instance.new("Frame")
+    mf.Name = "MainFrame"
+    mf.Size = UDim2.new(0, 520, 0, 400)
+    mf.Position = UDim2.new(0.5, -260, 0.5, -200)
+    mf.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+    mf.BorderSizePixel = 0
+    mf.Parent = sg
+    Instance.new("UICorner", mf).CornerRadius = UDim.new(0, 8)
 
-        local mf = Instance.new("Frame")
-        mf.Size = UDim2.new(0, 500, 0, 350)
-        mf.Position = UDim2.new(0.5, -250, 0.5, -175)
-        mf.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-        mf.BorderSizePixel = 0
-        mf.Parent = sg
-        Instance.new("UICorner", mf).CornerRadius = UDim.new(0, 8)
+    -- Title bar
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 36)
+    titleBar.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = mf
+    Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 8)
 
-        local title = Instance.new("TextLabel")
-        title.Size = UDim2.new(1, 0, 0, 35)
-        title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-        title.Text = "  APEX SCANNER v7.2 (Fallback)"
-        title.TextColor3 = Color3.fromRGB(255, 255, 255)
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 14
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.BorderSizePixel = 0
-        title.Parent = mf
-        Instance.new("UICorner", title).CornerRadius = UDim.new(0, 8)
+    -- Fill bottom corners of title bar
+    local cover = Instance.new("Frame")
+    cover.Size = UDim2.new(1, 0, 0, 12)
+    cover.Position = UDim2.new(0, 0, 1, -12)
+    cover.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+    cover.BorderSizePixel = 0
+    cover.Parent = titleBar
 
-        local scroll = Instance.new("ScrollingFrame")
-        scroll.Size = UDim2.new(1, -20, 1, -55)
-        scroll.Position = UDim2.new(0, 10, 0, 45)
-        scroll.BackgroundTransparency = 1
-        scroll.BorderSizePixel = 0
-        scroll.ScrollBarThickness = 4
-        scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-        scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        scroll.Parent = mf
-        local ll = Instance.new("UIListLayout")
-        ll.Padding = UDim.new(0, 6)
-        ll.Parent = scroll
+    local titleText = Instance.new("TextLabel")
+    titleText.Size = UDim2.new(1, -80, 1, 0)
+    titleText.Position = UDim2.new(0, 12, 0, 0)
+    titleText.BackgroundTransparency = 1
+    titleText.Text = "  APEX SCANNER v7.4 | " .. GameInfo.Name
+    titleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleText.Font = Enum.Font.GothamBold
+    titleText.TextSize = 14
+    titleText.TextXAlignment = Enum.TextXAlignment.Left
+    titleText.Parent = titleBar
 
-        local function mkLabel(text)
-            local l = Instance.new("TextLabel")
-            l.Size = UDim2.new(1, 0, 0, 20)
-            l.BackgroundTransparency = 1
-            l.Text = text
-            l.TextColor3 = Color3.fromRGB(200, 200, 210)
-            l.Font = Enum.Font.Gotham
-            l.TextSize = 12
-            l.TextXAlignment = Enum.TextXAlignment.Left
-            l.Parent = scroll
-            return { Set = function(_, v) pcall(function() l.Text = v end) end }
+    -- Minimize button
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, 28, 0, 28)
+    minBtn.Position = UDim2.new(1, -64, 0, 4)
+    minBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
+    minBtn.Text = "-"
+    minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 16
+    minBtn.BorderSizePixel = 0
+    minBtn.Parent = titleBar
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+
+    -- Close button
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 28, 0, 28)
+    closeBtn.Position = UDim2.new(1, -32, 0, 4)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    closeBtn.Text = "X"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 13
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Parent = titleBar
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+    -- Content area (gets hidden on minimize)
+    local contentArea = Instance.new("Frame")
+    contentArea.Name = "ContentArea"
+    contentArea.Size = UDim2.new(1, 0, 1, -36)
+    contentArea.Position = UDim2.new(0, 0, 0, 36)
+    contentArea.BackgroundTransparency = 1
+    contentArea.Parent = mf
+
+    -- Scroll area
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -16, 1, -16)
+    scroll.Position = UDim2.new(0, 8, 0, 8)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 4
+    scroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.Parent = contentArea
+
+    local ll = Instance.new("UIListLayout")
+    ll.Padding = UDim.new(0, 6)
+    ll.SortOrder = Enum.SortOrder.LayoutOrder
+    ll.Parent = scroll
+
+    -- === DRAGGING ===
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = mf.Position
         end
+    end)
 
-        local function mkButton(text, cb)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, 0, 0, 32)
-            b.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-            b.Text = text
-            b.TextColor3 = Color3.fromRGB(255, 255, 255)
-            b.Font = Enum.Font.GothamBold
-            b.TextSize = 13
-            b.BorderSizePixel = 0
-            b.Parent = scroll
-            Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-            b.MouseButton1Click:Connect(function() pcall(cb) end)
+    titleBar.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
         end
+    end)
 
-        local fakeTab = {}
-        function fakeTab:CreateSection(name)
-            local s = Instance.new("TextLabel")
-            s.Size = UDim2.new(1, 0, 0, 22)
-            s.BackgroundTransparency = 1
-            s.Text = name
-            s.TextColor3 = Color3.fromRGB(130, 130, 145)
-            s.Font = Enum.Font.GothamBold
-            s.TextSize = 11
-            s.TextXAlignment = Enum.TextXAlignment.Left
-            s.Parent = scroll
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            mf.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
         end
-        function fakeTab:CreateParagraph(p)
-            local f = Instance.new("Frame")
-            f.Size = UDim2.new(1, 0, 0, 0)
-            f.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-            f.BorderSizePixel = 0
-            f.AutomaticSize = Enum.AutomaticSize.Y
-            f.Parent = scroll
-            Instance.new("UICorner", f).CornerRadius = UDim.new(0, 6)
-            local t = Instance.new("TextLabel")
-            t.Size = UDim2.new(1, 0, 0, 0)
-            t.BackgroundTransparency = 1
-            t.Text = (p.Title or "") .. "\n" .. (p.Content or "")
-            t.TextColor3 = Color3.fromRGB(200, 200, 210)
-            t.Font = Enum.Font.Gotham
-            t.TextSize = 12
-            t.TextWrapped = true
-            t.TextXAlignment = Enum.TextXAlignment.Left
-            t.TextYAlignment = Enum.TextYAlignment.Top
-            t.AutomaticSize = Enum.AutomaticSize.Y
-            t.Parent = f
-            local pad = Instance.new("UIPadding", f)
-            pad.PaddingTop = UDim.new(0, 8)
-            pad.PaddingBottom = UDim.new(0, 8)
-            pad.PaddingLeft = UDim.new(0, 10)
-            pad.PaddingRight = UDim.new(0, 10)
-        end
-        function fakeTab:CreateLabel(text) return mkLabel(text) end
-        function fakeTab:CreateButton(b) mkButton(b.Title or "Button", b.Callback) end
+    end)
 
-        Window = {
-            CreateTab = function(_, tc)
-                local l = Instance.new("TextLabel")
-                l.Size = UDim2.new(1, 0, 0, 28)
-                l.BackgroundTransparency = 1
-                l.Text = "=== " .. (tc.Title or "Tab") .. " ==="
-                l.TextColor3 = Color3.fromRGB(255, 255, 255)
-                l.Font = Enum.Font.GothamBold
-                l.TextSize = 14
-                l.TextXAlignment = Enum.TextXAlignment.Left
-                l.Parent = scroll
-                return fakeTab
-            end
-        }
+    -- Minimize logic
+    local minimized = false
+    minBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        if minimized then
+            contentArea.Visible = false
+            mf.Size = UDim2.new(0, 520, 0, 36)
+        else
+            contentArea.Visible = true
+            mf.Size = UDim2.new(0, 520, 0, 400)
+        end
+    end)
+
+    -- Close
+    closeBtn.MouseButton1Click:Connect(function()
+        ScanState.IsScanning = false
+        getgenv().ScannerRunning = false
+        sg:Destroy()
+    end)
+
+    -- === UI HELPERS ===
+    local orderCounter = 0
+    local function nextOrder()
+        orderCounter = orderCounter + 1
+        return orderCounter
     end
 
-    -- MAIN TAB
-    local MainTab = Window:CreateTab({ Title = "Scanner", Icon = "scan" })
+    local function mkSection(name)
+        local s = Instance.new("TextLabel")
+        s.Size = UDim2.new(1, 0, 0, 22)
+        s.BackgroundTransparency = 1
+        s.Text = name
+        s.TextColor3 = Color3.fromRGB(130, 130, 145)
+        s.Font = Enum.Font.GothamBold
+        s.TextSize = 11
+        s.TextXAlignment = Enum.TextXAlignment.Left
+        s.LayoutOrder = nextOrder()
+        s.Parent = scroll
+    end
 
-    MainTab:CreateSection("Game Info")
-    MainTab:CreateParagraph({
-        Title = GameInfo.Name,
-        Content = string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s\nBypass: %s\nUI: %s",
+    local function mkLabel(text)
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, 0, 0, 20)
+        l.BackgroundTransparency = 1
+        l.Text = text
+        l.TextColor3 = Color3.fromRGB(200, 200, 210)
+        l.Font = Enum.Font.Gotham
+        l.TextSize = 12
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.LayoutOrder = nextOrder()
+        l.Parent = scroll
+        return { Set = function(_, v) pcall(function() l.Text = v end) end }
+    end
+
+    local function mkParagraph(title, content)
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(1, 0, 0, 0)
+        f.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+        f.BorderSizePixel = 0
+        f.AutomaticSize = Enum.AutomaticSize.Y
+        f.LayoutOrder = nextOrder()
+        f.Parent = scroll
+        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 6)
+        local cl = Instance.new("UIListLayout")
+        cl.Padding = UDim.new(0, 4)
+        cl.Parent = f
+        local pad = Instance.new("UIPadding", f)
+        pad.PaddingTop = UDim.new(0, 8)
+        pad.PaddingBottom = UDim.new(0, 8)
+        pad.PaddingLeft = UDim.new(0, 10)
+        pad.PaddingRight = UDim.new(0, 10)
+
+        local tl = Instance.new("TextLabel")
+        tl.Size = UDim2.new(1, 0, 0, 18)
+        tl.BackgroundTransparency = 1
+        tl.Text = title
+        tl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        tl.Font = Enum.Font.GothamBold
+        tl.TextSize = 14
+        tl.TextXAlignment = Enum.TextXAlignment.Left
+        tl.Parent = f
+
+        local ct = Instance.new("TextLabel")
+        ct.Size = UDim2.new(1, 0, 0, 0)
+        ct.BackgroundTransparency = 1
+        ct.Text = content
+        ct.TextColor3 = Color3.fromRGB(160, 160, 175)
+        ct.Font = Enum.Font.Gotham
+        ct.TextSize = 12
+        ct.TextWrapped = true
+        ct.TextXAlignment = Enum.TextXAlignment.Left
+        ct.TextYAlignment = Enum.TextYAlignment.Top
+        ct.AutomaticSize = Enum.AutomaticSize.Y
+        ct.Parent = f
+    end
+
+    local function mkButton(title, desc, cb)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, 0, 0, 36)
+        b.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+        b.Text = ""
+        b.BorderSizePixel = 0
+        b.LayoutOrder = nextOrder()
+        b.Parent = scroll
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+
+        local tl = Instance.new("TextLabel")
+        tl.Size = UDim2.new(1, -20, 0, 18)
+        tl.Position = UDim2.new(0, 10, 0, 3)
+        tl.BackgroundTransparency = 1
+        tl.Text = title
+        tl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        tl.Font = Enum.Font.GothamBold
+        tl.TextSize = 13
+        tl.TextXAlignment = Enum.TextXAlignment.Left
+        tl.Parent = b
+
+        if desc then
+            local dl = Instance.new("TextLabel")
+            dl.Size = UDim2.new(1, -20, 0, 14)
+            dl.Position = UDim2.new(0, 10, 0, 20)
+            dl.BackgroundTransparency = 1
+            dl.Text = desc
+            dl.TextColor3 = Color3.fromRGB(120, 120, 135)
+            dl.Font = Enum.Font.Gotham
+            dl.TextSize = 11
+            dl.TextXAlignment = Enum.TextXAlignment.Left
+            dl.Parent = b
+        end
+
+        b.MouseButton1Click:Connect(function() pcall(cb) end)
+        b.MouseEnter:Connect(function() b.BackgroundColor3 = Color3.fromRGB(45, 45, 58) end)
+        b.MouseLeave:Connect(function() b.BackgroundColor3 = Color3.fromRGB(35, 35, 45) end)
+    end
+
+    -- === BUILD CONTENT ===
+
+    -- === SCANNER SECTION ===
+    mkSection("=== Scanner ===")
+
+    mkParagraph(GameInfo.Name,
+        string.format("Place ID: %d\nCreator: %s\nExecutor: %s\nJobID: %s\nBypass: %s",
             GameInfo.PlaceId, GameInfo.Creator, ExecutorName, GameInfo.JobId,
-            BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
-            RayfieldReady and "Rayfield" or "Fallback")
-    })
+            BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
 
-    MainTab:CreateSection("Status")
-    StatusRef = MainTab:CreateLabel("Status: Ready")
-    TimeRef = MainTab:CreateLabel("Time: --:--")
-    FileRef = MainTab:CreateLabel("Save: Not started")
-    CountRef = MainTab:CreateLabel("Total Scripts: 0")
-    SuccessRef = MainTab:CreateLabel("Decompiled: 0 | Failed: 0 | Bytecode: 0")
+    mkSection("Status")
+    StatusRef = mkLabel("Status: Ready")
+    TimeRef = mkLabel("Time: --:--")
+    FileRef = mkLabel("Save: Not started")
+    CountRef = mkLabel("Total Scripts: 0")
+    SuccessRef = mkLabel("Decompiled: 0 | Failed: 0 | Bytecode: 0")
 
-    MainTab:CreateSection("Controls")
-    MainTab:CreateButton({
-        Title = "Start Full Scan",
-        Description = "Collect and decompile ALL scripts in the game",
-        Callback = function() RunScanner() end
-    })
-    MainTab:CreateButton({
-        Title = "Toggle Pause",
-        Description = "Pause / resume scan",
-        Callback = function()
-            if not ScanState.IsScanning then return end
-            ScanState.IsPaused = not ScanState.IsPaused
-            ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
+    mkSection("Controls")
+    mkButton("Start Full Scan", "Collect and decompile ALL scripts in the game", function() RunScanner() end)
+    mkButton("Toggle Pause", "Pause / resume scan", function()
+        if not ScanState.IsScanning then return end
+        ScanState.IsPaused = not ScanState.IsPaused
+        ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
+    end)
+    mkButton("Stop Scan", "Abort current scan", function()
+        ScanState.IsScanning = false
+        ScanState.IsPaused = false
+        ScanState.StatusText = "STOPPED"
+        getgenv().ScannerRunning = false
+        Notify("Scanner", "Scan stopped.", 3)
+    end)
+
+    -- === ADVANCED SECTION ===
+    mkSection("=== Advanced ===")
+
+    mkButton("Copy Save Path", "Copy output folder to clipboard", function()
+        if Capabilities.SetClipboard then
+            pcall(function() setclipboard(ScanState.OutputFolder) end)
+            Notify("Copied", ScanState.OutputFolder, 3)
         end
-    })
-    MainTab:CreateButton({
-        Title = "Stop Scan",
-        Description = "Abort current scan",
-        Callback = function()
-            ScanState.IsScanning = false
-            ScanState.IsPaused = false
-            ScanState.StatusText = "STOPPED"
-            getgenv().ScannerRunning = false
-            UINotify("Scanner", "Scan stopped.", 3)
-        end
-    })
-
-    -- ADVANCED TAB
-    local AdvTab = Window:CreateTab({ Title = "Advanced", Icon = "wrench" })
-
-    AdvTab:CreateSection("Export")
-    AdvTab:CreateButton({
-        Title = "Copy Save Path",
-        Description = "Copy output folder to clipboard",
-        Callback = function()
-            if Capabilities.SetClipboard then
-                pcall(function() setclipboard(ScanState.OutputFolder) end)
-                UINotify("Copied", ScanState.OutputFolder, 3)
-            end
-        end
-    })
+    end)
 
     if Capabilities.SaveInstance then
-        AdvTab:CreateButton({
-            Title = "Export Full Game (saveinstance)",
-            Description = "Save entire game as .rbxl",
-            Callback = function()
-                pcall(function() saveinstance({ filename = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_FullExport.rbxl" }) end)
-                UINotify("Export", "Game exported.", 5)
-            end
-        })
+        mkButton("Export Full Game (saveinstance)", "Save entire game as .rbxl", function()
+            pcall(function() saveinstance({ filename = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_FullExport.rbxl" }) end)
+            Notify("Export", "Game exported.", 5)
+        end)
     end
 
-    AdvTab:CreateSection("System")
-    AdvTab:CreateButton({
-        Title = "Print Executor Capabilities",
-        Description = "Check F9 console",
-        Callback = function()
-            print("========================================")
-            print("  EXECUTOR: " .. ExecutorName)
-            print("  BYPASS: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-            print("  RAYFIELD: " .. (RayfieldReady and "LOADED" or "FALLBACK"))
-            print("========================================")
-            for k, v in pairs(Capabilities) do
-                print(string.format("  %-25s %s", k, tostring(v)))
-            end
-            print("========================================")
-            UINotify("Console", "Check F9.", 3)
+    mkButton("Print Executor Capabilities", "Check F9 console", function()
+        print("========================================")
+        print("  EXECUTOR: " .. ExecutorName)
+        print("  BYPASS: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
+        print("========================================")
+        for k, v in pairs(Capabilities) do
+            print(string.format("  %-25s %s", k, tostring(v)))
         end
-    })
+        print("========================================")
+        Notify("Console", "Check F9.", 3)
+    end)
 
-    -- UI UPDATER
+    -- === UI UPDATER ===
     task.spawn(function()
         while true do
             task.wait(0.3)
@@ -848,13 +887,12 @@ local function BuildUI()
         end
     end)
 
-    UINotify("Apex Scanner", "Ready | " .. GameInfo.Name .. " | " .. ExecutorName .. " | " .. (RayfieldReady and "Rayfield" or "Fallback"), 5)
+    Notify("Apex Scanner", "Ready | " .. GameInfo.Name .. " | " .. ExecutorName, 5)
 
     print("========================================")
-    print("  APEX SCANNER v7.2 -- RAYFIELD")
+    print("  APEX SCANNER v7.4")
     print("  Executor: " .. ExecutorName)
     print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-    print("  Rayfield: " .. (RayfieldReady and "LOADED" or "FALLBACK"))
     print("  Game: " .. GameInfo.Name .. " (" .. GameInfo.PlaceId .. ")")
     print("========================================")
 end
