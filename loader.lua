@@ -1,5 +1,5 @@
 --!nocheck
--- Universal Game Scanner — Rayfield Edition
+-- Universal Game Scanner — Rayfield Edition (Fixed)
 -- Keybind: Right Ctrl to toggle
 
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
@@ -86,17 +86,18 @@ end
 -- ============================================
 -- SCAN LOGIC
 -- ============================================
-local Paragraph = nil
-local LastResultsText = ""
+local StatsParagraph = nil
 
 local function updateParagraph()
     local text = string.format(
         "Total Scripts: %d\nExtracted: %d\nBytecode: %d\nFailed: %d",
         State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed
     )
-    LastResultsText = text
-    if Paragraph then
-        Paragraph:Set("Scan Results", text)
+    if StatsParagraph then
+        StatsParagraph:Set({
+            Title = "Scan Results",
+            Content = text
+        })
     end
 end
 
@@ -151,9 +152,12 @@ local function performScan()
 end
 
 -- ============================================
--- SCAN TAB
+-- SCAN TAB UI
 -- ============================================
-Paragraph = TabScan:CreateParagraph("Scan Results", "No scan performed yet. Click the button below.")
+StatsParagraph = TabScan:CreateParagraph({
+    Title = "Scan Results",
+    Content = "No scan performed yet. Click the button below."
+})
 
 TabScan:CreateButton({
     Name = "Scan Game",
@@ -177,26 +181,18 @@ TabScan:CreateButton({
 })
 
 -- ============================================
--- EXPORT TAB
+-- EXPORT TAB UI
 -- ============================================
 TabExport:CreateButton({
     Name = "Export Full Dump to File",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Nothing to export. Run a scan first.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "Nothing to export. Run a scan first.", Duration = 3})
             return
         end
 
         if type(writefile) ~= "function" then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "writefile is not supported by your executor.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "writefile is not supported by your executor.", Duration = 3})
             return
         end
 
@@ -231,17 +227,9 @@ TabExport:CreateButton({
         local filename = "scan_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
         local ok, err = pcall(writefile, filename, content)
         if ok then
-            Rayfield:Notify({
-                Title = "Exported",
-                Content = "Saved to: " .. filename,
-                Duration = 5
-            })
+            Rayfield:Notify({Title = "Exported", Content = "Saved to: " .. filename, Duration = 5})
         else
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Failed to write file: " .. tostring(err),
-                Duration = 5
-            })
+            Rayfield:Notify({Title = "Error", Content = "Failed to write file: " .. tostring(err), Duration = 5})
         end
     end
 })
@@ -250,20 +238,12 @@ TabExport:CreateButton({
     Name = "Export Script Index Only",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Nothing to export. Run a scan first.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "Nothing to export. Run a scan first.", Duration = 3})
             return
         end
 
         if type(writefile) ~= "function" then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "writefile is not supported.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "writefile is not supported.", Duration = 3})
             return
         end
 
@@ -276,11 +256,7 @@ TabExport:CreateButton({
 
         local filename = "index_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
         pcall(writefile, filename, content)
-        Rayfield:Notify({
-            Title = "Exported",
-            Content = "Index saved to: " .. filename,
-            Duration = 5
-        })
+        Rayfield:Notify({Title = "Exported", Content = "Index saved to: " .. filename, Duration = 5})
     end
 })
 
@@ -288,20 +264,12 @@ TabExport:CreateButton({
     Name = "Copy Stats to Clipboard",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Nothing to copy. Run a scan first.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "Nothing to copy. Run a scan first.", Duration = 3})
             return
         end
 
         if type(setclipboard) ~= "function" then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "setclipboard is not supported.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "setclipboard is not supported.", Duration = 3})
             return
         end
 
@@ -313,11 +281,7 @@ TabExport:CreateButton({
         end
 
         pcall(setclipboard, text)
-        Rayfield:Notify({
-            Title = "Copied",
-            Content = "Results copied to clipboard!",
-            Duration = 3
-        })
+        Rayfield:Notify({Title = "Copied", Content = "Results copied to clipboard!", Duration = 3})
     end
 })
 
@@ -325,20 +289,12 @@ TabExport:CreateButton({
     Name = "Copy All Source Code",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "Nothing to copy. Run a scan first.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "Nothing to copy. Run a scan first.", Duration = 3})
             return
         end
 
         if type(setclipboard) ~= "function" then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "setclipboard is not supported.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "setclipboard is not supported.", Duration = 3})
             return
         end
 
@@ -352,20 +308,12 @@ TabExport:CreateButton({
         end
 
         if #text == 0 then
-            Rayfield:Notify({
-                Title = "Error",
-                Content = "No extractable source found.",
-                Duration = 3
-            })
+            Rayfield:Notify({Title = "Error", Content = "No extractable source found.", Duration = 3})
             return
         end
 
         pcall(setclipboard, text)
-        Rayfield:Notify({
-            Title = "Copied",
-            Content = "All source code copied to clipboard!",
-            Duration = 3
-        })
+        Rayfield:Notify({Title = "Copied", Content = "All source code copied to clipboard!", Duration = 3})
     end
 })
 
