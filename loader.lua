@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v7.5 -- INDIVIDUAL FILE OUTPUT
+-- APEX SCRIPT SCANNER v7.6 -- SINGLE TEXT FILE OUTPUT
 -- ============================================================
 
 if getgenv().ScannerRunning then return end
@@ -150,6 +150,7 @@ local ScanState = {
     Failed = 0,
     BytecodeDumped = 0,
     StartTime = 0,
+    CurrentFile = "",
     StatusText = "Ready",
     TimeText = "--:--",
     SuccessText = "Decompiled: 0 | Failed: 0 | Bytecode: 0",
@@ -159,38 +160,11 @@ local ScanState = {
 }
 
 local function SafeWriteFile(path, content) pcall(function() writefile(path, content) end) end
+local function SafeAppendFile(path, content) pcall(function() appendfile(path, content) end) end
 local function SafeMakeFolder(path) pcall(function() makefolder(path) end) end
 
 ScanState.OutputFolder = GameInfo.Name .. "_APEX_Scan"
 SafeMakeFolder(ScanState.OutputFolder)
-SafeMakeFolder(ScanState.OutputFolder .. "/LocalScripts")
-SafeMakeFolder(ScanState.OutputFolder .. "/ModuleScripts")
-SafeMakeFolder(ScanState.OutputFolder .. "/Closures")
-SafeMakeFolder(ScanState.OutputFolder .. "/ServerScripts_PROTECTED")
-SafeMakeFolder(ScanState.OutputFolder .. "/Bytecode")
-
--- ============================================================
--- SANITIZE FILENAME
--- ============================================================
-local function SanitizeFilename(name)
-    return (name or "unknown"):gsub("[^%w_%.%-]", "_"):sub(1, 100)
-end
-
-local function GetUniquePath(folder, name, ext)
-    local base = SanitizeFilename(name)
-    local path = folder .. "/" .. base .. ext
-    local counter = 1
-    while true do
-        local exists = false
-        pcall(function()
-            if isfile and isfile(path) then exists = true end
-        end)
-        if not exists then break end
-        counter = counter + 1
-        path = folder .. "/" .. base .. "_" .. counter .. ext
-    end
-    return path
-end
 
 -- ============================================================
 -- SCRIPT COLLECTOR
@@ -413,13 +387,59 @@ local function DecompileScript(scriptObj)
 end
 
 -- ============================================================
+-- FILE MANAGEMENT -- SINGLE TEXT FILE
+-- ============================================================
+local currentFileSize = 0
+local filePart = 1
+local writeBuffer = {}
+local bufferSize = 0
+local MAX_FILE_SIZE = 10 * 1024 * 1024
+local MAX_BUFFER_SIZE = 1024 * 1024
+
+local function FlushBuffer()
+    if #writeBuffer == 0 then return end
+    local chunk = table.concat(writeBuffer, "\n")
+    writeBuffer = {}
+    bufferSize = 0
+    if currentFileSize + #chunk > MAX_FILE_SIZE then
+        filePart = filePart + 1
+        ScanState.CurrentFile = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_All_Scripts_Part_" .. filePart .. ".txt"
+        SafeWriteFile(ScanState.CurrentFile, string.format("-- APEX SCAN PART %d\n-- Date: %s\n\n", filePart, os.date("%Y-%m-%d %H:%M:%S")))
+        currentFileSize = 0
+        ScanState.FileText = "Save: " .. ScanState.CurrentFile
+    end
+    SafeAppendFile(ScanState.CurrentFile, chunk)
+    currentFileSize = currentFileSize + #chunk
+end
+
+local function InitializeFile()
+    filePart = 1
+    ScanState.CurrentFile = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_All_Scripts.txt"
+    SafeWriteFile(ScanState.CurrentFile, string.format(
+        "============================================================\n" ..
+        "  APEX SCRIPT SCAN: %s\n" ..
+        "  Game ID: %d | JobID: %s\n" ..
+        "  Creator: %s\n" ..
+        "  Executor: %s | Bypass: %s\n" ..
+        "  Date: %s\n" ..
+        "============================================================\n\n" ..
+        "This file contains ALL gathered scripts from the game.\n" ..
+        "Each script shows its full path, class type, and source code.\n\n",
+        GameInfo.Name, GameInfo.PlaceId, GameInfo.JobId, GameInfo.Creator, ExecutorName,
+        BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
+        os.date("%Y-%m-%d %H:%M:%S")))
+    currentFileSize = 0
+    ScanState.FileText = "Save: " .. ScanState.CurrentFile
+end
+
+-- ============================================================
 -- MAIN SCANNER
 -- ============================================================
 function RunScanner()
     task.spawn(function()
         if ScanState.IsScanning then return end
-        if not Capabilities.WriteFile then
-            Notify("Error", "writefile not available.", 5)
+        if not Capabilities.WriteFile or not Capabilities.AppendFile then
+            Notify("Error", "writefile/appendfile not available.", 5)
             return
         end
 
@@ -444,34 +464,25 @@ function RunScanner()
             return
         end
 
-        -- Write index file
-        local indexPath = ScanState.OutputFolder .. "/_INDEX.txt"
-        local indexContent = string.format(
-            "========================================\n" ..
-            "  APEX SCRIPT SCANNER v7.5\n" ..
-            "  Game: %s (Place ID: %d)\n" ..
-            "  Creator: %s\n" ..
-            "  Executor: %s\n" ..
-            "  Bypass: %s\n" ..
-            "  Date: %s\n" ..
-            "  Total Scripts: %d\n" ..
-            "========================================\n\n",
-            GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, ExecutorName,
-            BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
-            os.date("%Y-%m-%d %H:%M:%S"),
-            ScanState.TotalScripts
-        )
-        indexContent = indexContent .. "SCRIPT INDEX:\n"
-        indexContent = indexContent .. string.rep("-", 80) .. "\n"
+        InitializeFile()
+
+        -- write script index at the top
+        local indexHeader = "SCRIPT INDEX:\n"
+        indexHeader = indexHeader .. string.rep("-", 80) .. "\n"
+        indexHeader = indexHeader .. string.format("Total Scripts Found: %d\n\n", ScanState.TotalScripts)
 
         for i, data in ipairs(allScripts) do
-            local status = "PENDING"
-            indexContent = indexContent .. string.format("[%d] %s | CLASS: %s | PATH: %s\n",
-                i, status, data.Class, data.Name)
+            indexHeader = indexHeader .. string.format("[%d] CLASS: %s | PATH: %s\n",
+                i, data.Class, data.Name)
         end
+        indexHeader = indexHeader .. "\n" .. string.rep("=", 80) .. "\n"
+        indexHeader = indexHeader .. "FULL SCRIPT SOURCES:\n"
+        indexHeader = indexHeader .. string.rep("=", 80) .. "\n\n"
 
-        SafeWriteFile(indexPath, indexContent)
-        ScanState.FileText = "Save: " .. ScanState.OutputFolder
+        table.insert(writeBuffer, indexHeader)
+        bufferSize = bufferSize + #indexHeader
+        if bufferSize >= MAX_BUFFER_SIZE then FlushBuffer() end
+
         ScanState.StatusText = "Scanning..."
 
         for i = 1, ScanState.TotalScripts do
@@ -494,47 +505,17 @@ function RunScanner()
                 ScanState.Failed = ScanState.Failed + 1
             end
 
-            -- Determine output folder based on script type and status
-            local folder
-            if method == "failed" then
-                if data.Class == "Script" then
-                    folder = ScanState.OutputFolder .. "/ServerScripts_PROTECTED"
-                else
-                    folder = ScanState.OutputFolder .. "/Closures"
-                end
-            elseif method == "bytecode" then
-                folder = ScanState.OutputFolder .. "/Bytecode"
-            elseif data.Class == "LocalScript" then
-                folder = ScanState.OutputFolder .. "/LocalScripts"
-            elseif data.Class == "ModuleScript" then
-                folder = ScanState.OutputFolder .. "/ModuleScripts"
-            else
-                folder = ScanState.OutputFolder .. "/Closures"
-            end
-
-            -- Build file content with metadata header
-            local fileContent = string.format(
-                "-- ============================================================\n" ..
-                "-- APEX SCRIPT SCAN\n" ..
-                "-- ============================================================\n" ..
-                "-- Path: %s\n" ..
-                "-- Class: %s\n" ..
-                "-- Source: %s\n" ..
-                "-- Status: %s\n" ..
-                "-- Disabled: %s\n" ..
-                "-- Method: %s\n" ..
-                "-- Date: %s\n" ..
-                "-- ============================================================\n\n",
-                data.Name, data.Class, data.Source,
+            local entry = string.format(
+                "\n%s\nSCRIPT [%d]: %s%s\nCLASS: %s\nSOURCE: %s\nSTATUS: %s\nMETHOD: %s\nDISABLED: %s\n%s\n%s\n\n",
+                string.rep("=", 60), i, data.Name, data.Disabled and " [DISABLED]" or "",
+                data.Class, data.Source,
                 method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
-                tostring(data.Disabled), method,
-                os.date("%Y-%m-%d %H:%M:%S")
-            )
-            fileContent = fileContent .. decompiled
+                method, tostring(data.Disabled),
+                string.rep("=", 60), decompiled)
 
-            -- Save individual file
-            local filePath = GetUniquePath(folder, data.Name, ".lua")
-            SafeWriteFile(filePath, fileContent)
+            table.insert(writeBuffer, entry)
+            bufferSize = bufferSize + #entry
+            if bufferSize >= MAX_BUFFER_SIZE then FlushBuffer() end
 
             ScanState.Processed = i
             if i % 5 == 0 then
@@ -552,45 +533,24 @@ function RunScanner()
             task.wait()
         end
 
-        -- Update index with results
-        local finalIndex = string.format(
-            "========================================\n" ..
-            "  APEX SCRIPT SCANNER v7.5 -- COMPLETE\n" ..
-            "  Game: %s (Place ID: %d)\n" ..
-            "  Creator: %s\n" ..
-            "  Executor: %s\n" ..
-            "  Bypass: %s\n" ..
-            "  Date: %s\n" ..
-            "  Total Scripts: %d\n" ..
-            "  Decompiled: %d\n" ..
-            "  Failed (Server Scripts): %d\n" ..
-            "  Bytecode: %d\n" ..
-            "========================================\n\n",
-            GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, ExecutorName,
-            BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
+        FlushBuffer()
+
+        -- write summary at the end
+        local summary = string.format(
+            "\n\n%s\n=== SCAN COMPLETE ===\nTotal Scripts: %d\nDecompiled: %d\nProtected (Server Scripts): %d\nBytecode: %d\nDate: %s\n%s\n",
+            string.rep("=", 60),
+            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped,
             os.date("%Y-%m-%d %H:%M:%S"),
-            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped
-        )
-        finalIndex = finalIndex .. "SCRIPT INDEX:\n"
-        finalIndex = finalIndex .. string.rep("-", 80) .. "\n"
-
-        for i, data in ipairs(allScripts) do
-            local decompiled, method = DecompileScript(data.Object)
-            finalIndex = finalIndex .. string.format("[%d] %s | CLASS: %s | PATH: %s\n",
-                i,
-                method == "failed" and "PROTECTED" or "OK",
-                data.Class, data.Name)
-        end
-
-        SafeWriteFile(indexPath, finalIndex)
+            string.rep("=", 60))
+        SafeAppendFile(ScanState.CurrentFile, summary)
 
         ScanState.IsScanning = false
         ScanState.StatusText = "COMPLETE!"
         ScanState.TimeText = "00:00"
 
         Notify("Scan Complete!",
-            string.format("%d/%d decompiled | %d bytecode | %d protected",
-                ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed),
+            string.format("%d/%d decompiled | %d protected",
+                ScanState.Decompiled, ScanState.TotalScripts, ScanState.Failed),
             6)
 
         if Capabilities.SetClipboard then
@@ -635,7 +595,7 @@ local function MakeDraggable(frame)
 end
 
 -- ============================================================
--- BUILD UI
+-- BUILD UI -- FIXED POSITIONING
 -- ============================================================
 local StatusRef = { Set = function() end }
 local TimeRef = { Set = function() end }
@@ -665,15 +625,17 @@ local function BuildUI()
     sg.IgnoreGuiInset = true
     sg.Parent = parent
 
+    -- main frame positioned at top-left so it's always visible
     local mf = Instance.new("Frame")
     mf.Name = "MainFrame"
-    mf.Size = UDim2.new(0, 520, 0, 400)
-    mf.Position = UDim2.new(0.5, -260, 0.5, -200)
+    mf.Size = UDim2.new(0, 480, 0, 360)
+    mf.Position = UDim2.new(0, 20, 0, 20)
     mf.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
     mf.BorderSizePixel = 0
     mf.Parent = sg
     Instance.new("UICorner", mf).CornerRadius = UDim.new(0, 8)
 
+    -- title bar
     local titleBar = Instance.new("Frame")
     titleBar.Name = "TitleBar"
     titleBar.Size = UDim2.new(1, 0, 0, 36)
@@ -693,7 +655,7 @@ local function BuildUI()
     titleText.Size = UDim2.new(1, -80, 1, 0)
     titleText.Position = UDim2.new(0, 12, 0, 0)
     titleText.BackgroundTransparency = 1
-    titleText.Text = "  APEX SCANNER v7.5 | " .. GameInfo.Name
+    titleText.Text = "  APEX SCANNER v7.6"
     titleText.TextColor3 = Color3.fromRGB(255, 255, 255)
     titleText.Font = Enum.Font.GothamBold
     titleText.TextSize = 14
@@ -724,6 +686,7 @@ local function BuildUI()
     closeBtn.Parent = titleBar
     Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
 
+    -- content area
     local contentArea = Instance.new("Frame")
     contentArea.Name = "ContentArea"
     contentArea.Size = UDim2.new(1, 0, 1, -36)
@@ -754,10 +717,10 @@ local function BuildUI()
         minimized = not minimized
         if minimized then
             contentArea.Visible = false
-            mf.Size = UDim2.new(0, 520, 0, 36)
+            mf.Size = UDim2.new(0, 480, 0, 36)
         else
             contentArea.Visible = true
-            mf.Size = UDim2.new(0, 520, 0, 400)
+            mf.Size = UDim2.new(0, 480, 0, 360)
         end
     end)
 
@@ -898,7 +861,7 @@ local function BuildUI()
     SuccessRef = mkLabel("Decompiled: 0 | Failed: 0 | Bytecode: 0")
 
     mkSection("Controls")
-    mkButton("Start Full Scan", "Collect and decompile ALL scripts - saves each as individual file", function() RunScanner() end)
+    mkButton("Start Full Scan", "Gather ALL scripts into one text file", function() RunScanner() end)
     mkButton("Toggle Pause", "Pause / resume scan", function()
         if not ScanState.IsScanning then return end
         ScanState.IsPaused = not ScanState.IsPaused
@@ -957,17 +920,11 @@ local function BuildUI()
     Notify("Apex Scanner", "Ready | " .. GameInfo.Name .. " | " .. ExecutorName, 5)
 
     print("========================================")
-    print("  APEX SCANNER v7.5 -- INDIVIDUAL FILES")
+    print("  APEX SCANNER v7.6 -- SINGLE TEXT FILE")
     print("  Executor: " .. ExecutorName)
     print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
     print("  Game: " .. GameInfo.Name .. " (" .. GameInfo.PlaceId .. ")")
-    print("  Output: " .. ScanState.OutputFolder .. "/")
-    print("    /LocalScripts/")
-    print("    /ModuleScripts/")
-    print("    /Closures/")
-    print("    /Bytecode/")
-    print("    /ServerScripts_PROTECTED/")
-    print("    _INDEX.txt")
+    print("  Output: " .. ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_All_Scripts.txt")
     print("========================================")
 end
 
