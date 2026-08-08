@@ -1,14 +1,28 @@
 --!nocheck
--- Universal Game Scanner — Rayfield Edition v3
--- Features: Progress bar, auto-save to workspace folder
+-- Universal Game Scanner — Rayfield Edition v4
+-- Auto-detects real game name, full source dump with metadata
 -- Keybind: Right Ctrl to toggle
 
+local MarketplaceService = game:GetService("MarketplaceService")
 local Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))()
 
+-- ============================================
+-- GAME NAME DETECTION
+-- ============================================
+local GameName = game.Name
+pcall(function()
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+    if info and info.Name then
+        GameName = info.Name
+    end
+end)
+
+local safeName = GameName:gsub("[^%w%-_]", "_")
+
 local Window = Rayfield:CreateWindow({
-   Name = "Universal Game Scanner",
-   LoadingTitle = "Universal Scanner",
-   LoadingSubtitle = "by He",
+   Name = "Universal Scanner — " .. GameName,
+   LoadingTitle = "Scanning " .. GameName,
+   LoadingSubtitle = "Place ID: " .. tostring(game.PlaceId),
    ConfigurationSaving = { Enabled = false },
    Discord = { Enabled = false },
    KeySettings = {
@@ -28,7 +42,7 @@ local State = {
 }
 
 -- ============================================
--- PROGRESS BAR GUI
+-- PROGRESS BAR
 -- ============================================
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
@@ -112,6 +126,21 @@ ProgressDetail.TextXAlignment = Enum.TextXAlignment.Left
 ProgressDetail.TextTruncate = Enum.TextTruncate.AtEnd
 ProgressDetail.Parent = ProgressFrame
 
+local function updateProgress(current, total, containerName, scriptPath)
+    local pct = 0
+    if total > 0 then
+        pct = math.floor((current / total) * 100)
+    end
+    ProgressFill.Size = UDim2.new(pct / 100, 0, 1, 0)
+    ProgressPercent.Text = tostring(pct) .. "%"
+    ProgressLabel.Text = string.format("[%d / %d] %s", current, total, containerName or "")
+    local detail = scriptPath or ""
+    if #detail > 55 then
+        detail = "..." .. detail:sub(-52)
+    end
+    ProgressDetail.Text = detail
+end
+
 -- ============================================
 -- SOURCE EXTRACTION
 -- ============================================
@@ -164,53 +193,41 @@ local function getContainers()
 end
 
 -- ============================================
--- PROGRESS UPDATE
--- ============================================
-local function updateProgress(current, total, containerName, scriptPath)
-    local pct = 0
-    if total > 0 then
-        pct = math.floor((current / total) * 100)
-    end
-    
-    ProgressFill.Size = UDim2.new(pct / 100, 0, 1, 0)
-    ProgressPercent.Text = tostring(pct) .. "%"
-    ProgressLabel.Text = string.format("[%d / %d] %s", current, total, containerName or "")
-    
-    local detail = scriptPath or ""
-    if #detail > 55 then
-        detail = "..." .. detail:sub(-52)
-    end
-    ProgressDetail.Text = detail
-end
-
--- ============================================
 -- AUTO-SAVE
 -- ============================================
 local function autoSaveDump()
     if #State.results == 0 then return nil end
-    
+
     local content = "============================================\n"
     content = content .. "Universal Game Scanner Dump\n"
-    content = content .. "Game: " .. game.Name .. "\n"
+    content = content .. "Game: " .. GameName .. "\n"
     content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
     content = content .. "Job ID: " .. tostring(game.JobId) .. "\n"
     content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
     content = content .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\n",
         State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
     content = content .. "============================================\n\n"
-    
+
+    -- Index with container, class, type, status
     content = content .. "SCRIPT INDEX:\n"
-    content = content .. string.rep("-", 80) .. "\n"
+    content = content .. string.rep("-", 100) .. "\n"
+    content = content .. string.format("%-5s | %-20s | %-15s | %-12s | %s\n", "#", "Container", "Class", "Status", "Path")
+    content = content .. string.rep("-", 100) .. "\n"
     for i, r in ipairs(State.results) do
-        content = content .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
+        content = content .. string.format("[%-4d] | %-20s | %-15s | %-12s | %s\n",
+            i, r.container, r.class, r.status, r.path)
     end
     content = content .. "\n"
-    
+
+    -- Full source code with metadata
     for i, r in ipairs(State.results) do
         content = content .. "\n============================================\n"
-        content = content .. string.format("SCRIPT [%d]: %s\n", i, r.path)
-        content = content .. "CLASS: " .. r.class .. "\n"
-        content = content .. "STATUS: " .. r.status .. "\n"
+        content = content .. string.format("SCRIPT [%d]\n", i)
+        content = content .. "Game: " .. GameName .. "\n"
+        content = content .. "Container: " .. r.container .. "\n"
+        content = content .. "Class: " .. r.class .. "\n"
+        content = content .. "Path: " .. r.path .. "\n"
+        content = content .. "Status: " .. r.status .. "\n"
         content = content .. "============================================\n"
         if r.source then
             content = content .. r.source .. "\n"
@@ -218,9 +235,8 @@ local function autoSaveDump()
             content = content .. "-- [NO SOURCE AVAILABLE]\n"
         end
     end
-    
-    local filename = "scan_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
-    
+
+    local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
     if type(writefile) == "function" then
         local ok = pcall(writefile, filename, content)
         if ok then
@@ -228,7 +244,6 @@ local function autoSaveDump()
             return filename
         end
     end
-    
     return nil
 end
 
@@ -241,13 +256,13 @@ local function performScan()
     State.results = {}
     State.stats = { total = 0, success = 0, failed = 0, bytecode = 0 }
     State.lastFilename = ""
-    
+
     ProgressGui.Enabled = true
     updateProgress(0, 0, "Counting", "scripts...")
-    
+
     local containers = getContainers()
-    
-    -- Pass 1: Count total scripts
+
+    -- Pass 1: Count
     local totalScripts = 0
     for _, containerData in ipairs(containers) do
         local container = containerData[1]
@@ -261,8 +276,8 @@ local function performScan()
         end
     end
     State.stats.total = totalScripts
-    
-    -- Pass 2: Extract sources with progress
+
+    -- Pass 2: Extract
     local current = 0
     for _, containerData in ipairs(containers) do
         local container = containerData[1]
@@ -273,11 +288,11 @@ local function performScan()
                     current = current + 1
                     local path = child:GetFullName()
                     local className = child.ClassName
-                    
+
                     updateProgress(current, totalScripts, name, path)
-                    
+
                     local src, status = getScriptSource(child)
-                    
+
                     if status == "OK" then
                         State.stats.success = State.stats.success + 1
                     elseif status == "BYTECODE" then
@@ -285,14 +300,15 @@ local function performScan()
                     else
                         State.stats.failed = State.stats.failed + 1
                     end
-                    
+
                     table.insert(State.results, {
                         path = path,
                         class = className,
                         status = status,
-                        source = src
+                        source = src,
+                        container = name
                     })
-                    
+
                     if current % 5 == 0 then
                         task.wait()
                     end
@@ -300,35 +316,35 @@ local function performScan()
             end
         end
     end
-    
+
     -- Auto-save
     updateProgress(State.stats.total, State.stats.total, "Saving", "to workspace folder...")
     task.wait(0.5)
-    
+
     local savedFile = autoSaveDump()
-    
+
     ProgressGui.Enabled = false
     State.scanning = false
-    
+
     if savedFile then
         Rayfield:Notify({
             Title = "Scan Complete & Saved",
-            Content = string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\nSaved: %s",
-                State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed, savedFile),
+            Content = string.format("Game: %s\nTotal: %d | OK: %d | Bytecode: %d | Failed: %d\nSaved: %s",
+                GameName, State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed, savedFile),
             Duration = 8
         })
     else
         Rayfield:Notify({
             Title = "Scan Complete",
-            Content = string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\nAuto-save failed — use Export tab",
-                State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed),
+            Content = string.format("Game: %s\nTotal: %d | OK: %d | Bytecode: %d | Failed: %d\nAuto-save failed",
+                GameName, State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed),
             Duration = 8
         })
     end
 end
 
 -- ============================================
--- SCAN TAB BUTTONS
+-- SCAN TAB
 -- ============================================
 TabScan:CreateButton({
     Name = "Scan Game",
@@ -355,7 +371,7 @@ TabScan:CreateButton({
     Name = "Show Stats",
     Callback = function()
         Rayfield:Notify({
-            Title = "Current Stats",
+            Title = GameName .. " — Stats",
             Content = string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d",
                 State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed),
             Duration = 6
@@ -364,7 +380,7 @@ TabScan:CreateButton({
 })
 
 -- ============================================
--- EXPORT TAB BUTTONS
+-- EXPORT TAB
 -- ============================================
 TabExport:CreateButton({
     Name = "Re-export Full Dump",
@@ -377,26 +393,34 @@ TabExport:CreateButton({
             Rayfield:Notify({Title = "Error", Content = "writefile not supported.", Duration = 3})
             return
         end
-        
+
         local content = "============================================\n"
         content = content .. "Universal Game Scanner Dump\n"
-        content = content .. "Game: " .. game.Name .. "\n"
+        content = content .. "Game: " .. GameName .. "\n"
         content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
         content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
         content = content .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\n",
             State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
         content = content .. "============================================\n\n"
+
         content = content .. "SCRIPT INDEX:\n"
-        content = content .. string.rep("-", 80) .. "\n"
+        content = content .. string.rep("-", 100) .. "\n"
+        content = content .. string.format("%-5s | %-20s | %-15s | %-12s | %s\n", "#", "Container", "Class", "Status", "Path")
+        content = content .. string.rep("-", 100) .. "\n"
         for i, r in ipairs(State.results) do
-            content = content .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
+            content = content .. string.format("[%-4d] | %-20s | %-15s | %-12s | %s\n",
+                i, r.container, r.class, r.status, r.path)
         end
         content = content .. "\n"
+
         for i, r in ipairs(State.results) do
             content = content .. "\n============================================\n"
-            content = content .. string.format("SCRIPT [%d]: %s\n", i, r.path)
-            content = content .. "CLASS: " .. r.class .. "\n"
-            content = content .. "STATUS: " .. r.status .. "\n"
+            content = content .. string.format("SCRIPT [%d]\n", i)
+            content = content .. "Game: " .. GameName .. "\n"
+            content = content .. "Container: " .. r.container .. "\n"
+            content = content .. "Class: " .. r.class .. "\n"
+            content = content .. "Path: " .. r.path .. "\n"
+            content = content .. "Status: " .. r.status .. "\n"
             content = content .. "============================================\n"
             if r.source then
                 content = content .. r.source .. "\n"
@@ -404,7 +428,8 @@ TabExport:CreateButton({
                 content = content .. "-- [NO SOURCE AVAILABLE]\n"
             end
         end
-        local filename = "scan_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+
+        local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
         local ok = pcall(writefile, filename, content)
         if ok then
             State.lastFilename = filename
@@ -416,7 +441,7 @@ TabExport:CreateButton({
 })
 
 TabExport:CreateButton({
-    Name = "Export Index Only",
+    Name = "Export Index Only (with metadata)",
     Callback = function()
         if #State.results == 0 then
             Rayfield:Notify({Title = "Error", Content = "Run a scan first.", Duration = 3})
@@ -426,13 +451,19 @@ TabExport:CreateButton({
             Rayfield:Notify({Title = "Error", Content = "writefile not supported.", Duration = 3})
             return
         end
-        local content = "Script Index for " .. game.Name .. "\n"
+
+        local content = "Script Index for " .. GameName .. "\n"
+        content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
         content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-        content = content .. string.rep("-", 80) .. "\n"
+        content = content .. string.rep("-", 100) .. "\n"
+        content = content .. string.format("%-5s | %-20s | %-15s | %-12s | %s\n", "#", "Container", "Class", "Status", "Path")
+        content = content .. string.rep("-", 100) .. "\n"
         for i, r in ipairs(State.results) do
-            content = content .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
+            content = content .. string.format("[%-4d] | %-20s | %-15s | %-12s | %s\n",
+                i, r.container, r.class, r.status, r.path)
         end
-        local filename = "index_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+
+        local filename = "index_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
         pcall(writefile, filename, content)
         Rayfield:Notify({Title = "Exported", Content = "Index saved to: " .. filename, Duration = 5})
     end
@@ -449,12 +480,14 @@ TabExport:CreateButton({
             Rayfield:Notify({Title = "Error", Content = "setclipboard not supported.", Duration = 3})
             return
         end
-        local text = "Game: " .. game.Name .. " | Place: " .. tostring(game.PlaceId) .. "\n"
+
+        local text = "Game: " .. GameName .. " | Place: " .. tostring(game.PlaceId) .. "\n"
         text = text .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\n\n",
             State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
         for i, r in ipairs(State.results) do
-            text = text .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
+            text = text .. string.format("[%d] %s | %s | %s | %s\n", i, r.container, r.class, r.status, r.path)
         end
+
         pcall(setclipboard, text)
         Rayfield:Notify({Title = "Copied", Content = "Stats copied to clipboard!", Duration = 3})
     end
@@ -471,18 +504,24 @@ TabExport:CreateButton({
             Rayfield:Notify({Title = "Error", Content = "setclipboard not supported.", Duration = 3})
             return
         end
+
         local text = ""
         for i, r in ipairs(State.results) do
             if r.source and r.status == "OK" then
-                text = text .. "-- " .. r.path .. " (" .. r.class .. ")\n"
+                text = text .. "-- Game: " .. GameName .. "\n"
+                text = text .. "-- Container: " .. r.container .. "\n"
+                text = text .. "-- Class: " .. r.class .. "\n"
+                text = text .. "-- Path: " .. r.path .. "\n"
                 text = text .. "-- " .. string.rep("-", 60) .. "\n"
                 text = text .. r.source .. "\n\n"
             end
         end
+
         if #text == 0 then
             Rayfield:Notify({Title = "Error", Content = "No extractable source found.", Duration = 3})
             return
         end
+
         pcall(setclipboard, text)
         Rayfield:Notify({Title = "Copied", Content = "All source code copied!", Duration = 3})
     end
@@ -504,4 +543,4 @@ TabExport:CreateButton({
 })
 
 Rayfield:LoadConfiguration()
-print("[Universal Scanner v3] Loaded — Right Ctrl to toggle")
+print("[Universal Scanner v4] Loaded — Game: " .. GameName .. " — Right Ctrl to toggle")
