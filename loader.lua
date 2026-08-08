@@ -1,40 +1,30 @@
 --!nocheck
--- Universal Game Scanner — Rayfield Edition (Fixed)
+-- Universal Game Scanner — Rayfield Fixed
 -- Keybind: Right Ctrl to toggle
 
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))()
 
 local Window = Rayfield:CreateWindow({
    Name = "Universal Game Scanner",
    LoadingTitle = "Universal Scanner",
    LoadingSubtitle = "by He",
-   ConfigurationSaving = {
-      Enabled = false,
-   },
-   Discord = {
-      Enabled = false,
-   },
+   ConfigurationSaving = { Enabled = false },
+   Discord = { Enabled = false },
    KeySettings = {
       Key = Enum.KeyCode.RightControl,
       OnPress = function() end,
    }
 })
 
-local TabScan = Window:CreateTab("Scanner", 4483362458)
-local TabExport = Window:CreateTab("Export", 4483362458)
+local TabScan = Window:CreateTab("Scanner")
+local TabExport = Window:CreateTab("Export")
 
--- ============================================
--- STATE
--- ============================================
 local State = {
     scanning = false,
     results = {},
     stats = { total = 0, success = 0, failed = 0, bytecode = 0 }
 }
 
--- ============================================
--- SOURCE EXTRACTION
--- ============================================
 local function getScriptSource(script)
     if type(getsrc) == "function" then
         local ok, result = pcall(getsrc, script)
@@ -57,9 +47,6 @@ local function getScriptSource(script)
     return nil, "FAILED"
 end
 
--- ============================================
--- CONTAINERS
--- ============================================
 local function getContainers()
     local list = {
         {game:GetService("Workspace"), "Workspace"},
@@ -83,36 +70,22 @@ local function getContainers()
     return list
 end
 
--- ============================================
--- SCAN LOGIC
--- ============================================
-local StatsParagraph = nil
-
-local function updateParagraph()
-    local text = string.format(
-        "Total Scripts: %d\nExtracted: %d\nBytecode: %d\nFailed: %d",
-        State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed
-    )
-    if StatsParagraph then
-        StatsParagraph:Set({
-            Title = "Scan Results",
-            Content = text
-        })
-    end
-end
-
 local function performScan()
     if State.scanning then return end
     State.scanning = true
     State.results = {}
     State.stats = { total = 0, success = 0, failed = 0, bytecode = 0 }
-    updateParagraph()
+
+    Rayfield:Notify({
+        Title = "Scanning",
+        Content = "Starting scan...",
+        Duration = 3
+    })
 
     local containers = getContainers()
 
     for _, containerData in ipairs(containers) do
         local container = containerData[1]
-        local name = containerData[2]
         if container then
             for _, child in ipairs(container:GetDescendants()) do
                 if child:IsA("Script") or child:IsA("LocalScript") or child:IsA("ModuleScript") then
@@ -136,7 +109,6 @@ local function performScan()
                         source = src
                     })
 
-                    updateParagraph()
                     task.wait()
                 end
             end
@@ -146,18 +118,11 @@ local function performScan()
     State.scanning = false
     Rayfield:Notify({
         Title = "Scan Complete",
-        Content = string.format("Found %d scripts. %d extracted, %d bytecode, %d failed.", State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed),
-        Duration = 5
+        Content = string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d",
+            State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed),
+        Duration = 6
     })
 end
-
--- ============================================
--- SCAN TAB UI
--- ============================================
-StatsParagraph = TabScan:CreateParagraph({
-    Title = "Scan Results",
-    Content = "No scan performed yet. Click the button below."
-})
 
 TabScan:CreateButton({
     Name = "Scan Game",
@@ -171,31 +136,37 @@ TabScan:CreateButton({
     Callback = function()
         State.results = {}
         State.stats = { total = 0, success = 0, failed = 0, bytecode = 0 }
-        updateParagraph()
         Rayfield:Notify({
             Title = "Cleared",
-            Content = "All scan results have been cleared.",
+            Content = "All results cleared.",
             Duration = 3
         })
     end
 })
 
--- ============================================
--- EXPORT TAB UI
--- ============================================
+TabScan:CreateButton({
+    Name = "Show Stats",
+    Callback = function()
+        Rayfield:Notify({
+            Title = "Current Stats",
+            Content = string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d",
+                State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed),
+            Duration = 6
+        })
+    end
+})
+
 TabExport:CreateButton({
     Name = "Export Full Dump to File",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({Title = "Error", Content = "Nothing to export. Run a scan first.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "Run a scan first.", Duration = 3})
             return
         end
-
         if type(writefile) ~= "function" then
-            Rayfield:Notify({Title = "Error", Content = "writefile is not supported by your executor.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "writefile not supported.", Duration = 3})
             return
         end
-
         local content = "============================================\n"
         content = content .. "Universal Game Scanner Dump\n"
         content = content .. "Game: " .. game.Name .. "\n"
@@ -203,14 +174,12 @@ TabExport:CreateButton({
         content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
         content = content .. "Total: " .. State.stats.total .. " | OK: " .. State.stats.success .. " | Bytecode: " .. State.stats.bytecode .. " | Failed: " .. State.stats.failed .. "\n"
         content = content .. "============================================\n\n"
-
         content = content .. "SCRIPT INDEX:\n"
         content = content .. string.rep("-", 80) .. "\n"
         for i, r in ipairs(State.results) do
             content = content .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
         end
         content = content .. "\n"
-
         for i, r in ipairs(State.results) do
             content = content .. "\n============================================\n"
             content = content .. string.format("SCRIPT [%d]: %s\n", i, r.path)
@@ -223,37 +192,33 @@ TabExport:CreateButton({
                 content = content .. "-- [NO SOURCE AVAILABLE]\n"
             end
         end
-
         local filename = "scan_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
-        local ok, err = pcall(writefile, filename, content)
+        local ok = pcall(writefile, filename, content)
         if ok then
             Rayfield:Notify({Title = "Exported", Content = "Saved to: " .. filename, Duration = 5})
         else
-            Rayfield:Notify({Title = "Error", Content = "Failed to write file: " .. tostring(err), Duration = 5})
+            Rayfield:Notify({Title = "Error", Content = "Failed to write file.", Duration = 5})
         end
     end
 })
 
 TabExport:CreateButton({
-    Name = "Export Script Index Only",
+    Name = "Export Index Only",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({Title = "Error", Content = "Nothing to export. Run a scan first.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "Run a scan first.", Duration = 3})
             return
         end
-
         if type(writefile) ~= "function" then
-            Rayfield:Notify({Title = "Error", Content = "writefile is not supported.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "writefile not supported.", Duration = 3})
             return
         end
-
         local content = "Script Index for " .. game.Name .. "\n"
         content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
         content = content .. string.rep("-", 80) .. "\n"
         for i, r in ipairs(State.results) do
             content = content .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
         end
-
         local filename = "index_" .. game.Name:gsub("[^%w]", "_") .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
         pcall(writefile, filename, content)
         Rayfield:Notify({Title = "Exported", Content = "Index saved to: " .. filename, Duration = 5})
@@ -264,24 +229,20 @@ TabExport:CreateButton({
     Name = "Copy Stats to Clipboard",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({Title = "Error", Content = "Nothing to copy. Run a scan first.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "Run a scan first.", Duration = 3})
             return
         end
-
         if type(setclipboard) ~= "function" then
-            Rayfield:Notify({Title = "Error", Content = "setclipboard is not supported.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "setclipboard not supported.", Duration = 3})
             return
         end
-
-        local text = "Universal Scanner Results\n"
-        text = text .. "Game: " .. game.Name .. " | Place: " .. tostring(game.PlaceId) .. "\n"
+        local text = "Game: " .. game.Name .. " | Place: " .. tostring(game.PlaceId) .. "\n"
         text = text .. "Total: " .. State.stats.total .. " | OK: " .. State.stats.success .. " | Bytecode: " .. State.stats.bytecode .. " | Failed: " .. State.stats.failed .. "\n\n"
         for i, r in ipairs(State.results) do
             text = text .. string.format("[%d] %s | %s | %s\n", i, r.path, r.class, r.status)
         end
-
         pcall(setclipboard, text)
-        Rayfield:Notify({Title = "Copied", Content = "Results copied to clipboard!", Duration = 3})
+        Rayfield:Notify({Title = "Copied", Content = "Stats copied to clipboard!", Duration = 3})
     end
 })
 
@@ -289,15 +250,13 @@ TabExport:CreateButton({
     Name = "Copy All Source Code",
     Callback = function()
         if #State.results == 0 then
-            Rayfield:Notify({Title = "Error", Content = "Nothing to copy. Run a scan first.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "Run a scan first.", Duration = 3})
             return
         end
-
         if type(setclipboard) ~= "function" then
-            Rayfield:Notify({Title = "Error", Content = "setclipboard is not supported.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "setclipboard not supported.", Duration = 3})
             return
         end
-
         local text = ""
         for i, r in ipairs(State.results) do
             if r.source and r.status == "OK" then
@@ -306,20 +265,14 @@ TabExport:CreateButton({
                 text = text .. r.source .. "\n\n"
             end
         end
-
         if #text == 0 then
             Rayfield:Notify({Title = "Error", Content = "No extractable source found.", Duration = 3})
             return
         end
-
         pcall(setclipboard, text)
-        Rayfield:Notify({Title = "Copied", Content = "All source code copied to clipboard!", Duration = 3})
+        Rayfield:Notify({Title = "Copied", Content = "All source code copied!", Duration = 3})
     end
 })
 
--- ============================================
--- INIT
--- ============================================
 Rayfield:LoadConfiguration()
-
-print("[Universal Scanner] Loaded — Right Ctrl to toggle UI")
+print("[Universal Scanner] Loaded — Right Ctrl to toggle")
