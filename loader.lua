@@ -1,13 +1,13 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v6.1 — RAYFIELD UI (FIXED)
+-- APEX SCRIPT SCANNER v6.2 — RAYFIELD UI (LOAD FIX)
 -- ============================================================
 
 if getgenv().ScannerRunning then return end
 getgenv().ScannerRunning = true
 
 -- ============================================================
--- BYPASS — LEANER, NO CAMERA BREAKAGE
+-- BYPASS
 -- ============================================================
 local BypassState = { HooksInstalled = false }
 
@@ -29,7 +29,6 @@ local function InstallBypass()
 
     pcall(function()
         if hookfunction and not BypassState.HooksInstalled then
-
             local oldGetInfo = debug.getinfo
             local inGetInfo = false
             local function HookedGetInfo(...)
@@ -156,16 +155,33 @@ end
 local GameInfo = GetGameInfo()
 
 -- ============================================================
--- RAYFIELD LOADER — WITH ERROR SURFACING
+-- NOTIFY HELPER — works even without UI
 -- ============================================================
-local Rayfield = nil
-local UILoadError = ""
+local function Notify(title, text, dur)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title or "",
+            Text = text or "",
+            Duration = dur or 3,
+        })
+    end)
+end
 
-local function LoadRayfield()
+-- ============================================================
+-- UI LOADER — FIXED GLOBAL CAPTURE
+-- ============================================================
+local UILoadError = ""
+local UIReady = false
+
+local function LoadUI()
+    -- clear any stale globals
+    _G.Rayfield = nil
+    Rayfield = nil
+
+    -- Try Rayfield
     local urls = {
         "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
         "https://raw.githubusercontent.com/shlexware/Rayfield/source",
-        "https://github.com/shlexware/Rayfield/raw/main/source",
     }
     for _, url in ipairs(urls) do
         local ok, src = pcall(function() return game:HttpGet(url) end)
@@ -174,174 +190,279 @@ local function LoadRayfield()
             if fn then
                 local ok2, err = pcall(fn)
                 if ok2 then
-                    if Rayfield then return end
-                    if _G.Rayfield then Rayfield = _G.Rayfield; return end
+                    -- Rayfield sets itself as a GLOBAL, check _G and direct
+                    if _G.Rayfield then
+                        return "rayfield"
+                    elseif Rayfield then
+                        _G.Rayfield = Rayfield
+                        return "rayfield"
+                    end
                 else
-                    UILoadError = "Rayfield exec error: " .. tostring(err)
+                    UILoadError = "Rayfield exec: " .. tostring(err):sub(1, 200)
                 end
             else
                 UILoadError = "Rayfield loadstring failed"
             end
         else
-            UILoadError = "Rayfield HttpGet failed: " .. tostring(src)
+            UILoadError = "Rayfield http failed"
         end
     end
 
-    -- Fallback: Orion
-    if not Rayfield then
-        local ok, src = pcall(function()
-            return game:HttpGet("https://raw.githubusercontent.com/Jun0deps/Orion/main/source")
-        end)
-        if ok and src and #src > 500 then
-            local fn = loadstring(src)
-            if fn then
-                local ok2, err = pcall(fn)
-                if ok2 and OrionLib then
-                    Rayfield = setmetatable({ _Orion = true }, {
-                        __index = function(t, k)
-                            if k == "CreateWindow" then
-                                return function(config)
-                                    local win = OrionLib:MakeWindow({
-                                        Name = config.Name or "Apex Scanner",
-                                        HidePremium = true,
-                                        SaveConfig = false,
-                                        IntroText = "Apex Scanner",
-                                    })
-                                    return setmetatable({}, {
-                                        __index = function(_, key)
-                                            if key == "CreateTab" then
-                                                return function(tc)
-                                                    local tab = win:MakeTab({
-                                                        Name = tc.Title or "Tab",
-                                                        Icon = tc.Icon,
-                                                    })
-                                                    return setmetatable({}, {
-                                                        __index = function(_, tk)
-                                                            if tk == "CreateLabel" then
-                                                                return function(text)
-                                                                    local lbl = tab:AddLabel(type(text) == "table" and text.Title or tostring(text))
-                                                                    return { Set = function(_, v) end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateParagraph" then
-                                                                return function(p)
-                                                                    tab:AddParagraph(p.Title or "", p.Content or "")
-                                                                    return { Set = function() end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateButton" then
-                                                                return function(b)
-                                                                    tab:AddButton({
-                                                                        Name = b.Title or "Button",
-                                                                        Callback = b.Callback or function() end,
-                                                                    })
-                                                                    return { Callback = function() end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateToggle" then
-                                                                return function(tg)
-                                                                    local t = tab:AddToggle({
-                                                                        Name = tg.Title or "Toggle",
-                                                                        Default = tg.Default or false,
-                                                                        Callback = tg.Callback or function() end,
-                                                                    })
-                                                                    return { Set = function(_, v) t:Set(v) end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateSlider" then
-                                                                return function(sl)
-                                                                    local s = tab:AddSlider({
-                                                                        Name = sl.Title or "Slider",
-                                                                        Min = sl.Range and sl.Range[1] or 1,
-                                                                        Max = sl.Range and sl.Range[2] or 100,
-                                                                        Default = sl.Default or 1,
-                                                                        Callback = sl.Callback or function() end,
-                                                                    })
-                                                                    return { Set = function(_, v) s:Set(v) end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateDropdown" then
-                                                                return function(dd)
-                                                                    local d = tab:AddDropdown({
-                                                                        Name = dd.Title or "Dropdown",
-                                                                        Options = dd.Options or {},
-                                                                        Default = dd.Default or "",
-                                                                        Callback = dd.Callback or function() end,
-                                                                    })
-                                                                    return { Set = function(_, v) d:Refresh(v) end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateInput" then
-                                                                return function(inp)
-                                                                    tab:AddTextbox({
-                                                                        Name = inp.Title or "Input",
-                                                                        Default = inp.Default or "",
-                                                                        Callback = inp.Callback or function() end,
-                                                                    })
-                                                                    return { Set = function() end }
-                                                                end
-                                                            end
-                                                            if tk == "CreateDivider" then return function() end end
-                                                            if tk == "CreateSection" then
-                                                                return function(name) tab:AddSection(name) end
-                                                            end
-                                                        end
-                                                    })
-                                                end
-                                            end
-                                            if k == "Destroy" then return function() OrionLib:Destroy() end end
-                                        end
-                                    })
-                                end
-                            end
-                            if k == "Notify" then
-                                return function(n)
-                                    OrionLib:MakeNotification({
-                                        Title = n.Title or "",
-                                        Content = n.Content or "",
-                                        Duration = n.Duration or 3,
-                                    })
-                                end
-                            end
-                        end
-                    })
-                    return
-                else
-                    UILoadError = "Orion exec error: " .. tostring(err)
+    -- Try Orion
+    _G.OrionLib = nil
+    OrionLib = nil
+    local ok, src = pcall(function()
+        return game:HttpGet("https://raw.githubusercontent.com/Jun0deps/Orion/main/source")
+    end)
+    if ok and src and #src > 500 then
+        local fn = loadstring(src)
+        if fn then
+            local ok2, err = pcall(fn)
+            if ok2 and (_G.OrionLib or OrionLib) then
+                if OrionLib then _G.OrionLib = OrionLib end
+                return "orion"
+            else
+                UILoadError = "Orion exec: " .. tostring(err):sub(1, 200)
+            end
+        end
+    end
+
+    UILoadError = "All UI libraries failed to load"
+    return "stub"
+end
+
+-- ============================================================
+-- UI WRAPPER — normalizes Rayfield and Orion to same API
+-- ============================================================
+local UI = {}
+
+function UI.CreateWindow(config)
+    local lib = LoadUI()
+    Notify("Apex Scanner", "UI lib: " .. lib .. (UILoadError ~= "" and (" | " .. UILoadError) or ""), 4)
+
+    if lib == "rayfield" then
+        local R = _G.Rayfield
+        local win = R:CreateWindow({
+            Name = config.Name or "Apex Scanner",
+            LoadingTitle = "Apex Scanner",
+            LoadingSubtitle = "Initializing...",
+            Theme = "Default",
+            ConfigurationSaving = { Enabled = false },
+            Keybind = Enum.KeyCode.RightControl,
+        })
+
+        local function wrapTab(tab)
+            return {
+                CreateSection = function(_, name) pcall(function() tab:CreateSection(name) end) end,
+                CreateLabel = function(_, text)
+                    local lbl = nil
+                    pcall(function() lbl = tab:CreateLabel(type(text) == "string" and text or (text.Title or text)) end)
+                    return { Set = function(_, v) pcall(function() lbl:Set(v) end) end }
+                end,
+                CreateParagraph = function(_, p)
+                    pcall(function() tab:CreateParagraph(p) end)
+                    return { Set = function() end }
+                end,
+                CreateButton = function(_, b)
+                    pcall(function() tab:CreateButton(b) end)
+                    return { Callback = function() end }
+                end,
+                CreateToggle = function(_, t)
+                    local tog = nil
+                    pcall(function() tog = tab:CreateToggle(t) end)
+                    return { Set = function(_, v) pcall(function() tog:Set(v) end) end }
+                end,
+                CreateSlider = function(_, s)
+                    local sl = nil
+                    pcall(function() sl = tab:CreateSlider(s) end)
+                    return { Set = function(_, v) pcall(function() sl:Set(v) end) end }
+                end,
+                CreateDropdown = function(_, d)
+                    local dd = nil
+                    pcall(function() dd = tab:CreateDropdown(d) end)
+                    return { Set = function(_, v) pcall(function() dd:Refresh(v) end) end }
+                end,
+                CreateInput = function(_, i)
+                    pcall(function() tab:CreateInput(i) end)
+                    return { Set = function() end }
+                end,
+                CreateDivider = function(_) end,
+            }
+        end
+
+        return setmetatable({
+            CreateTab = function(_, tc)
+                local tab = nil
+                pcall(function() tab = win:CreateTab(tc) end)
+                if not tab then
+                    return wrapTab({})
+                end
+                return wrapTab(tab)
+            end,
+            Destroy = function(_) pcall(function() win:Destroy() end) end,
+        }, {
+            __index = function(_, k)
+                if k == "Notify" then
+                    return function(n)
+                        pcall(function()
+                            _G.Rayfield:Notify({
+                                Title = n.Title or "",
+                                Content = n.Content or "",
+                                Duration = n.Duration or 3,
+                            })
+                        end)
+                    end
                 end
             end
-        else
-            UILoadError = "Orion HttpGet failed"
-        end
-    end
+        })
 
-    -- Final stub
-    if not Rayfield then
-        Rayfield = {
-            CreateWindow = function()
-                return {
-                    CreateTab = function()
-                        return {
-                            CreateLabel = function() return { Set = function() end } end,
-                            CreateParagraph = function() return { Set = function() end } end,
-                            CreateButton = function() return { Callback = function() end } end,
-                            CreateToggle = function() return { Set = function() end } end,
-                            CreateSlider = function() return { Set = function() end } end,
-                            CreateDropdown = function() return { Set = function() end } end,
-                            CreateInput = function() return { Set = function() end } end,
-                            CreateDivider = function() end,
-                            CreateSection = function() end,
-                        }
-                    end,
-                    Destroy = function() end,
-                }
+    elseif lib == "orion" then
+        local O = _G.OrionLib
+        local win = O:MakeWindow({
+            Name = config.Name or "Apex Scanner",
+            HidePremium = true,
+            SaveConfig = false,
+            IntroText = "Apex Scanner",
+        })
+
+        local function wrapTab(tab)
+            return {
+                CreateSection = function(_, name) pcall(function() tab:AddSection(name) end) end,
+                CreateLabel = function(_, text)
+                    local t = type(text) == "string" and text or (text.Title or tostring(text))
+                    pcall(function() tab:AddLabel(t) end)
+                    return { Set = function() end }
+                end,
+                CreateParagraph = function(_, p)
+                    pcall(function() tab:AddParagraph(p.Title or "", p.Content or "") end)
+                    return { Set = function() end }
+                end,
+                CreateButton = function(_, b)
+                    pcall(function()
+                        tab:AddButton({
+                            Name = b.Title or "Button",
+                            Callback = b.Callback or function() end,
+                        })
+                    end)
+                    return { Callback = function() end }
+                end,
+                CreateToggle = function(_, t)
+                    local tog = nil
+                    pcall(function()
+                        tog = tab:AddToggle({
+                            Name = t.Title or "Toggle",
+                            Default = t.Default or false,
+                            Callback = t.Callback or function() end,
+                        })
+                    end)
+                    return { Set = function(_, v) pcall(function() tog:Set(v) end) end }
+                end,
+                CreateSlider = function(_, s)
+                    local sl = nil
+                    pcall(function()
+                        sl = tab:AddSlider({
+                            Name = s.Title or "Slider",
+                            Min = s.Range and s.Range[1] or 1,
+                            Max = s.Range and s.Range[2] or 100,
+                            Default = s.Default or 1,
+                            Callback = s.Callback or function() end,
+                        })
+                    end)
+                    return { Set = function(_, v) pcall(function() sl:Set(v) end) end }
+                end,
+                CreateDropdown = function(_, d)
+                    local dd = nil
+                    pcall(function()
+                        dd = tab:AddDropdown({
+                            Name = d.Title or "Dropdown",
+                            Options = d.Options or {},
+                            Default = d.Default or "",
+                            Callback = d.Callback or function() end,
+                        })
+                    end)
+                    return { Set = function(_, v) pcall(function() dd:Refresh(v) end) end }
+                end,
+                CreateInput = function(_, i)
+                    pcall(function()
+                        tab:AddTextbox({
+                            Name = i.Title or "Input",
+                            Default = i.Default or "",
+                            Callback = i.Callback or function() end,
+                        })
+                    end)
+                    return { Set = function() end }
+                end,
+                CreateDivider = function(_) end,
+            }
+        end
+
+        return setmetatable({
+            CreateTab = function(_, tc)
+                local tab = nil
+                pcall(function()
+                    tab = win:MakeTab({
+                        Name = tc.Title or "Tab",
+                        Icon = tc.Icon,
+                    })
+                end)
+                if not tab then return wrapTab({}) end
+                return wrapTab(tab)
             end,
+            Destroy = function(_) pcall(function() O:Destroy() end) end,
+        }, {
+            __index = function(_, k)
+                if k == "Notify" then
+                    return function(n)
+                        pcall(function()
+                            _G.OrionLib:MakeNotification({
+                                Title = n.Title or "",
+                                Content = n.Content or "",
+                                Duration = n.Duration or 3,
+                            })
+                        end)
+                    end
+                end
+            end
+        })
+
+    else
+        -- stub
+        local function stubTab()
+            return {
+                CreateSection = function() end,
+                CreateLabel = function() return { Set = function() end } end,
+                CreateParagraph = function() return { Set = function() end } end,
+                CreateButton = function() return { Callback = function() end } end,
+                CreateToggle = function() return { Set = function() end } end,
+                CreateSlider = function() return { Set = function() end } end,
+                CreateDropdown = function() return { Set = function() end } end,
+                CreateInput = function() return { Set = function() end } end,
+                CreateDivider = function() end,
+            }
+        end
+        return {
+            CreateTab = function() return stubTab() end,
+            Destroy = function() end,
             Notify = function() end,
         }
     end
 end
 
-LoadRayfield()
+function UI.Notify(n)
+    pcall(function()
+        if _G.Rayfield and _G.Rayfield.Notify then
+            _G.Rayfield:Notify(n)
+        elseif _G.OrionLib then
+            _G.OrionLib:MakeNotification({
+                Title = n.Title or "",
+                Content = n.Content or "",
+                Duration = n.Duration or 3,
+            })
+        else
+            Notify(n.Title, n.Content, n.Duration)
+        end
+    end)
+end
 
 -- ============================================================
 -- STATE
@@ -375,20 +496,9 @@ local ScanState = {
     OutputFolder = "",
 }
 
--- ============================================================
--- FILE OPS
--- ============================================================
-local function SafeWriteFile(path, content)
-    pcall(function() writefile(path, content) end)
-end
-
-local function SafeAppendFile(path, content)
-    pcall(function() appendfile(path, content) end)
-end
-
-local function SafeMakeFolder(path)
-    pcall(function() makefolder(path) end)
-end
+local function SafeWriteFile(path, content) pcall(function() writefile(path, content) end) end
+local function SafeAppendFile(path, content) pcall(function() appendfile(path, content) end) end
+local function SafeMakeFolder(path) pcall(function() makefolder(path) end) end
 
 ScanState.OutputFolder = GameInfo.Name .. "_APEX_Scan"
 SafeMakeFolder(ScanState.OutputFolder)
@@ -410,12 +520,7 @@ local function StartRemoteSpy()
                     if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
                         local fn = obj:GetFullName()
                         if not RemotesLog[fn] then
-                            RemotesLog[fn] = {
-                                Name = fn,
-                                Type = obj.ClassName,
-                                Hits = 0,
-                                Args = {},
-                            }
+                            RemotesLog[fn] = { Name = fn, Type = obj.ClassName, Hits = 0, Args = {} }
                             ScanState.RemotesFound = ScanState.RemotesFound + 1
                         end
                     end
@@ -425,7 +530,6 @@ local function StartRemoteSpy()
         end
     end)
 
-    -- namecall hook for remote call logging — ONLY remotes, nothing else
     pcall(function()
         if Capabilities.HookMeta and Capabilities.Newcclosure then
             local oldNamecall
@@ -450,7 +554,7 @@ local function StartRemoteSpy()
 end
 
 -- ============================================================
--- UI REFS
+-- BUILD UI
 -- ============================================================
 local UIWindow = nil
 local StatusRef = { Set = function() end }
@@ -461,35 +565,15 @@ local SuccessRef = { Set = function() end }
 local RemoteCountRef = { Set = function() end }
 local RemoteConnRef = { Set = function() end }
 
--- ============================================================
--- BUILD UI — NO PCALL SWALLOWING
--- ============================================================
 local function BuildUI()
     if UIWindow and UIWindow.Destroy then
         pcall(function() UIWindow:Destroy() end)
     end
 
-    local Window = Rayfield:CreateWindow({
-        Name = "Apex Scanner v6.1 | " .. GameInfo.Name,
-        LoadingTitle = "Apex Scanner",
-        LoadingSubtitle = "Initializing...",
-        Theme = "Default",
-        ConfigurationSaving = { Enabled = false },
-        Keybind = Enum.KeyCode.RightControl,
+    local Window = UI.CreateWindow({
+        Name = "Apex Scanner v6.2 | " .. GameInfo.Name,
     })
     UIWindow = Window
-
-    -- parent to gethui or CoreGui
-    pcall(function()
-        local parent = Capabilities.Gethui and gethui() or game:GetService("CoreGui")
-        for _, child in ipairs(parent:GetChildren()) do
-            if child:IsA("ScreenGui") then
-                child.ResetOnSpawn = false
-                child.DisplayOrder = 9999
-                child.IgnoreGuiInset = true
-            end
-        end
-    end)
 
     -- MAIN TAB
     local MainTab = Window:CreateTab("Scanner", "scan")
@@ -512,56 +596,48 @@ local function BuildUI()
         Default = true,
         Callback = function(v) ScanState.IncludeBytecode = v end
     })
-
     MainTab:CreateToggle({
         Title = "Registry Scan (getreg)",
         Description = "Scan memory registry for loaded closures",
         Default = true,
         Callback = function(v) ScanState.IncludeReg = v end
     })
-
     MainTab:CreateToggle({
         Title = "Nil Instances",
         Description = "Scan for nil-parented hidden scripts",
         Default = true,
         Callback = function(v) ScanState.IncludeNil = v end
     })
-
     MainTab:CreateToggle({
         Title = "Server Scripts",
         Description = "SSS, SS, RS, StarterPlayer, StarterGui, StarterPack",
         Default = true,
         Callback = function(v) ScanState.IncludeServer = v end
     })
-
     MainTab:CreateToggle({
         Title = "Deep Scan",
         Description = "Walk upvalue chains, extract constants, closure analysis",
         Default = true,
         Callback = function(v) ScanState.DeepScan = v end
     })
-
     MainTab:CreateToggle({
         Title = "Remote Spy",
         Description = "Track all RemoteEvents and RemoteFunctions",
         Default = true,
         Callback = function(v) ScanState.IncludeRemotes = v end
     })
-
     MainTab:CreateToggle({
         Title = "Connection Mapper",
         Description = "Map all signal connections with source info",
         Default = true,
         Callback = function(v) ScanState.IncludeConnections = v end
     })
-
     MainTab:CreateToggle({
         Title = "Split Output By Service",
         Description = "Organize decompiled scripts into separate folders",
         Default = true,
         Callback = function(v) ScanState.SplitByService = v end
     })
-
     MainTab:CreateToggle({
         Title = "Include CoreScripts",
         Description = "Attempt extraction of Roblox CoreScripts (experimental)",
@@ -581,9 +657,8 @@ local function BuildUI()
     MainTab:CreateButton({
         Title = "Start Full Scan",
         Description = "Begin exhaustive script collection and decompilation",
-        Callback = RunScanner
+        Callback = function() RunScanner() end
     })
-
     MainTab:CreateButton({
         Title = "Toggle Pause",
         Description = "Pause / resume current scan",
@@ -593,7 +668,6 @@ local function BuildUI()
             ScanState.StatusText = ScanState.IsPaused and "PAUSED" or "Resuming..."
         end
     })
-
     MainTab:CreateButton({
         Title = "Stop Scan",
         Description = "Abort current scan",
@@ -602,10 +676,9 @@ local function BuildUI()
             ScanState.IsPaused = false
             ScanState.StatusText = "STOPPED"
             getgenv().ScannerRunning = false
-            Rayfield:Notify({ Title = "Scanner", Content = "Scan stopped.", Duration = 3 })
+            UI.Notify({ Title = "Scanner", Content = "Scan stopped.", Duration = 3 })
         end
     })
-
     MainTab:CreateButton({
         Title = "Destroy UI",
         Description = "Close the scanner interface",
@@ -627,43 +700,36 @@ local function BuildUI()
     })
 
     AdvTab:CreateSection("Extraction")
-
     AdvTab:CreateButton({
         Title = "Dump All Bytecode (Raw Hex)",
         Description = "Extract raw bytecode from every script",
         Callback = function() task.spawn(DumpAllBytecode) end
     })
-
     AdvTab:CreateButton({
         Title = "Scan Registry Closures",
         Description = "Deep scan getreg() for Lua closures",
         Callback = function() task.spawn(ScanRegistry) end
     })
-
     AdvTab:CreateButton({
         Title = "Dump Server Scripts",
         Description = "SSS, SS, RS, StarterPlayer, StarterGui, StarterPack",
         Callback = function() task.spawn(DumpServerScripts) end
     })
-
     AdvTab:CreateButton({
         Title = "Dump Nil Instances",
         Description = "Extract nil-parented hidden scripts",
         Callback = function() task.spawn(DumpNilInstances) end
     })
-
     AdvTab:CreateButton({
         Title = "Dump All Connections",
         Description = "Map all signal connections with source info",
         Callback = function() task.spawn(DumpConnections) end
     })
-
     AdvTab:CreateButton({
         Title = "Deep Upvalue Trace",
         Description = "Walk upvalue chains from all loaded closures",
         Callback = function() task.spawn(DeepUpvalueTrace) end
     })
-
     AdvTab:CreateButton({
         Title = "Extract String Constants",
         Description = "Pull all string constants from every closure in registry",
@@ -671,36 +737,29 @@ local function BuildUI()
     })
 
     AdvTab:CreateSection("Export")
-
     AdvTab:CreateButton({
         Title = "Export Full Game (saveinstance)",
         Description = "Save entire game as .rbxl file",
         Callback = function()
             if Capabilities.SaveInstance then
-                Rayfield:Notify({ Title = "Export", Content = "Exporting...", Duration = 3 })
-                pcall(function()
-                    saveinstance({
-                        filename = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_FullExport.rbxl",
-                    })
-                end)
-                Rayfield:Notify({ Title = "Export", Content = "Game exported.", Duration = 5 })
+                UI.Notify({ Title = "Export", Content = "Exporting...", Duration = 3 })
+                pcall(function() saveinstance({ filename = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_FullExport.rbxl" }) end)
+                UI.Notify({ Title = "Export", Content = "Game exported.", Duration = 5 })
             else
-                Rayfield:Notify({ Title = "Unsupported", Content = "saveinstance not available.", Duration = 3 })
+                UI.Notify({ Title = "Unsupported", Content = "saveinstance not available.", Duration = 3 })
             end
         end
     })
-
     AdvTab:CreateButton({
         Title = "Copy Save Path",
         Description = "Copy output folder path to clipboard",
         Callback = function()
             if Capabilities.SetClipboard then
                 pcall(function() setclipboard(ScanState.OutputFolder) end)
-                Rayfield:Notify({ Title = "Copied", Content = "Path copied.", Duration = 2 })
+                UI.Notify({ Title = "Copied", Content = "Path copied.", Duration = 2 })
             end
         end
     })
-
     AdvTab:CreateButton({
         Title = "Generate Scan Report",
         Description = "Create a summary report of all extracted scripts",
@@ -708,7 +767,6 @@ local function BuildUI()
     })
 
     AdvTab:CreateSection("System")
-
     AdvTab:CreateButton({
         Title = "Print Executor Capabilities",
         Description = "Dump all executor functions to dev console",
@@ -716,23 +774,22 @@ local function BuildUI()
             print("========================================")
             print("  EXECUTOR: " .. ExecutorName)
             print("  BYPASS: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
-            print("  UI ERROR (if any): " .. (UILoadError ~= "" and UILoadError or "none"))
+            print("  UI ERROR: " .. (UILoadError ~= "" and UILoadError or "none"))
             print("========================================")
             for k, v in pairs(Capabilities) do
                 print(string.format("  %-25s %s", k, tostring(v)))
             end
             print("========================================")
-            Rayfield:Notify({ Title = "Console", Content = "Check F9 console.", Duration = 3 })
+            UI.Notify({ Title = "Console", Content = "Check F9 console.", Duration = 3 })
         end
     })
-
     AdvTab:CreateButton({
         Title = "Reinstall Bypass",
         Description = "Re-run anti-cheat bypass hooks",
         Callback = function()
             BypassState.HooksInstalled = false
             InstallBypass()
-            Rayfield:Notify({
+            UI.Notify({
                 Title = "Bypass",
                 Content = "Reinstalled: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"),
                 Duration = 4
@@ -752,53 +809,44 @@ local function BuildUI()
     RemoteConnRef = RemoteTab:CreateLabel("Connections: 0")
 
     RemoteTab:CreateSection("Controls")
-
     RemoteTab:CreateButton({
         Title = "Start Remote Spy",
         Description = "Begin monitoring all remote events",
         Callback = function()
             StartRemoteSpy()
-            Rayfield:Notify({ Title = "Remote Spy", Content = "Monitoring started.", Duration = 3 })
+            UI.Notify({ Title = "Remote Spy", Content = "Monitoring started.", Duration = 3 })
         end
     })
-
     RemoteTab:CreateButton({
         Title = "Stop Remote Spy",
         Description = "Stop monitoring remote events",
         Callback = function()
             RemoteSpyActive = false
-            Rayfield:Notify({ Title = "Remote Spy", Content = "Stopped.", Duration = 3 })
+            UI.Notify({ Title = "Remote Spy", Content = "Stopped.", Duration = 3 })
         end
     })
-
     RemoteTab:CreateButton({
         Title = "Export Remote Log",
         Description = "Save all discovered remotes to file",
         Callback = function()
             local path = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_RemoteSpy.txt"
-            local content = "=== REMOTE SPY DUMP ===\n"
-            content = content .. "Game: " .. GameInfo.Name .. "\n"
-            content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n"
+            local content = "=== REMOTE SPY DUMP ===\nGame: " .. GameInfo.Name .. "\nDate: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n"
             for name, data in pairs(RemotesLog) do
-                content = content .. string.format("Name: %s\nType: %s\nHits: %d\n",
-                    data.Name, data.Type, data.Hits)
+                content = content .. string.format("Name: %s\nType: %s\nHits: %d\n", data.Name, data.Type, data.Hits)
                 if #data.Args > 0 then
                     content = content .. "Captured Arguments:\n"
                     for i, argSet in ipairs(data.Args) do
                         local argStr = {}
-                        for _, arg in ipairs(argSet) do
-                            table.insert(argStr, tostring(arg):sub(1, 200))
-                        end
+                        for _, arg in ipairs(argSet) do table.insert(argStr, tostring(arg):sub(1, 200)) end
                         content = content .. string.format("  [%d] %s\n", i, table.concat(argStr, ", "))
                     end
                 end
                 content = content .. string.rep("-", 50) .. "\n"
             end
             SafeWriteFile(path, content)
-            Rayfield:Notify({ Title = "Exported", Content = "Saved to " .. path, Duration = 3 })
+            UI.Notify({ Title = "Exported", Content = "Saved to " .. path, Duration = 3 })
         end
     })
-
     RemoteTab:CreateButton({
         Title = "Fire All Remotes (Test)",
         Description = "Fire every RemoteEvent with no args",
@@ -812,7 +860,7 @@ local function BuildUI()
                     end
                 end
             end)
-            Rayfield:Notify({ Title = "Fired", Content = count .. " RemoteEvents fired.", Duration = 3 })
+            UI.Notify({ Title = "Fired", Content = count .. " RemoteEvents fired.", Duration = 3 })
         end
     })
 
@@ -832,7 +880,9 @@ local function BuildUI()
         end
     end)
 
-    Rayfield:Notify({
+    UIReady = true
+
+    UI.Notify({
         Title = "Apex Scanner Ready",
         Content = string.format("%s | %s | Bypass: %s", GameInfo.Name, ExecutorName,
             BypassState.HooksInstalled and "ACTIVE" or "LIMITED"),
@@ -840,7 +890,7 @@ local function BuildUI()
     })
 
     print("========================================")
-    print("  APEX SCANNER v6.1 — RAYFIELD")
+    print("  APEX SCANNER v6.2 — RAYFIELD/ORION")
     print("  Executor: " .. ExecutorName)
     print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
     print("  Game: " .. GameInfo.Name .. " (" .. GameInfo.PlaceId .. ")")
@@ -1025,7 +1075,6 @@ local function DecompileScript(scriptObj, closure)
         local result = nil
         pcall(function() result = decompile(scriptObj) end)
         if result and #result > 10 then return result, "decompiled" end
-
         pcall(function() result = decompile(scriptObj, true) end)
         if result and #result > 10 then return result, "decompile(true)" end
     end
@@ -1047,7 +1096,6 @@ local function DecompileScript(scriptObj, closure)
         local result = nil
         pcall(function() result = scriptObj.Source end)
         if result and #result > 10 then return "-- .Source property\n" .. result, ".Source" end
-
         pcall(function()
             if Capabilities.GetRawMetatable and Capabilities.SetReadOnly then
                 local mt = getrawmetatable(scriptObj)
@@ -1068,7 +1116,6 @@ local function DecompileScript(scriptObj, closure)
             local hexDump = {}
             local len = #bytecode
             local limit = math.min(len, 50000)
-
             for i = 1, limit, 16 do
                 local hexLine = ""
                 local asciiLine = ""
@@ -1081,12 +1128,10 @@ local function DecompileScript(scriptObj, closure)
                 end
                 table.insert(hexDump, string.format("%08X  %-48s  %s", i - 1, hexLine, asciiLine))
             end
-
             local stringsFound = {}
             for match in bytecode:gmatch("[%w%p ]{4,}") do
                 if #match >= 4 and #match <= 200 then table.insert(stringsFound, match) end
             end
-
             local stringSection = ""
             if #stringsFound > 0 then
                 stringSection = "\n\n-- STRING CONSTANTS:\n"
@@ -1095,17 +1140,14 @@ local function DecompileScript(scriptObj, closure)
                     stringSection = stringSection .. string.format("  [%d] %q\n", i, s)
                 end
             end
-
             ScanState.BytecodeDumped = ScanState.BytecodeDumped + 1
-            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n\n" ..
-                   table.concat(hexDump, "\n") .. stringSection, "bytecode"
+            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n\n" .. table.concat(hexDump, "\n") .. stringSection, "bytecode"
         end
     end
 
     if closure and ScanState.DeepScan then
         local result = "-- CLOSURE ANALYSIS\n"
         local hasData = false
-
         pcall(function()
             if Capabilities.DebugGetUpvalues then
                 local upvals = debug.getupvalues(closure)
@@ -1115,15 +1157,12 @@ local function DecompileScript(scriptObj, closure)
                     for i, v in ipairs(upvals) do
                         result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 500))
                         if typeof(v) == "Instance" then
-                            pcall(function()
-                                result = result .. string.format("      -> %s (%s)\n", v:GetFullName(), v.ClassName)
-                            end)
+                            pcall(function() result = result .. string.format("      -> %s (%s)\n", v:GetFullName(), v.ClassName) end)
                         end
                     end
                 end
             end
         end)
-
         pcall(function()
             if Capabilities.DebugGetConstants then
                 local consts = debug.getconstants(closure)
@@ -1136,7 +1175,6 @@ local function DecompileScript(scriptObj, closure)
                 end
             end
         end)
-
         pcall(function()
             local info = debug.getinfo(closure)
             if info then
@@ -1148,7 +1186,6 @@ local function DecompileScript(scriptObj, closure)
                 result = result .. "  nups: " .. tostring(info.nups) .. "\n"
             end
         end)
-
         if hasData then return result, "closure-analysis" end
     end
 
@@ -1193,7 +1230,6 @@ local function FlushBuffer()
     local chunk = table.concat(writeBuffer, "\n")
     writeBuffer = {}
     bufferSize = 0
-
     if currentFileSize + #chunk > MAX_FILE_SIZE then
         filePart = filePart + 1
         local path = GetFilePath(currentService, filePart)
@@ -1202,7 +1238,6 @@ local function FlushBuffer()
         ScanState.CurrentFile = path
         ScanState.FileText = "Save: " .. path
     end
-
     SafeAppendFile(ScanState.CurrentFile, chunk)
     currentFileSize = currentFileSize + #chunk
 end
@@ -1250,7 +1285,7 @@ end
 function DumpAllBytecode()
     task.spawn(function()
         if not Capabilities.GetScriptBytecode then
-            Rayfield:Notify({ Title = "Error", Content = "getscriptbytecode not supported.", Duration = 4 })
+            UI.Notify({ Title = "Error", Content = "getscriptbytecode not supported.", Duration = 4 })
             return
         end
         ScanState.StatusText = "Dumping bytecode..."
@@ -1288,14 +1323,14 @@ function DumpAllBytecode()
             task.wait()
         end
         ScanState.StatusText = "Bytecode done: " .. count
-        Rayfield:Notify({ Title = "Bytecode", Content = count .. " scripts dumped.", Duration = 5 })
+        UI.Notify({ Title = "Bytecode", Content = count .. " scripts dumped.", Duration = 5 })
     end)
 end
 
 function ScanRegistry()
     task.spawn(function()
         if not Capabilities.GetReg then
-            Rayfield:Notify({ Title = "Error", Content = "getreg not supported.", Duration = 4 })
+            UI.Notify({ Title = "Error", Content = "getreg not supported.", Duration = 4 })
             return
         end
         ScanState.StatusText = "Scanning registry..."
@@ -1319,9 +1354,7 @@ function ScanRegistry()
                                 for i, uv in ipairs(upvals) do
                                     entry = entry .. string.format("  [upval %d] %s: %s\n", i, type(uv), tostring(uv):sub(1, 200))
                                     if typeof(uv) == "Instance" then
-                                        pcall(function()
-                                            entry = entry .. string.format("    -> %s (%s)\n", uv:GetFullName(), uv.ClassName)
-                                        end)
+                                        pcall(function() entry = entry .. string.format("    -> %s (%s)\n", uv:GetFullName(), uv.ClassName) end)
                                     end
                                 end
                             end
@@ -1350,7 +1383,7 @@ function ScanRegistry()
         end
         if #entries > 0 then SafeAppendFile(path, table.concat(entries, "\n")) end
         ScanState.StatusText = "Registry done: " .. count
-        Rayfield:Notify({ Title = "Registry", Content = count .. " closures found.", Duration = 5 })
+        UI.Notify({ Title = "Registry", Content = count .. " closures found.", Duration = 5 })
     end)
 end
 
@@ -1383,14 +1416,14 @@ function DumpServerScripts()
             ScanState.StatusText = string.format("Server: %d (%s)", count, serviceName)
         end
         ScanState.StatusText = "Server done: " .. count
-        Rayfield:Notify({ Title = "Server Dump", Content = count .. " scripts saved.", Duration = 5 })
+        UI.Notify({ Title = "Server Dump", Content = count .. " scripts saved.", Duration = 5 })
     end)
 end
 
 function DumpNilInstances()
     task.spawn(function()
         if not Capabilities.GetNilInstances then
-            Rayfield:Notify({ Title = "Error", Content = "getnilinstances not supported.", Duration = 4 })
+            UI.Notify({ Title = "Error", Content = "getnilinstances not supported.", Duration = 4 })
             return
         end
         ScanState.StatusText = "Dumping nil instances..."
@@ -1412,14 +1445,14 @@ function DumpNilInstances()
             task.wait()
         end
         ScanState.StatusText = "Nil done: " .. count
-        Rayfield:Notify({ Title = "Nil Dump", Content = count .. " nil scripts found.", Duration = 5 })
+        UI.Notify({ Title = "Nil Dump", Content = count .. " nil scripts found.", Duration = 5 })
     end)
 end
 
 function DumpConnections()
     task.spawn(function()
         if not Capabilities.GetConnections then
-            Rayfield:Notify({ Title = "Error", Content = "getconnections not supported.", Duration = 4 })
+            UI.Notify({ Title = "Error", Content = "getconnections not supported.", Duration = 4 })
             return
         end
         ScanState.StatusText = "Dumping connections..."
@@ -1453,14 +1486,14 @@ function DumpConnections()
             end
         end)
         ScanState.StatusText = "Connections done: " .. count
-        Rayfield:Notify({ Title = "Connections", Content = count .. " signals mapped.", Duration = 5 })
+        UI.Notify({ Title = "Connections", Content = count .. " signals mapped.", Duration = 5 })
     end)
 end
 
 function DeepUpvalueTrace()
     task.spawn(function()
         if not Capabilities.GetReg or not Capabilities.DebugGetUpvalues then
-            Rayfield:Notify({ Title = "Error", Content = "getreg/getupvalues not supported.", Duration = 4 })
+            UI.Notify({ Title = "Error", Content = "getreg/getupvalues not supported.", Duration = 4 })
             return
         end
         ScanState.StatusText = "Tracing upvalue chains..."
@@ -1468,12 +1501,10 @@ function DeepUpvalueTrace()
         SafeWriteFile(path, "=== DEEP UPVALUE TRACE ===\n\n")
         local count = 0
         local visited = {}
-
         local function traceClosure(fn, depth)
             if depth > 8 then return end
             if visited[fn] then return end
             visited[fn] = true
-
             pcall(function()
                 local upvals = debug.getupvalues(fn)
                 if upvals then
@@ -1501,7 +1532,6 @@ function DeepUpvalueTrace()
                 end
             end)
         end
-
         local reg = getreg()
         for _, v in ipairs(reg) do
             if type(v) == "function" and not visited[v] then
@@ -1510,14 +1540,14 @@ function DeepUpvalueTrace()
             end
         end
         ScanState.StatusText = "Upvalue trace done: " .. count
-        Rayfield:Notify({ Title = "Upvalue Trace", Content = count .. " instances found.", Duration = 5 })
+        UI.Notify({ Title = "Upvalue Trace", Content = count .. " instances found.", Duration = 5 })
     end)
 end
 
 function ExtractAllStringConstants()
     task.spawn(function()
         if not Capabilities.GetReg then
-            Rayfield:Notify({ Title = "Error", Content = "getreg not supported.", Duration = 4 })
+            UI.Notify({ Title = "Error", Content = "getreg not supported.", Duration = 4 })
             return
         end
         ScanState.StatusText = "Extracting string constants..."
@@ -1548,7 +1578,7 @@ function ExtractAllStringConstants()
             end
         end
         ScanState.StatusText = "Strings extracted: " .. count
-        Rayfield:Notify({ Title = "Strings", Content = count .. " unique strings found.", Duration = 5 })
+        UI.Notify({ Title = "Strings", Content = count .. " unique strings found.", Duration = 5 })
     end)
 end
 
@@ -1562,9 +1592,8 @@ function GenerateReport()
             "========================================\n" ..
             "Game: %s\nPlace ID: %d\nCreator: %s\nJobID: %s\n" ..
             "Executor: %s\nBypass: %s\nDate: %s\n\n" ..
-            "SCAN RESULTS:\n" ..
-            "  Total Scripts: %d\n  Decompiled: %d\n  Protected: %d\n" ..
-            "  Bytecode Dumped: %d\n  Remotes Found: %d\n  Connections: %d\n\n" ..
+            "SCAN RESULTS:\n  Total Scripts: %d\n  Decompiled: %d\n  Protected: %d\n" ..
+            "  Bytecode: %d\n  Remotes: %d\n  Connections: %d\n\n" ..
             "OUTPUT: %s\n========================================\n",
             GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, GameInfo.JobId,
             ExecutorName, BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
@@ -1575,7 +1604,7 @@ function GenerateReport()
         )
         SafeWriteFile(path, report)
         ScanState.StatusText = "Report saved."
-        Rayfield:Notify({ Title = "Report", Content = "Saved to " .. path, Duration = 4 })
+        UI.Notify({ Title = "Report", Content = "Saved to " .. path, Duration = 4 })
     end)
 end
 
@@ -1586,7 +1615,7 @@ function RunScanner()
     task.spawn(function()
         if ScanState.IsScanning then return end
         if not Capabilities.WriteFile or not Capabilities.AppendFile then
-            Rayfield:Notify({ Title = "Error", Content = "writefile/appendfile not available.", Duration = 5 })
+            UI.Notify({ Title = "Error", Content = "writefile/appendfile not available.", Duration = 5 })
             return
         end
 
@@ -1612,7 +1641,7 @@ function RunScanner()
             ScanState.StatusText = "No scripts found!"
             ScanState.IsScanning = false
             getgenv().ScannerRunning = false
-            Rayfield:Notify({ Title = "Scanner", Content = "No scripts found.", Duration = 5 })
+            UI.Notify({ Title = "Scanner", Content = "No scripts found.", Duration = 5 })
             return
         end
 
@@ -1693,7 +1722,7 @@ function RunScanner()
 
         GenerateReport()
 
-        Rayfield:Notify({
+        UI.Notify({
             Title = "Scan Complete!",
             Content = string.format("%d/%d extracted | %d bytecode | %d protected",
                 ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped, ScanState.Failed),
@@ -1710,6 +1739,6 @@ function RunScanner()
 end
 
 -- ============================================================
--- STARTUP — NO PCALL, LET ERRORS SHOW
+-- STARTUP
 -- ============================================================
 BuildUI()
