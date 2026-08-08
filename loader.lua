@@ -1,6 +1,6 @@
 --!nocheck
 -- ============================================================
--- APEX SCRIPT SCANNER v6.4 — SELF-CONTAINED UI (FULL FIX)
+-- APEX SCRIPT SCANNER v7.0 -- SERVER SCRIPT HUNTER
 -- ============================================================
 
 if getgenv().ScannerRunning then return end
@@ -87,6 +87,8 @@ local Capabilities = {
     GetReg = type(getreg) == "function",
     GetScriptBytecode = type(getscriptbytecode) == "function",
     GetScriptClosure = type(getscriptclosure) == "function",
+    GetSenv = type(getsenv) == "function",
+    GetRenv = type(getrenv) == "function",
     SaveInstance = type(saveinstance) == "function",
     Loadstring = type(loadstring) == "function",
     HookFunction = type(hookfunction) == "function",
@@ -95,6 +97,7 @@ local Capabilities = {
     SetReadOnly = type(setreadonly) == "function",
     DebugGetUpvalues = type(debug.getupvalues) == "function",
     DebugGetConstants = type(debug.getconstants) == "function",
+    DebugSetUpvalue = type(debug.setupvalue) == "function",
     CloneFunction = type(clonefunction) == "function",
     GetInstances = type(getinstances) == "function",
     GetConnections = type(getconnections) == "function",
@@ -213,8 +216,8 @@ local function BuildWindow()
 
     local MainFrame = make("Frame", {
         Name = "MainFrame",
-        Size = UDim2.new(0, 600, 0, 420),
-        Position = UDim2.new(0.5, -300, 0.5, -210),
+        Size = UDim2.new(0, 600, 0, 460),
+        Position = UDim2.new(0.5, -300, 0.5, -230),
         BackgroundColor3 = Color3.fromRGB(20, 20, 25),
         BorderSizePixel = 0,
         Parent = ScreenGui,
@@ -234,7 +237,7 @@ local function BuildWindow()
         Size = UDim2.new(1, -50, 1, 0),
         Position = UDim2.new(0, 15, 0, 0),
         BackgroundTransparency = 1,
-        Text = "APEX SCANNER v6.4 | " .. GameInfo.Name,
+        Text = "APEX SCANNER v7.0 | " .. GameInfo.Name,
         TextColor3 = Color3.fromRGB(255, 255, 255),
         TextSize = 15,
         Font = Enum.Font.GothamBold,
@@ -536,11 +539,13 @@ local ScanState = {
     IncludeConnections = true,
     SplitByService = true,
     IncludeCoreScripts = false,
+    ForceExtract = true,
     TotalScripts = 0,
     Processed = 0,
     Decompiled = 0,
     Failed = 0,
     BytecodeDumped = 0,
+    PartialExtracted = 0,
     RemotesFound = 0,
     ConnectionsFound = 0,
     StartTime = 0,
@@ -561,7 +566,7 @@ ScanState.OutputFolder = GameInfo.Name .. "_APEX_Scan"
 SafeMakeFolder(ScanState.OutputFolder)
 
 -- ============================================================
--- REMOTE SPY (FIXED — immediate sweep + stays alive)
+-- REMOTE SPY
 -- ============================================================
 local RemotesLog = {}
 local RemoteSpyActive = false
@@ -570,7 +575,6 @@ local function StartRemoteSpy()
     if RemoteSpyActive then return end
     RemoteSpyActive = true
 
-    -- immediate sweep
     pcall(function()
         for _, obj in ipairs(game:GetDescendants()) do
             if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
@@ -583,7 +587,6 @@ local function StartRemoteSpy()
         end
     end)
 
-    -- continuous sweep
     task.spawn(function()
         while RemoteSpyActive do
             pcall(function()
@@ -601,7 +604,6 @@ local function StartRemoteSpy()
         end
     end)
 
-    -- namecall hook
     pcall(function()
         if Capabilities.HookMeta and Capabilities.Newcclosure then
             local oldNamecall
@@ -705,7 +707,7 @@ local function InitializeFile()
 end
 
 -- ============================================================
--- SCRIPT COLLECTOR
+-- SCRIPT COLLECTOR -- AGGRESSIVE SERVER HUNT
 -- ============================================================
 local function CollectEverything()
     local collected = {}
@@ -745,6 +747,7 @@ local function CollectEverything()
         })
     end
 
+    -- 1. Walk entire visible game tree
     pcall(function()
         for _, obj in ipairs(game:GetDescendants()) do
             local svc = "Unknown"
@@ -756,6 +759,7 @@ local function CollectEverything()
         end
     end)
 
+    -- 2. Explicitly try server services (works on some executors with identity 7)
     if ScanState.IncludeServer then
         local services = {
             { "ServerScriptService", "ServerScriptService" },
@@ -785,19 +789,31 @@ local function CollectEverything()
         end)
     end
 
+    -- 3. getscripts() -- includes server scripts on most executors
     if Capabilities.GetScripts then
         pcall(function() for _, s in ipairs(getscripts()) do addScript(s, "getscripts()", "Executor") end end)
     end
+
+    -- 4. getloadedmodules() -- all loaded module scripts including server ones
     if Capabilities.GetLoadedModules then
         pcall(function() for _, s in ipairs(getloadedmodules()) do addScript(s, "getloadedmodules()", "LoadedModules") end end)
     end
+
+    -- 5. getnilinstances() -- nil-parented hidden scripts
     if ScanState.IncludeNil and Capabilities.GetNilInstances then
         pcall(function() for _, s in ipairs(getnilinstances()) do addScript(s, "getnilinstances()", "NilParented") end end)
     end
+
+    -- 6. getinstances() -- ALL instances in memory, including server-side
+    -- This is the key one for server scripts. It returns every Instance
+    -- that exists in the Lua VM, even if not parented to the client tree.
     if Capabilities.GetInstances then
-        pcall(function() for _, inst in ipairs(getinstances()) do addScript(inst, "getinstances()", "AllInstances") end end)
+        pcall(function()
+            for _, inst in ipairs(getinstances()) do addScript(inst, "getinstances()", "AllInstances") end
+        end)
     end
 
+    -- 7. CoreScripts (experimental)
     if ScanState.IncludeCoreScripts then
         pcall(function()
             local cg = game:GetService("CoreGui")
@@ -814,6 +830,7 @@ local function CollectEverything()
         end)
     end
 
+    -- 8. Registry scan for closures
     if ScanState.IncludeReg and Capabilities.GetReg then
         pcall(function()
             local reg = getreg()
@@ -844,6 +861,7 @@ local function CollectEverything()
         end)
     end
 
+    -- 9. Deep upvalue chain walk -- finds scripts hidden inside closure upvalues
     if ScanState.DeepScan and Capabilities.DebugGetUpvalues and Capabilities.GetReg then
         pcall(function()
             local reg = getreg()
@@ -868,21 +886,104 @@ local function CollectEverything()
         end)
     end
 
+    -- 10. Deep table scan -- scan registry tables for script references
+    -- Many games store script references in tables inside the registry
+    if ScanState.DeepScan and Capabilities.GetReg then
+        pcall(function()
+            local reg = getreg()
+            local function scanTable(tbl, depth)
+                if depth > 4 then return end
+                if type(tbl) ~= "table" then return end
+                for k, v in pairs(tbl) do
+                    if typeof(v) == "Instance" then
+                        addScript(v, "reg-table", "RegTable")
+                    elseif type(v) == "table" and depth < 4 then
+                        scanTable(v, depth + 1)
+                    end
+                end
+            end
+            for _, v in ipairs(reg) do
+                if type(v) == "table" then
+                    scanTable(v, 0)
+                end
+            end
+        end)
+    end
+
+    -- 11. getsenv() / getrenv() -- script environments
+    -- These can contain references to other scripts
+    if ScanState.DeepScan then
+        if Capabilities.GetSenv then
+            pcall(function()
+                for _, s in ipairs(getscripts()) do
+                    local env = getsenv(s)
+                    if type(env) == "table" then
+                        for k, v in pairs(env) do
+                            if typeof(v) == "Instance" then
+                                addScript(v, "getsenv", "ScriptEnv")
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        if Capabilities.GetRenv then
+            pcall(function()
+                local env = getrenv()
+                if type(env) == "table" then
+                    for k, v in pairs(env) do
+                        if typeof(v) == "Instance" then
+                            addScript(v, "getrenv", "RegistryEnv")
+                        end
+                    end
+                end
+            end)
+        end
+    end
+
+    -- 12. Scan PlayerScripts and character for scripts
+    pcall(function()
+        local players = game:GetService("Players")
+        local lp = players.LocalPlayer
+        if lp then
+            local bg = lp:FindFirstChild("Backpack")
+            if bg then
+                for _, obj in ipairs(bg:GetDescendants()) do addScript(obj, "Backpack", "Backpack") end
+            end
+            local char = lp.Character
+            if char then
+                for _, obj in ipairs(char:GetDescendants()) do addScript(obj, "Character", "Character") end
+            end
+            local pg = lp:FindFirstChild("PlayerGui")
+            if pg then
+                for _, obj in ipairs(pg:GetDescendants()) do addScript(obj, "PlayerGui", "PlayerGui") end
+            end
+            local pscripts = lp:FindFirstChild("PlayerScripts")
+            if pscripts then
+                for _, obj in ipairs(pscripts:GetDescendants()) do addScript(obj, "PlayerScripts", "PlayerScripts") end
+            end
+        end
+    end)
+
     return collected
 end
 
 -- ============================================================
--- DECOMPILE — 8 METHOD CHAIN
+-- DECOMPILE -- 10 METHOD CHAIN + FORCE EXTRACT
 -- ============================================================
 local function DecompileScript(scriptObj, closure)
+    -- Method 1: Direct decompile
     if Capabilities.Decompile and scriptObj then
         local result = nil
         pcall(function() result = decompile(scriptObj) end)
         if result and #result > 10 then return result, "decompiled" end
+
+        -- Method 2: decompile with aggressive flag
         pcall(function() result = decompile(scriptObj, true) end)
         if result and #result > 10 then return result, "decompile(true)" end
     end
 
+    -- Method 3: getscriptclosure + decompile
     if Capabilities.GetScriptClosure and scriptObj then
         local cl = nil
         pcall(function() cl = getscriptclosure(scriptObj) end)
@@ -896,10 +997,13 @@ local function DecompileScript(scriptObj, closure)
         end
     end
 
+    -- Method 4: .Source property
     if scriptObj then
         local result = nil
         pcall(function() result = scriptObj.Source end)
         if result and #result > 10 then return "-- .Source property\n" .. result, ".Source" end
+
+        -- Method 5: rawget .Source via metatable
         pcall(function()
             if Capabilities.GetRawMetatable and Capabilities.SetReadOnly then
                 local mt = getrawmetatable(scriptObj)
@@ -913,6 +1017,31 @@ local function DecompileScript(scriptObj, closure)
         if result and #result > 10 then return "-- rawget .Source\n" .. result, "rawget(.Source)" end
     end
 
+    -- Method 6: getsenv() -- dump the script's environment as partial source
+    if Capabilities.GetSenv and scriptObj and ScanState.ForceExtract then
+        local env = nil
+        pcall(function() env = getsenv(scriptObj) end)
+        if env and type(env) == "table" then
+            local result = "-- SCRIPT ENVIRONMENT DUMP (getsenv)\n-- Script: " ..
+                (scriptObj and scriptObj:GetFullName() or "unknown") .. "\n\n"
+            local count = 0
+            for k, v in pairs(env) do
+                count = count + 1
+                local valStr = tostring(v):sub(1, 500)
+                if type(v) == "function" then
+                    local info = debug.getinfo(v)
+                    valStr = string.format("function [%s:%s-%s]",
+                        info.source or "?", tostring(info.linedefined), tostring(info.lastlinedefined))
+                elseif typeof(v) == "Instance" then
+                    pcall(function() valStr = v:GetFullName() .. " (" .. v.ClassName .. ")" end)
+                end
+                result = result .. string.format("  [%s] %s = %s\n", tostring(k), type(v), valStr)
+            end
+            if count > 0 then return result, "getsenv" end
+        end
+    end
+
+    -- Method 7: Bytecode hex dump + string extraction
     if Capabilities.GetScriptBytecode and scriptObj then
         local bytecode = nil
         pcall(function() bytecode = getscriptbytecode(scriptObj) end)
@@ -944,13 +1073,16 @@ local function DecompileScript(scriptObj, closure)
                     stringSection = stringSection .. string.format("  [%d] %q\n", i, s)
                 end
             end
-            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n\n" .. table.concat(hexDump, "\n") .. stringSection, "bytecode"
+            return "-- BYTECODE DUMP\n-- Length: " .. len .. " bytes\n\n" ..
+                   table.concat(hexDump, "\n") .. stringSection, "bytecode"
         end
     end
 
+    -- Method 8: Closure analysis (upvalues + constants + debug info)
     if closure and ScanState.DeepScan then
         local result = "-- CLOSURE ANALYSIS\n"
         local hasData = false
+
         pcall(function()
             if Capabilities.DebugGetUpvalues then
                 local upvals = debug.getupvalues(closure)
@@ -966,6 +1098,7 @@ local function DecompileScript(scriptObj, closure)
                 end
             end
         end)
+
         pcall(function()
             if Capabilities.DebugGetConstants then
                 local consts = debug.getconstants(closure)
@@ -978,6 +1111,7 @@ local function DecompileScript(scriptObj, closure)
                 end
             end
         end)
+
         pcall(function()
             local info = debug.getinfo(closure)
             if info then
@@ -989,15 +1123,82 @@ local function DecompileScript(scriptObj, closure)
                 result = result .. "  nups: " .. tostring(info.nups) .. "\n"
             end
         end)
+
         if hasData then return result, "closure-analysis" end
     end
 
-    local fallback = "-- DECOMPILE FAILED — All methods exhausted.\n"
+    -- Method 9: Try getscriptclosure if we haven't yet (some executors need it)
+    if not closure and Capabilities.GetScriptClosure and scriptObj and ScanState.ForceExtract then
+        local cl = nil
+        pcall(function() cl = getscriptclosure(scriptObj) end)
+        if cl then
+            -- retry closure analysis with the extracted closure
+            local result = "-- FORCED CLOSURE EXTRACTION\n"
+            local hasData = false
+
+            pcall(function()
+                if Capabilities.DebugGetUpvalues then
+                    local upvals = debug.getupvalues(cl)
+                    if upvals then
+                        hasData = true
+                        result = result .. "\n-- UPVALUES (" .. #upvals .. "):\n"
+                        for i, v in ipairs(upvals) do
+                            result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 500))
+                            if typeof(v) == "Instance" then
+                                pcall(function() result = result .. string.format("      -> %s (%s)\n", v:GetFullName(), v.ClassName) end)
+                            end
+                        end
+                    end
+                end
+            end)
+
+            pcall(function()
+                if Capabilities.DebugGetConstants then
+                    local consts = debug.getconstants(cl)
+                    if consts then
+                        hasData = true
+                        result = result .. "\n-- CONSTANTS (" .. #consts .. "):\n"
+                        for i, v in ipairs(consts) do
+                            result = result .. string.format("  [%d] %s: %s\n", i, type(v), tostring(v):sub(1, 300))
+                        end
+                    end
+                end
+            end)
+
+            pcall(function()
+                local info = debug.getinfo(cl)
+                if info then
+                    hasData = true
+                    result = result .. "\n-- DEBUG INFO:\n"
+                    result = result .. "  source: " .. tostring(info.source) .. "\n"
+                    result = result .. "  lines: " .. tostring(info.linedefined) .. "-" .. tostring(info.lastlinedefined) .. "\n"
+                    result = result .. "  nups: " .. tostring(info.nups) .. "\n"
+                end
+            end)
+
+            if hasData then return result, "forced-closure" end
+        end
+    end
+
+    -- Method 10: Last resort -- dump everything we know about the script
+    if ScanState.ForceExtract and scriptObj then
+        local result = "-- PARTIAL EXTRACTION (all decompile methods failed)\n"
+        result = result .. "-- This script could not be decompiled. Saving all available metadata.\n\n"
+        pcall(function()
+            result = result .. "Script: " .. scriptObj:GetFullName() .. "\n"
+            result = result .. "Class: " .. scriptObj.ClassName .. "\n"
+            result = result .. "Disabled: " .. tostring(scriptObj.Disabled) .. "\n"
+            result = result .. "Parent: " .. tostring(scriptObj.Parent) .. "\n"
+            result = result .. "Archivable: " .. tostring(scriptObj.Archivable) .. "\n"
+        end)
+        return result, "partial"
+    end
+
+    local fallback = "-- EXTRACTION FAILED\n"
     if scriptObj then
         pcall(function()
             fallback = fallback .. "-- Script: " .. scriptObj:GetFullName() .. "\n"
             fallback = fallback .. "-- Class: " .. scriptObj.ClassName .. "\n"
-            fallback = fallback .. "-- Disabled: " .. tostring(scriptObj.Disabled) .. "\n"
         end)
     end
     return fallback, "failed"
@@ -1026,6 +1227,13 @@ function DumpAllBytecode()
         end
         if Capabilities.GetNilInstances then
             pcall(function() for _, s in ipairs(getnilinstances()) do
+                if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
+                    table.insert(allScripts, s)
+                end
+            end end)
+        end
+        if Capabilities.GetInstances then
+            pcall(function() for _, s in ipairs(getinstances()) do
                 if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
                     table.insert(allScripts, s)
                 end
@@ -1116,28 +1324,56 @@ function DumpServerScripts()
         ScanState.StatusText = "Dumping server scripts..."
         local path = ScanState.OutputFolder .. "/" .. GameInfo.Name .. "_ServerScripts.txt"
         SafeWriteFile(path, "=== SERVER SCRIPT DUMP ===\n\n")
-        local services = {
-            "ServerScriptService", "ServerStorage", "ReplicatedStorage",
-            "StarterPlayer", "StarterGui", "StarterPack",
-        }
-        local count = 0
-        for _, serviceName in ipairs(services) do
+
+        -- Use getscripts() and getinstances() for server scripts
+        local allScripts = {}
+        if Capabilities.GetScripts then
+            pcall(function() for _, s in ipairs(getscripts()) do table.insert(allScripts, s) end end)
+        end
+        if Capabilities.GetInstances then
+            pcall(function() for _, s in ipairs(getinstances()) do
+                if s:IsA("Script") or s:IsA("LocalScript") or s:IsA("ModuleScript") then
+                    table.insert(allScripts, s)
+                end
+            end end)
+        end
+
+        -- Also try direct service access
+        for _, serviceName in ipairs({"ServerScriptService", "ServerStorage", "ReplicatedStorage"}) do
             pcall(function()
-                local service = game:GetService(serviceName)
-                for _, obj in ipairs(service:GetDescendants()) do
+                local svc = game:GetService(serviceName)
+                for _, obj in ipairs(svc:GetDescendants()) do
                     if obj:IsA("Script") or obj:IsA("LocalScript") or obj:IsA("ModuleScript") then
-                        local decompiled, method = DecompileScript(obj)
-                        SafeAppendFile(path, string.format(
-                            "\n%s\nSCRIPT: %s\nCLASS: %s\nSERVICE: %s\nSTATUS: %s\n%s\n%s\n\n",
-                            string.rep("=", 60), obj:GetFullName(), obj.ClassName, serviceName,
-                            method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
-                            string.rep("=", 60), decompiled))
-                        count = count + 1
-                        task.wait()
+                        table.insert(allScripts, obj)
                     end
                 end
             end)
-            ScanState.StatusText = string.format("Server: %d (%s)", count, serviceName)
+        end
+
+        -- Dedupe
+        local seen = {}
+        local deduped = {}
+        for _, s in ipairs(allScripts) do
+            local key = tostring(s)
+            if not seen[key] then
+                seen[key] = true
+                table.insert(deduped, s)
+            end
+        end
+
+        local count = 0
+        for i, obj in ipairs(deduped) do
+            pcall(function()
+                local decompiled, method = DecompileScript(obj)
+                SafeAppendFile(path, string.format(
+                    "\n%s\nSCRIPT: %s\nCLASS: %s\nSTATUS: %s\n%s\n%s\n\n",
+                    string.rep("=", 60), obj:GetFullName(), obj.ClassName,
+                    method == "failed" and "PROTECTED" or "EXTRACTED (" .. method .. ")",
+                    string.rep("=", 60), decompiled))
+                count = count + 1
+            end)
+            ScanState.StatusText = string.format("Server: %d/%d", i, #deduped)
+            task.wait()
         end
         ScanState.StatusText = "Server done: " .. count
         Notify("Server Dump", count .. " scripts saved.", 5)
@@ -1316,14 +1552,22 @@ function GenerateReport()
             "========================================\n" ..
             "Game: %s\nPlace ID: %d\nCreator: %s\nJobID: %s\n" ..
             "Executor: %s\nBypass: %s\nDate: %s\n\n" ..
-            "SCAN RESULTS:\n  Total Scripts: %d\n  Decompiled: %d\n  Protected: %d\n" ..
-            "  Bytecode: %d\n  Remotes: %d\n  Connections: %d\n\n" ..
-            "OUTPUT: %s\n========================================\n",
+            "SCAN RESULTS:\n" ..
+            "  Total Scripts: %d\n" ..
+            "  Decompiled: %d\n" ..
+            "  Protected (Failed): %d\n" ..
+            "  Bytecode Dumped: %d\n" ..
+            "  Partial Extracted: %d\n" ..
+            "  Remotes Found: %d\n" ..
+            "  Connections Mapped: %d\n\n" ..
+            "OUTPUT: %s\n" ..
+            "========================================\n",
             GameInfo.Name, GameInfo.PlaceId, GameInfo.Creator, GameInfo.JobId,
             ExecutorName, BypassState.HooksInstalled and "ACTIVE" or "LIMITED",
             os.date("%Y-%m-%d %H:%M:%S"),
             ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed,
-            ScanState.BytecodeDumped, ScanState.RemotesFound, ScanState.ConnectionsFound,
+            ScanState.BytecodeDumped, ScanState.PartialExtracted,
+            ScanState.RemotesFound, ScanState.ConnectionsFound,
             ScanState.OutputFolder
         )
         SafeWriteFile(path, report)
@@ -1333,7 +1577,7 @@ function GenerateReport()
 end
 
 -- ============================================================
--- MAIN SCANNER (FIXED — remotes + connections + bytecode)
+-- MAIN SCANNER
 -- ============================================================
 function RunScanner()
     task.spawn(function()
@@ -1349,19 +1593,18 @@ function RunScanner()
         ScanState.Decompiled = 0
         ScanState.Failed = 0
         ScanState.BytecodeDumped = 0
+        ScanState.PartialExtracted = 0
         ScanState.RemotesFound = 0
         ScanState.ConnectionsFound = 0
         ScanState.StartTime = tick()
         ScanState.StatusText = "Starting remote spy..."
         ScanState.TimeText = "--:--"
 
-        -- start remote spy BEFORE scan, keep alive after
         if ScanState.IncludeRemotes then
             StartRemoteSpy()
             task.wait(1)
         end
 
-        -- count connections if enabled
         if ScanState.IncludeConnections and Capabilities.GetConnections then
             ScanState.StatusText = "Counting connections..."
             pcall(function()
@@ -1384,7 +1627,7 @@ function RunScanner()
             end)
         end
 
-        ScanState.StatusText = "Collecting scripts..."
+        ScanState.StatusText = "Collecting ALL scripts (aggressive)..."
 
         local allScripts = CollectEverything()
         ScanState.TotalScripts = #allScripts
@@ -1428,6 +1671,8 @@ function RunScanner()
                 if method and method ~= "failed" then
                     if method == "bytecode" then
                         ScanState.BytecodeDumped = ScanState.BytecodeDumped + 1
+                    elseif method == "partial" or method == "getsenv" or method == "forced-closure" then
+                        ScanState.PartialExtracted = ScanState.PartialExtracted + 1
                     else
                         ScanState.Decompiled = ScanState.Decompiled + 1
                     end
@@ -1456,8 +1701,8 @@ function RunScanner()
                     local pct = math.floor((ScanState.Processed / ScanState.TotalScripts) * 100)
                     ScanState.StatusText = string.format("Scanning: %d%% (%d/%d)", pct, ScanState.Processed, ScanState.TotalScripts)
                     ScanState.TimeText = string.format("Time: %02d:%02d", mins, secs)
-                    ScanState.SuccessText = string.format("Decompiled: %d | Protected: %d | Bytecode: %d",
-                        ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped)
+                    ScanState.SuccessText = string.format("Decompiled: %d | Protected: %d | Bytecode: %d | Partial: %d",
+                        ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped, ScanState.PartialExtracted)
                 end
                 task.wait()
             end
@@ -1465,8 +1710,9 @@ function RunScanner()
 
         FlushBuffer()
         SafeAppendFile(ScanState.CurrentFile, string.format(
-            "\n=== SCAN COMPLETE ===\nTotal: %d | Extracted: %d | Protected: %d | Bytecode: %d\nDate: %s\n",
-            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed, ScanState.BytecodeDumped,
+            "\n=== SCAN COMPLETE ===\nTotal: %d | Extracted: %d | Protected: %d | Bytecode: %d | Partial: %d\nDate: %s\n",
+            ScanState.TotalScripts, ScanState.Decompiled, ScanState.Failed,
+            ScanState.BytecodeDumped, ScanState.PartialExtracted,
             os.date("%Y-%m-%d %H:%M:%S")))
 
         ScanState.IsScanning = false
@@ -1476,16 +1722,15 @@ function RunScanner()
         GenerateReport()
 
         Notify("Scan Complete!",
-            string.format("%d/%d extracted | %d bytecode | %d protected | %d remotes | %d connections",
+            string.format("%d/%d extracted | %d bytecode | %d partial | %d protected | %d remotes | %d connections",
                 ScanState.Decompiled, ScanState.TotalScripts, ScanState.BytecodeDumped,
-                ScanState.Failed, ScanState.RemotesFound, ScanState.ConnectionsFound),
+                ScanState.PartialExtracted, ScanState.Failed, ScanState.RemotesFound, ScanState.ConnectionsFound),
             6)
 
         if Capabilities.SetClipboard then
             pcall(function() setclipboard(ScanState.OutputFolder) end)
         end
 
-        -- remote spy stays alive — user stops it manually
         getgenv().ScannerRunning = false
     end)
 end
@@ -1522,13 +1767,14 @@ local function BuildUI()
     AddToggle(mainPage, "Connection Mapper", "Map all signal connections with source info", true, function(v) ScanState.IncludeConnections = v end)
     AddToggle(mainPage, "Split Output By Service", "Organize decompiled scripts into separate folders", true, function(v) ScanState.SplitByService = v end)
     AddToggle(mainPage, "Include CoreScripts", "Attempt extraction of Roblox CoreScripts (experimental)", false, function(v) ScanState.IncludeCoreScripts = v end)
+    AddToggle(mainPage, "Force Extract", "Never give up on protected scripts -- extract partial data", true, function(v) ScanState.ForceExtract = v end)
 
     AddSection(mainPage, "Status")
     StatusRef = AddLabel(mainPage, "Status: Ready")
     TimeRef = AddLabel(mainPage, "Time: --:--")
     FileRef = AddLabel(mainPage, "Save: Not started")
     CountRef = AddLabel(mainPage, "Total Scripts: 0")
-    SuccessRef = AddLabel(mainPage, "Decompiled: 0 | Protected: 0 | Bytecode: 0")
+    SuccessRef = AddLabel(mainPage, "Decompiled: 0 | Protected: 0 | Bytecode: 0 | Partial: 0")
 
     AddSection(mainPage, "Controls")
     AddButton(mainPage, "Start Full Scan", "Begin exhaustive script collection and decompilation", function() RunScanner() end)
@@ -1548,9 +1794,9 @@ local function BuildUI()
     local advPage = CreatePage("Advanced")
 
     AddSection(advPage, "Extraction")
-    AddButton(advPage, "Dump All Bytecode (Raw Hex)", "Extract raw bytecode from every script", function() task.spawn(DumpAllBytecode) end)
+    AddButton(advPage, "Dump All Bytecode (Raw Hex)", "Extract raw bytecode from every script including server-side", function() task.spawn(DumpAllBytecode) end)
     AddButton(advPage, "Scan Registry Closures", "Deep scan getreg() for Lua closures", function() task.spawn(ScanRegistry) end)
-    AddButton(advPage, "Dump Server Scripts", "SSS, SS, RS, StarterPlayer, StarterGui, StarterPack", function() task.spawn(DumpServerScripts) end)
+    AddButton(advPage, "Dump Server Scripts", "Extract all server scripts via getscripts + getinstances", function() task.spawn(DumpServerScripts) end)
     AddButton(advPage, "Dump Nil Instances", "Extract nil-parented hidden scripts", function() task.spawn(DumpNilInstances) end)
     AddButton(advPage, "Dump All Connections", "Map all signal connections with source info", function() task.spawn(DumpConnections) end)
     AddButton(advPage, "Deep Upvalue Trace", "Walk upvalue chains from all loaded closures", function() task.spawn(DeepUpvalueTrace) end)
@@ -1664,7 +1910,7 @@ local function BuildUI()
     Notify("Apex Scanner", "Ready | " .. GameInfo.Name .. " | " .. ExecutorName, 5)
 
     print("========================================")
-    print("  APEX SCANNER v6.4 — SELF-CONTAINED")
+    print("  APEX SCANNER v7.0 -- SERVER HUNTER")
     print("  Executor: " .. ExecutorName)
     print("  Bypass: " .. (BypassState.HooksInstalled and "ACTIVE" or "LIMITED"))
     print("  Game: " .. GameInfo.Name .. " (" .. GameInfo.PlaceId .. ")")
