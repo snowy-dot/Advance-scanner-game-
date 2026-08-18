@@ -1,8 +1,6 @@
 --!nocheck
--- Universal Game Scanner v6 — [K]vk Edition
--- Full feature set: Remote Scanner, Object Scanner, Keyword Search,
--- Executor Check, Auto-Category, Team/Leaderstat Scanner, GUI Scanner,
--- Touch Detector, JSON Export, Path Depth Limiter, Diff Mode, Remote Sniffer
+-- Universal Game Scanner v6.1 — [K]vk Edition (Fixed)
+-- Full feature set with auto-save fix
 -- Keybind: Right Ctrl to toggle
 
 -- FORWARD DECLARE
@@ -30,15 +28,12 @@ local LocalPlayer = Players.LocalPlayer
 local State = {
     scanning = false,
     results = {},
-    filteredResults = {},
     stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 },
     lastFilename = "",
-    selectedScript = nil,
-    currentFilter = "",
-    currentStatusFilter = "ALL",
-    maxDepth = 0, -- 0 = unlimited
+    maxDepth = 0,
     remoteSniffData = {},
     lastScanResults = nil,
+    selectedScript = nil,
 }
 
 local connections = {}
@@ -50,14 +45,12 @@ local ProgressDetail
 local ProgressTrack
 
 -- ============================================
--- GAME NAME DETECTION
+-- GAME NAME
 -- ============================================
 local GameName = game.Name
 pcall(function()
     local info = MarketplaceService:GetProductInfo(game.PlaceId)
-    if info and info.Name then
-        GameName = info.Name
-    end
+    if info and info.Name then GameName = info.Name end
 end)
 local safeName = GameName:gsub("[^%w%-_]", "_")
 
@@ -77,7 +70,6 @@ end
 -- ============================================
 local function buildProgressGUI()
     if ProgressGui then ProgressGui:Destroy() end
-
     ProgressGui = Instance.new("ScreenGui")
     ProgressGui.Name = "ScannerProgress"
     ProgressGui.ResetOnSpawn = false
@@ -161,16 +153,12 @@ buildProgressGUI()
 
 local function updateProgress(current, total, containerName, scriptPath)
     local pct = 0
-    if total > 0 then
-        pct = math.floor((current / total) * 100)
-    end
+    if total > 0 then pct = math.floor((current / total) * 100) end
     ProgressFill.Size = UDim2.new(pct / 100, 0, 1, 0)
     ProgressPercent.Text = tostring(pct) .. "%"
     ProgressLabel.Text = string.format("[%d / %d] %s", current, total, containerName or "")
     local detail = scriptPath or ""
-    if #detail > 55 then
-        detail = "..." .. detail:sub(-52)
-    end
+    if #detail > 55 then detail = "..." .. detail:sub(-52) end
     ProgressDetail.Text = detail
 end
 
@@ -180,7 +168,7 @@ end
 local function safeNotify(title, content)
     pcall(function()
         if Rayfield and Rayfield.Notify then
-            Rayfield:Notify({Title = title, Content = content, Duration = 4})
+            Rayfield:Notify({Title = title, Content = content, Duration = 6})
         end
     end)
 end
@@ -191,21 +179,15 @@ end
 local function getScriptSource(script)
     if type(getsrc) == "function" then
         local ok, result = pcall(getsrc, script)
-        if ok and type(result) == "string" and #result > 0 then
-            return result, "OK"
-        end
+        if ok and type(result) == "string" and #result > 0 then return result, "OK" end
     end
     if type(decompile) == "function" then
         local ok, result = pcall(decompile, script)
-        if ok and type(result) == "string" and #result > 0 then
-            return result, "OK"
-        end
+        if ok and type(result) == "string" and #result > 0 then return result, "OK" end
     end
     if type(getscriptbytecode) == "function" then
         local ok, result = pcall(getscriptbytecode, script)
-        if ok and type(result) == "string" and #result > 0 then
-            return result, "BYTECODE"
-        end
+        if ok and type(result) == "string" and #result > 0 then return result, "BYTECODE" end
     end
     return nil, "FAILED"
 end
@@ -235,46 +217,33 @@ local function getContainers()
 end
 
 -- ============================================
--- AUTO-CATEGORY SYSTEM
+-- AUTO-CATEGORY
 -- ============================================
 local categoryKeywords = {
-    Combat = { "combat", "punch", "attack", "damage", "weapon", "gun", "melee", "fight", "kill", "health" },
-    Movement = { "movement", "walkspeed", "fly", "noclip", "jump", "gravity", "velocity", "dash", "sprint", "shiftlock", "camera" },
-    UI = { "gui", "frame", "button", "ui", "hud", "menu", "interface", "screen", "panel" },
-    Economy = { "shop", "buy", "currency", "cash", "coin", "reward", "spin", "egg", "pet", "rebirth", "upgrade" },
-    NPC = { "npc", "monster", "enemy", "boss", "ai", "bot", "creature" },
-    Admin = { "cmdr", "command", "admin", "ban", "kick", "teleport", "warn" },
-    Remote = { "remote", "fire", "server", "replicate", "event" },
+    Combat = {"combat", "punch", "attack", "damage", "weapon", "gun", "melee", "fight", "kill", "health"},
+    Movement = {"movement", "walkspeed", "fly", "noclip", "jump", "gravity", "velocity", "dash", "sprint", "shiftlock", "camera"},
+    UI = {"gui", "frame", "button", "ui", "hud", "menu", "interface", "screen", "panel"},
+    Economy = {"shop", "buy", "currency", "cash", "coin", "reward", "spin", "egg", "pet", "rebirth", "upgrade"},
+    NPC = {"npc", "monster", "enemy", "boss", "ai", "bot", "creature"},
+    Admin = {"cmdr", "command", "admin", "ban", "kick", "teleport", "warn"},
+    Remote = {"remote", "fire", "server", "replicate", "event"},
 }
 
-local function categorizeScript(path, className, source)
+local function categorizeScript(path, className)
     local pathLower = path:lower()
-    local nameLower = ""
-    local parts = path:split(".")
-    if #parts > 0 then
-        nameLower = parts[#parts]:lower()
-    end
-
     for category, keywords in pairs(categoryKeywords) do
         for _, keyword in ipairs(keywords) do
-            if pathLower:match(keyword) or nameLower:match(keyword) then
-                return category
-            end
+            if pathLower:match(keyword) then return category end
         end
     end
-
-    if className == "LocalScript" then
-        return "Client"
-    elseif className == "Script" then
-        return "Server"
-    elseif className == "ModuleScript" then
-        return "Module"
-    end
+    if className == "LocalScript" then return "Client"
+    elseif className == "Script" then return "Server"
+    elseif className == "ModuleScript" then return "Module" end
     return "Other"
 end
 
 -- ============================================
--- DEPTH-AWARE SCANNER
+-- DEPTH SCANNER
 -- ============================================
 local function getDescendantsWithDepth(container, maxDepth)
     local results = {}
@@ -290,18 +259,95 @@ local function getDescendantsWithDepth(container, maxDepth)
 end
 
 -- ============================================
--- MAIN SCAN LOGIC
+-- AUTO-SAVE (FIXED)
+-- ============================================
+local function autoSaveDump()
+    if #State.results == 0 then return nil end
+    if type(writefile) ~= "function" then
+        print("[K]vk Scanner: writefile not available — cannot save to workspace.")
+        return nil
+    end
+
+    local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+
+    -- build header
+    local content = "============================================\n"
+    content = content .. "Universal Game Scanner v6.1 Dump\n"
+    content = content .. "Game: " .. GameName .. "\n"
+    content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
+    content = content .. "Job ID: " .. tostring(game.JobId) .. "\n"
+    content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
+    content = content .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d | Client: %d | Server: %d | Module: %d\n",
+        State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed,
+        State.stats.client, State.stats.server, State.stats.module)
+    content = content .. "============================================\n\n"
+
+    -- script index
+    content = content .. "SCRIPT INDEX:\n"
+    content = content .. string.rep("-", 120) .. "\n"
+    content = content .. string.format("%-5s | %-15s | %-15s | %-8s | %-12s | %-8s | %s\n", "#", "Container", "Class", "Status", "Category", "Type", "Path")
+    content = content .. string.rep("-", 120) .. "\n"
+    for i, r in ipairs(State.results) do
+        local scriptType = ""
+        if r.class == "LocalScript" then scriptType = "CLIENT"
+        elseif r.class == "Script" then scriptType = "SERVER"
+        elseif r.class == "ModuleScript" then scriptType = "MODULE" end
+        content = content .. string.format("[%-4d] | %-15s | %-15s | %-8s | %-12s | %-8s | %s\n",
+            i, r.container, r.class, r.status, r.category or "Other", scriptType, r.path)
+    end
+    content = content .. "\n"
+
+    -- try writefile with full content
+    local writeOk = pcall(writefile, filename, content)
+    if not writeOk then
+        print("[K]vk Scanner: writefile failed for full dump. Trying appendfile fallback...")
+    end
+
+    -- append each script individually (works even if writefile fails for large content)
+    for i, r in ipairs(State.results) do
+        local chunk = "\n============================================\n"
+        chunk = chunk .. string.format("SCRIPT [%d]\n", i)
+        chunk = chunk .. "Game: " .. GameName .. "\n"
+        chunk = chunk .. "Container: " .. r.container .. "\n"
+        chunk = chunk .. "Class: " .. r.class .. "\n"
+        chunk = chunk .. "Category: " .. (r.category or "Other") .. "\n"
+        chunk = chunk .. "Path: " .. r.path .. "\n"
+        chunk = chunk .. "Status: " .. r.status .. "\n"
+        chunk = chunk .. "============================================\n"
+        if r.source then
+            chunk = chunk .. r.source .. "\n"
+        else
+            chunk = chunk .. "-- [NO SOURCE AVAILABLE]\n"
+        end
+
+        if type(appendfile) == "function" then
+            pcall(appendfile, filename, chunk)
+        else
+            -- fallback: read current, append, rewrite
+            local ok2, existing = pcall(readfile, filename)
+            if ok2 and existing then
+                pcall(writefile, filename, existing .. chunk)
+            end
+        end
+
+        if i % 25 == 0 then task.wait(0.02) end
+    end
+
+    State.lastFilename = filename
+    print("[K]vk Scanner: Saved to " .. filename)
+    return filename
+end
+
+-- ============================================
+-- MAIN SCAN
 -- ============================================
 local function performScan()
     if State.scanning then return end
     State.scanning = true
     State.results = {}
-    State.filteredResults = {}
     State.stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 }
 
-    if not ProgressGui or not ProgressGui.Parent then
-        buildProgressGUI()
-    end
+    if not ProgressGui or not ProgressGui.Parent then buildProgressGUI() end
     ProgressGui.Enabled = true
     updateProgress(0, 1, "Counting", "scripts...")
 
@@ -312,12 +358,7 @@ local function performScan()
     for _, containerData in ipairs(containers) do
         local container = containerData[1]
         if container then
-            local descendants
-            if State.maxDepth > 0 then
-                descendants = getDescendantsWithDepth(container, State.maxDepth)
-            else
-                descendants = container:GetDescendants()
-            end
+            local descendants = State.maxDepth > 0 and getDescendantsWithDepth(container, State.maxDepth) or container:GetDescendants()
             for _, child in pairs(descendants) do
                 if child:IsA("Script") or child:IsA("LocalScript") or child:IsA("ModuleScript") then
                     totalScripts = totalScripts + 1
@@ -334,66 +375,54 @@ local function performScan()
         local container = containerData[1]
         local name = containerData[2]
         if container then
-            local descendants
-            if State.maxDepth > 0 then
-                descendants = getDescendantsWithDepth(container, State.maxDepth)
-            else
-                descendants = container:GetDescendants()
-            end
+            local descendants = State.maxDepth > 0 and getDescendantsWithDepth(container, State.maxDepth) or container:GetDescendants()
             for _, child in pairs(descendants) do
                 if child:IsA("Script") or child:IsA("LocalScript") or child:IsA("ModuleScript") then
                     current = current + 1
                     local path = child:GetFullName()
                     local className = child.ClassName
-
                     updateProgress(current, totalScripts, name, path)
 
                     local src, status = getScriptSource(child)
 
-                    if status == "OK" then
-                        State.stats.success = State.stats.success + 1
-                    elseif status == "BYTECODE" then
-                        State.stats.bytecode = State.stats.bytecode + 1
-                    else
-                        State.stats.failed = State.stats.failed + 1
-                    end
+                    if status == "OK" then State.stats.success = State.stats.success + 1
+                    elseif status == "BYTECODE" then State.stats.bytecode = State.stats.bytecode + 1
+                    else State.stats.failed = State.stats.failed + 1 end
 
-                    if className == "LocalScript" then
-                        State.stats.client = State.stats.client + 1
-                    elseif className == "Script" then
-                        State.stats.server = State.stats.server + 1
-                    elseif className == "ModuleScript" then
-                        State.stats.module = State.stats.module + 1
-                    end
+                    if className == "LocalScript" then State.stats.client = State.stats.client + 1
+                    elseif className == "Script" then State.stats.server = State.stats.server + 1
+                    elseif className == "ModuleScript" then State.stats.module = State.stats.module + 1 end
 
-                    local category = categorizeScript(path, className, src)
+                    local category = categorizeScript(path, className)
 
                     table.insert(State.results, {
-                        path = path,
-                        class = className,
-                        status = status,
-                        source = src,
-                        container = name,
-                        category = category,
-                        instance = child,
+                        path = path, class = className, status = status,
+                        source = src, container = name, category = category, instance = child,
                     })
 
-                    if current % 10 == 0 then
-                        task.wait(0.01)
-                    end
+                    if current % 10 == 0 then task.wait(0.01) end
                 end
             end
         end
     end
 
-    updateProgress(totalScripts, totalScripts, "Done", "")
+    -- AUTO-SAVE (FIXED — now actually saves)
+    updateProgress(totalScripts, totalScripts, "Saving", "to executor workspace...")
     task.wait(0.3)
+    local savedFile = autoSaveDump()
 
     ProgressGui.Enabled = false
     State.scanning = false
 
-    safeNotify("Scan Complete", string.format("%d scripts | OK: %d | Failed: %d | Client: %d | Server: %d | Module: %d",
-        State.stats.total, State.stats.success, State.stats.failed, State.stats.client, State.stats.server, State.stats.module))
+    if savedFile then
+        safeNotify("Scan Complete & Saved",
+            string.format("%d scripts | OK: %d | Failed: %d\nSaved: %s",
+                State.stats.total, State.stats.success, State.stats.failed, savedFile))
+    else
+        safeNotify("Scan Complete (Save Failed)",
+            string.format("%d scripts | OK: %d | Failed: %d\nwritefile unavailable — use Export tab",
+                State.stats.total, State.stats.success, State.stats.failed))
+    end
 end
 
 -- ============================================
@@ -401,44 +430,19 @@ end
 -- ============================================
 local function scanRemotes()
     local remotes = { events = {}, functions = {} }
-
-    pcall(function()
-        for _, desc in pairs(ReplicatedStorage:GetDescendants()) do
-            if desc:IsA("RemoteEvent") then
-                table.insert(remotes.events, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                    instance = desc,
-                })
-            elseif desc:IsA("RemoteFunction") then
-                table.insert(remotes.functions, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                    instance = desc,
-                })
+    local function scanContainer(container)
+        pcall(function()
+            for _, desc in pairs(container:GetDescendants()) do
+                if desc:IsA("RemoteEvent") then
+                    table.insert(remotes.events, { path = desc:GetFullName(), name = desc.Name, instance = desc })
+                elseif desc:IsA("RemoteFunction") then
+                    table.insert(remotes.functions, { path = desc:GetFullName(), name = desc.Name, instance = desc })
+                end
             end
-        end
-    end)
-
-    -- also scan Workspace
-    pcall(function()
-        for _, desc in pairs(Workspace:GetDescendants()) do
-            if desc:IsA("RemoteEvent") then
-                table.insert(remotes.events, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                    instance = desc,
-                })
-            elseif desc:IsA("RemoteFunction") then
-                table.insert(remotes.functions, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                    instance = desc,
-                })
-            end
-        end
-    end)
-
+        end)
+    end
+    scanContainer(ReplicatedStorage)
+    scanContainer(Workspace)
     return remotes
 end
 
@@ -446,57 +450,28 @@ end
 -- OBJECT SCANNER
 -- ============================================
 local function scanObjects()
-    local objects = {
-        proximityPrompts = {},
-        clickDetectors = {},
-        humanoids = {},
-        spawnLocations = {},
-        touchParts = {},
-        importantParts = {},
-    }
-
+    local objects = { proximityPrompts = {}, clickDetectors = {}, humanoids = {}, spawnLocations = {} }
     pcall(function()
         for _, desc in pairs(Workspace:GetDescendants()) do
             if desc:IsA("ProximityPrompt") then
-                table.insert(objects.proximityPrompts, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                    parent = desc.Parent and desc.Parent.Name or "",
-                    holdDuration = desc.HoldDuration,
-                })
+                table.insert(objects.proximityPrompts, { path = desc:GetFullName(), name = desc.Name, parent = desc.Parent and desc.Parent.Name or "", holdDuration = desc.HoldDuration })
             elseif desc:IsA("ClickDetector") then
-                table.insert(objects.clickDetectors, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                })
+                table.insert(objects.clickDetectors, { path = desc:GetFullName(), name = desc.Name })
             elseif desc:IsA("SpawnLocation") then
-                table.insert(objects.spawnLocations, {
-                    path = desc:GetFullName(),
-                    name = desc.Name,
-                    position = tostring(desc.Position),
-                })
+                table.insert(objects.spawnLocations, { path = desc:GetFullName(), name = desc.Name, position = tostring(desc.Position) })
             end
         end
     end)
-
-    -- find models with Humanoid (NPCs/Monsters)
     pcall(function()
         for _, desc in pairs(Workspace:GetDescendants()) do
             if desc:IsA("Model") then
                 local hum = desc:FindFirstChildOfClass("Humanoid")
                 if hum and not Players:GetPlayerFromCharacter(desc) then
-                    table.insert(objects.humanoids, {
-                        path = desc:GetFullName(),
-                        name = desc.Name,
-                        health = hum.Health,
-                        maxHealth = hum.MaxHealth,
-                        walkSpeed = hum.WalkSpeed,
-                    })
+                    table.insert(objects.humanoids, { path = desc:GetFullName(), name = desc.Name, health = hum.Health, maxHealth = hum.MaxHealth, walkSpeed = hum.WalkSpeed })
                 end
             end
         end
     end)
-
     return objects
 end
 
@@ -516,21 +491,11 @@ local function searchKeywords(keywords)
                     local lineNum = 1
                     local lineStart = 1
                     for i = 1, startPos - 1 do
-                        if r.source:sub(i, i) == "\n" then
-                            lineNum = lineNum + 1
-                            lineStart = i + 1
-                        end
+                        if r.source:sub(i, i) == "\n" then lineNum = lineNum + 1 lineStart = i + 1 end
                     end
-                    local lineEnd = r.source:find("\n", startPos, true)
-                    if not lineEnd then lineEnd = #r.source end
+                    local lineEnd = r.source:find("\n", startPos, true) or #r.source
                     local lineText = r.source:sub(lineStart, math.min(lineEnd, lineStart + 200))
-
-                    table.insert(kwResults.matches, {
-                        script = r.path,
-                        line = lineNum,
-                        text = lineText:gsub("^%s+", ""):sub(1, 150),
-                        category = r.category,
-                    })
+                    table.insert(kwResults.matches, { script = r.path, line = lineNum, text = lineText:gsub("^%s+", ""):sub(1, 150), category = r.category })
                     startPos = sourceLower:find(searchKw, startPos + 1, true)
                 end
             end
@@ -541,50 +506,29 @@ local function searchKeywords(keywords)
 end
 
 -- ============================================
--- EXECUTOR CAPABILITY CHECK
+-- EXECUTOR CHECK
 -- ============================================
 local function checkExecutor()
     local caps = {}
-    local execFuncs = {
-        { name = "firetouchinterest", desc = "Fire touch events" },
-        { name = "fireproximityprompt", desc = "Fire proximity prompts" },
-        { name = "getrawmetatable", desc = "Get raw metatable" },
-        { name = "setreadonly", desc = "Set table readonly" },
-        { name = "setclipboard", desc = "Copy to clipboard" },
-        { name = "writefile", desc = "Write files" },
-        { name = "readfile", desc = "Read files" },
-        { name = "appendfile", desc = "Append to files" },
-        { name = "makefolder", desc = "Create folders" },
-        { name = "decompile", desc = "Decompile scripts" },
-        { name = "getsrc", desc = "Get script source" },
-        { name = "getscriptbytecode", desc = "Get bytecode" },
-        { name = "gethui", desc = "Get CoreGui parent" },
-        { name = "getgenv", desc = "Global env" },
-        { name = "loadstring", desc = "Load string" },
-        { name = "request", desc = "HTTP request" },
-        { name = "http_request", desc = "HTTP request (alt)" },
-        { name = "syn", desc = "Synapse functions" },
-        { name = "setsimulationradius", desc = "Set simulation radius" },
+    local funcs = {
+        { "firetouchinterest", "Fire touch events" }, { "fireproximityprompt", "Fire proximity prompts" },
+        { "getrawmetatable", "Get raw metatable" }, { "setreadonly", "Set table readonly" },
+        { "setclipboard", "Copy to clipboard" }, { "writefile", "Write files" },
+        { "readfile", "Read files" }, { "appendfile", "Append to files" },
+        { "makefolder", "Create folders" }, { "decompile", "Decompile scripts" },
+        { "getsrc", "Get script source" }, { "getscriptbytecode", "Get bytecode" },
+        { "gethui", "Get CoreGui parent" }, { "getgenv", "Global env" },
+        { "loadstring", "Load string" }, { "request", "HTTP request" },
+        { "setsimulationradius", "Set sim radius" },
     }
-
-    for _, func in ipairs(execFuncs) do
+    for _, f in ipairs(funcs) do
         local available = false
         pcall(function()
-            if type(_G[func.name]) == "function" or type(getfenv()[func.name]) == "function" then
-                available = true
-            end
+            local env = getfenv()
+            if type(env[f[1]]) == "function" then available = true end
         end)
-        if not available then
-            pcall(function()
-                local env = getfenv()
-                if env and type(env[func.name]) == "function" then
-                    available = true
-                end
-            end)
-        end
-        table.insert(caps, { name = func.name, desc = func.desc, available = available })
+        table.insert(caps, { name = f[1], desc = f[2], available = available })
     end
-
     return caps
 end
 
@@ -593,33 +537,21 @@ end
 -- ============================================
 local function scanTeamsAndStats()
     local data = { teams = {}, leaderstats = {} }
-
     pcall(function()
         for _, team in pairs(Teams:GetChildren()) do
             if team:IsA("Team") then
-                table.insert(data.teams, {
-                    name = team.Name,
-                    color = tostring(team.TeamColor.Color),
-                    autoAssignable = team.AutoAssignable,
-                    players = #team:GetPlayers(),
-                })
+                table.insert(data.teams, { name = team.Name, color = tostring(team.TeamColor.Color), players = #team:GetPlayers(), autoAssignable = team.AutoAssignable })
             end
         end
     end)
-
     pcall(function()
-        local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-        if leaderstats then
-            for _, stat in pairs(leaderstats:GetChildren()) do
-                table.insert(data.leaderstats, {
-                    name = stat.Name,
-                    class = stat.ClassName,
-                    value = tostring(stat.Value),
-                })
+        local ls = LocalPlayer:FindFirstChild("leaderstats")
+        if ls then
+            for _, stat in pairs(ls:GetChildren()) do
+                table.insert(data.leaderstats, { name = stat.Name, class = stat.ClassName, value = tostring(stat.Value) })
             end
         end
     end)
-
     return data
 end
 
@@ -628,31 +560,20 @@ end
 -- ============================================
 local function scanGUIs()
     local guis = {}
-
-    local function scanGuiContainer(container, containerName)
+    local function scanContainer(container, containerName)
         pcall(function()
             for _, desc in pairs(container:GetDescendants()) do
                 if desc:IsA("ScreenGui") then
                     local childCount = 0
                     for _ in pairs(desc:GetDescendants()) do childCount = childCount + 1 end
-                    table.insert(guis, {
-                        path = desc:GetFullName(),
-                        name = desc.Name,
-                        container = containerName,
-                        enabled = desc.Enabled,
-                        childCount = childCount,
-                    })
+                    table.insert(guis, { path = desc:GetFullName(), name = desc.Name, container = containerName, enabled = desc.Enabled, childCount = childCount })
                 end
             end
         end)
     end
-
-    scanGuiContainer(StarterGui, "StarterGui")
+    scanContainer(StarterGui, "StarterGui")
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if pg then
-        scanGuiContainer(pg, "PlayerGui")
-    end
-
+    if pg then scanContainer(pg, "PlayerGui") end
     return guis
 end
 
@@ -661,45 +582,32 @@ end
 -- ============================================
 local function scanTouchEvents()
     local touches = {}
-    local keywords = { ".Touched", ":Connect", "Touched:Connect" }
-
     for _, r in ipairs(State.results) do
         if r.source and r.status == "OK" then
-            local sourceLower = r.source:lower()
-            if sourceLower:find("touched") then
-                -- find all lines with "Touched"
+            if r.source:lower():find("touched") then
                 local lines = r.source:split("\n")
                 for lineNum, line in ipairs(lines) do
                     if line:lower():find("touched") then
-                        table.insert(touches, {
-                            script = r.path,
-                            line = lineNum,
-                            text = line:gsub("^%s+", ""):sub(1, 150),
-                            category = r.category,
-                        })
+                        table.insert(touches, { script = r.path, line = lineNum, text = line:gsub("^%s+", ""):sub(1, 150), category = r.category })
                     end
                 end
             end
         end
     end
-
     return touches
 end
 
 -- ============================================
--- REMOTE ARGUMENT SNIFFER
+-- REMOTE SNIFFER
 -- ============================================
 local function startRemoteSniffer()
     local snifferData = {}
     local mt = getrawmetatable(game)
-    if not mt then return snifferData end
+    if not mt then return snifferData, nil end
 
     local oldNamecall
-    local oldIndex
-
     pcall(function()
         setreadonly(mt, false)
-
         oldNamecall = mt.__namecall
         mt.__namecall = newcclosure(function(self, ...)
             local method = getnamecallmethod()
@@ -708,34 +616,17 @@ local function startRemoteSniffer()
                 local argStr = ""
                 for i, arg in ipairs(args) do
                     if i > 1 then argStr = argStr .. ", " end
-                    if type(arg) == "string" then
-                        argStr = argStr .. '"' .. arg:sub(1, 50) .. '"'
-                    elseif type(arg) == "number" then
-                        argStr = argStr .. tostring(arg)
-                    elseif type(arg) == "boolean" then
-                        argStr = argStr .. tostring(arg)
-                    elseif typeof(arg) == "Instance" then
-                        argStr = argStr .. arg.ClassName
-                    else
-                        argStr = argStr .. type(arg)
-                    end
+                    if type(arg) == "string" then argStr = argStr .. '"' .. arg:sub(1, 50) .. '"'
+                    elseif type(arg) == "number" then argStr = argStr .. tostring(arg)
+                    elseif type(arg) == "boolean" then argStr = argStr .. tostring(arg)
+                    elseif typeof(arg) == "Instance" then argStr = argStr .. arg.ClassName
+                    else argStr = argStr .. type(arg) end
                 end
-
-                table.insert(snifferData, {
-                    remote = self:GetFullName(),
-                    remoteName = self.Name,
-                    method = method,
-                    args = argStr,
-                    time = os.date("%H:%M:%S"),
-                })
-
-                if #snifferData > 500 then
-                    table.remove(snifferData, 1)
-                end
+                table.insert(snifferData, { remote = self:GetFullName(), remoteName = self.Name, method = method, args = argStr, time = os.date("%H:%M:%S") })
+                if #snifferData > 500 then table.remove(snifferData, 1) end
             end
             return oldNamecall(self, ...)
         end)
-
         setreadonly(mt, true)
     end)
 
@@ -752,66 +643,9 @@ end
 -- JSON EXPORT
 -- ============================================
 local function exportJSON(data, filename)
-    if type(writefile) ~= "function" then return false end
+    if type(writefile) ~= "function" then return nil end
     local json = HttpService:JSONEncode(data)
     pcall(writefile, filename, json)
-    return filename
-end
-
--- ============================================
--- AUTO-SAVE DUMP
--- ============================================
-local function autoSaveDump()
-    if #State.results == 0 then return nil end
-    if type(writefile) ~= "function" then return nil end
-
-    local content = "============================================\n"
-    content = content .. "Universal Game Scanner v6 Dump\n"
-    content = content .. "Game: " .. GameName .. "\n"
-    content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
-    content = content .. "Job ID: " .. tostring(game.JobId) .. "\n"
-    content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-    content = content .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d | Client: %d | Server: %d | Module: %d\n",
-        State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed, State.stats.client, State.stats.server, State.stats.module)
-    content = content .. "============================================\n\n"
-
-    -- SCRIPT INDEX
-    content = content .. "SCRIPT INDEX:\n"
-    content = content .. string.rep("-", 120) .. "\n"
-    content = content .. string.format("%-5s | %-12s | %-15s | %-8s | %-12s | %-15s | %s\n", "#", "Container", "Class", "Status", "Category", "Type", "Path")
-    content = content .. string.rep("-", 120) .. "\n"
-    for i, r in ipairs(State.results) do
-        local scriptType = ""
-        if r.class == "LocalScript" then scriptType = "CLIENT"
-        elseif r.class == "Script" then scriptType = "SERVER"
-        elseif r.class == "ModuleScript" then scriptType = "MODULE"
-        end
-        content = content .. string.format("[%-4d] | %-20s | %-15s | %-8s | %-12s | %-15s | %s\n",
-            i, r.container, r.class, r.status, r.category or "Other", scriptType, r.path)
-    end
-    content = content .. "\n"
-
-    -- FULL SOURCE
-    for i, r in ipairs(State.results) do
-        content = content .. "\n============================================\n"
-        content = content .. string.format("SCRIPT [%d]\n", i)
-        content = content .. "Game: " .. GameName .. "\n"
-        content = content .. "Container: " .. r.container .. "\n"
-        content = content .. "Class: " .. r.class .. "\n"
-        content = content .. "Category: " .. (r.category or "Other") .. "\n"
-        content = content .. "Path: " .. r.path .. "\n"
-        content = content .. "Status: " .. r.status .. "\n"
-        content = content .. "============================================\n"
-        if r.source then
-            content = content .. r.source .. "\n"
-        else
-            content = content .. "-- [NO SOURCE AVAILABLE]\n"
-        end
-    end
-
-    local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
-    pcall(writefile, filename, content)
-    State.lastFilename = filename
     return filename
 end
 
@@ -821,28 +655,20 @@ end
 pcall(function()
     Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))()
 end)
-
 if not Rayfield then
     pcall(function()
         Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
     end)
 end
-
-if not Rayfield then
-    warn("[K]vk Scanner: Failed to load Rayfield.")
-    return
-end
+if not Rayfield then warn("[K]vk Scanner: Rayfield failed to load.") return end
 
 local Window = Rayfield:CreateWindow({
-    Name = "Universal Scanner v6 — " .. GameName,
+    Name = "Universal Scanner v6.1 — " .. GameName,
     LoadingTitle = "Scanning " .. GameName,
-    LoadingSubtitle = "v6 — Full Feature Edition",
+    LoadingSubtitle = "v6.1 — Auto-Save Fixed",
     ConfigurationSaving = { Enabled = false },
     Discord = { Enabled = false },
-    KeySettings = {
-        Key = Enum.KeyCode.RightControl,
-        OnPress = function() end,
-    }
+    KeySettings = { Key = Enum.KeyCode.RightControl, OnPress = function() end }
 })
 
 -- ============================================
@@ -850,779 +676,380 @@ local Window = Rayfield:CreateWindow({
 -- ============================================
 local TabScan = Window:CreateTab("Scanner")
 
-TabScan:CreateButton({
-    Name = "Scan Game",
-    Callback = function() performScan() end
-})
+TabScan:CreateButton({ Name = "Scan Game", Callback = function() performScan() end })
 
-TabScan:CreateSlider({
-    Name = "Max Scan Depth (0 = Unlimited)",
-    Range = {0, 10},
-    Increment = 1,
-    Suffix = "levels",
-    CurrentValue = 0,
-    Flag = "MaxDepth",
-    Callback = function(val) State.maxDepth = val end
-})
+TabScan:CreateSlider({ Name = "Max Scan Depth (0 = Unlimited)", Range = {0, 10}, Increment = 1, Suffix = "levels", CurrentValue = 0, Flag = "MaxDepth", Callback = function(val) State.maxDepth = val end })
 
-TabScan:CreateButton({
-    Name = "Clear Results",
-    Callback = function()
-        State.results = {}
-        State.filteredResults = {}
-        State.stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 }
-        State.lastFilename = ""
-        safeNotify("Scanner", "Results cleared.")
-    end
-})
+TabScan:CreateButton({ Name = "Clear Results", Callback = function()
+    State.results = {}
+    State.stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 }
+    State.lastFilename = ""
+    safeNotify("Scanner", "Results cleared.")
+end })
 
-TabScan:CreateButton({
-    Name = "Show Stats",
-    Callback = function()
-        safeNotify(GameName .. " — Stats",
-            string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\nClient: %d | Server: %d | Module: %d",
-                State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed,
-                State.stats.client, State.stats.server, State.stats.module))
-    end
-})
+TabScan:CreateButton({ Name = "Show Stats", Callback = function()
+    safeNotify(GameName, string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\nClient: %d | Server: %d | Module: %d",
+        State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed, State.stats.client, State.stats.server, State.stats.module))
+end })
 
-TabScan:CreateButton({
-    Name = "Show Category Breakdown",
-    Callback = function()
-        local cats = {}
-        for _, r in ipairs(State.results) do
-            local cat = r.category or "Other"
-            cats[cat] = (cats[cat] or 0) + 1
-        end
-        local text = ""
-        for cat, count in pairs(cats) do
-            text = text .. cat .. ": " .. count .. "\n"
-        end
-        if text == "" then text = "No results." end
-        print("=== Category Breakdown ===")
-        print(text)
-        safeNotify("Categories", text)
-    end
-})
+TabScan:CreateButton({ Name = "Show Category Breakdown", Callback = function()
+    local cats = {}
+    for _, r in ipairs(State.results) do cats[r.category or "Other"] = (cats[r.category or "Other"] or 0) + 1 end
+    local text = ""
+    for cat, count in pairs(cats) do text = text .. cat .. ": " .. count .. "\n" end
+    if text == "" then text = "No results." end
+    print("=== Category Breakdown ===\n" .. text)
+    safeNotify("Categories", text)
+end })
 
 -- ============================================
--- TAB: REMOTE SCANNER
+-- TAB: REMOTES
 -- ============================================
 local TabRemote = Window:CreateTab("Remotes")
 
-TabRemote:CreateButton({
-    Name = "Scan Remote Events & Functions",
-    Callback = function()
-        local remotes = scanRemotes()
-        print("=== REMOTE EVENT SCAN ===")
-        print(string.format("RemoteEvents: %d | RemoteFunctions: %d", #remotes.events, #remotes.functions))
-        for _, r in ipairs(remotes.events) do
-            print(string.format("  [Event] %s", r.path))
-        end
-        for _, r in ipairs(remotes.functions) do
-            print(string.format("  [Func] %s", r.path))
-        end
-        safeNotify("Remotes", string.format("Found %d Events + %d Functions. Check F9.", #remotes.events, #remotes.functions))
-    end
-})
+TabRemote:CreateButton({ Name = "Scan Remote Events & Functions", Callback = function()
+    local remotes = scanRemotes()
+    print("=== REMOTE SCAN ===\nRemoteEvents: " .. #remotes.events .. " | RemoteFunctions: " .. #remotes.functions)
+    for _, r in ipairs(remotes.events) do print("  [Event] " .. r.path) end
+    for _, r in ipairs(remotes.functions) do print("  [Func] " .. r.path) end
+    safeNotify("Remotes", string.format("%d Events + %d Functions. Check F9.", #remotes.events, #remotes.functions))
+end })
 
-TabRemote:CreateButton({
-    Name = "Copy All Remote Paths to Clipboard",
-    Callback = function()
-        local remotes = scanRemotes()
-        if type(setclipboard) ~= "function" then
-            safeNotify("Error", "setclipboard not available")
-            return
-        end
-        local text = "=== Remote Events ===\n"
-        for _, r in ipairs(remotes.events) do
-            text = text .. r.path .. "\n"
-        end
-        text = text .. "\n=== Remote Functions ===\n"
-        for _, r in ipairs(remotes.functions) do
-            text = text .. r.path .. "\n"
-        end
-        pcall(setclipboard, text)
-        safeNotify("Remotes", "All remote paths copied to clipboard!")
-    end
-})
+TabRemote:CreateButton({ Name = "Copy All Remote Paths", Callback = function()
+    if type(setclipboard) ~= "function" then safeNotify("Error", "setclipboard not available") return end
+    local remotes = scanRemotes()
+    local text = "=== Remote Events ===\n"
+    for _, r in ipairs(remotes.events) do text = text .. r.path .. "\n" end
+    text = text .. "\n=== Remote Functions ===\n"
+    for _, r in ipairs(remotes.functions) do text = text .. r.path .. "\n" end
+    pcall(setclipboard, text)
+    safeNotify("Remotes", "Copied to clipboard!")
+end })
 
-TabRemote:CreateButton({
-    Name = "Export Remote List to File",
-    Callback = function()
-        local remotes = scanRemotes()
-        if type(writefile) ~= "function" then
-            safeNotify("Error", "writefile not available")
-            return
-        end
-        local content = "Remote Events & Functions for " .. GameName .. "\n"
-        content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-        content = content .. string.rep("-", 80) .. "\n"
-        content = content .. "REMOTE EVENTS:\n"
-        for _, r in ipairs(remotes.events) do
-            content = content .. r.path .. "\n"
-        end
-        content = content .. "\nREMOTE FUNCTIONS:\n"
-        for _, r in ipairs(remotes.functions) do
-            content = content .. r.path .. "\n"
-        end
-        local filename = "remotes_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
-        pcall(writefile, filename, content)
-        safeNotify("Exported", "Saved to: " .. filename)
-    end
-})
+TabRemote:CreateButton({ Name = "Export Remote List to File", Callback = function()
+    if type(writefile) ~= "function" then safeNotify("Error", "writefile not available") return end
+    local remotes = scanRemotes()
+    local content = "Remotes for " .. GameName .. "\n" .. string.rep("-", 80) .. "\nEVENTS:\n"
+    for _, r in ipairs(remotes.events) do content = content .. r.path .. "\n" end
+    content = content .. "\nFUNCTIONS:\n"
+    for _, r in ipairs(remotes.functions) do content = content .. r.path .. "\n" end
+    local filename = "remotes_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+    pcall(writefile, filename, content)
+    safeNotify("Exported", "Saved to: " .. filename)
+end })
 
--- Remote Sniffer
-local snifferActive = false
 local snifferStop = nil
-
-TabRemote:CreateToggle({
-    Name = "Remote Argument Sniffer (Log FireServer Calls)",
-    CurrentValue = false,
-    Flag = "RemoteSniffer",
-    Callback = function(state)
-        if state then
-            snifferActive = true
-            State.remoteSniffData, snifferStop = startRemoteSniffer()
-            safeNotify("Sniffer", "Remote sniffer active. Fire any remote to log arguments.")
-            -- auto-print new entries
-            connections.snifferPrint = RunService.Heartbeat:Connect(function()
-                if not snifferActive then return end
-                -- check for new entries periodically
-            end)
-        else
-            snifferActive = false
-            if connections.snifferPrint then
-                connections.snifferPrint:Disconnect()
-                connections.snifferPrint = nil
-            end
-            if snifferStop then snifferStop() snifferStop = nil end
-            -- print all captured data
-            print("=== REMOTE SNIFFER DATA ===")
-            for _, entry in ipairs(State.remoteSniffData) do
-                print(string.format("[%s] %s (%s) args: %s", entry.time, entry.remoteName, entry.method, entry.args))
-            end
-            safeNotify("Sniffer", string.format("Sniffer stopped. %d calls logged. Check F9.", #State.remoteSniffData))
-        end
+TabRemote:CreateToggle({ Name = "Remote Argument Sniffer", CurrentValue = false, Flag = "Sniffer", Callback = function(state)
+    if state then
+        State.remoteSniffData, snifferStop = startRemoteSniffer()
+        safeNotify("Sniffer", "Active. Fire any remote to log.")
+    else
+        if snifferStop then snifferStop() snifferStop = nil end
+        print("=== SNIFFER DATA ===")
+        for _, e in ipairs(State.remoteSniffData) do print(string.format("[%s] %s (%s) args: %s", e.time, e.remoteName, e.method, e.args)) end
+        safeNotify("Sniffer", string.format("Stopped. %d calls logged. Check F9.", #State.remoteSniffData))
     end
-})
+end })
 
-TabRemote:CreateButton({
-    Name = "Print Sniffer Data to Console",
-    Callback = function()
-        print("=== REMOTE SNIFFER DATA ===")
-        for _, entry in ipairs(State.remoteSniffData) do
-            print(string.format("[%s] %s (%s) args: %s", entry.time, entry.remoteName, entry.method, entry.args))
-        end
-        safeNotify("Sniffer", string.format("%d entries printed to F9.", #State.remoteSniffData))
-    end
-})
-
-TabRemote:CreateButton({
-    Name = "Copy Sniffer Data to Clipboard",
-    Callback = function()
-        if type(setclipboard) ~= "function" then return end
-        local text = "=== REMOTE SNIFFER DATA ===\n"
-        for _, entry in ipairs(State.remoteSniffData) do
-            text = text .. string.format("[%s] %s (%s) args: %s\n", entry.time, entry.remoteName, entry.method, entry.args)
-        end
-        pcall(setclipboard, text)
-        safeNotify("Sniffer", "Data copied to clipboard.")
-    end
-})
+TabRemote:CreateButton({ Name = "Copy Sniffer Data", Callback = function()
+    if type(setclipboard) ~= "function" then return end
+    local text = "=== SNIFFER DATA ===\n"
+    for _, e in ipairs(State.remoteSniffData) do text = text .. string.format("[%s] %s (%s) args: %s\n", e.time, e.remoteName, e.method, e.args) end
+    pcall(setclipboard, text)
+    safeNotify("Sniffer", "Copied!")
+end })
 
 -- ============================================
--- TAB: OBJECT SCANNER
+-- TAB: OBJECTS
 -- ============================================
 local TabObjects = Window:CreateTab("Objects")
 
-TabObjects:CreateButton({
-    Name = "Scan Workspace Objects",
-    Callback = function()
-        local objects = scanObjects()
-        print("=== OBJECT SCAN ===")
-        print(string.format("ProximityPrompts: %d", #objects.proximityPrompts))
-        print(string.format("ClickDetectors: %d", #objects.clickDetectors))
-        print(string.format("NPCs/Models with Humanoid: %d", #objects.humanoids))
-        print(string.format("SpawnLocations: %d", #objects.spawnLocations))
-        print("\n--- ProximityPrompts ---")
-        for _, p in ipairs(objects.proximityPrompts) do
-            print(string.format("  [%s] %s (parent: %s, hold: %.1f)", p.name, p.path, p.parent, p.holdDuration))
-        end
-        print("\n--- ClickDetectors ---")
-        for _, c in ipairs(objects.clickDetectors) do
-            print(string.format("  %s", c.path))
-        end
-        print("\n--- NPCs/Humanoids ---")
-        for _, h in ipairs(objects.humanoids) do
-            print(string.format("  %s | HP: %.0f/%.0f | Speed: %.0f", h.path, h.health, h.maxHealth, h.walkSpeed))
-        end
-        print("\n--- SpawnLocations ---")
-        for _, s in ipairs(objects.spawnLocations) do
-            print(string.format("  %s at %s", s.path, s.position))
-        end
-        safeNotify("Objects", string.format("Prompts: %d | Clicks: %d | NPCs: %d | Spawns: %d",
-            #objects.proximityPrompts, #objects.clickDetectors, #objects.humanoids, #objects.spawnLocations))
-    end
-})
+TabObjects:CreateButton({ Name = "Scan Workspace Objects", Callback = function()
+    local obj = scanObjects()
+    print("=== OBJECT SCAN ===")
+    print(string.format("ProximityPrompts: %d | ClickDetectors: %d | NPCs: %d | Spawns: %d", #obj.proximityPrompts, #obj.clickDetectors, #obj.humanoids, #obj.spawnLocations))
+    for _, p in ipairs(obj.proximityPrompts) do print("  [Prompt] " .. p.path) end
+    for _, c in ipairs(obj.clickDetectors) do print("  [Click] " .. c.path) end
+    for _, h in ipairs(obj.humanoids) do print(string.format("  [NPC] %s | HP: %.0f/%.0f | Speed: %.0f", h.path, h.health, h.maxHealth, h.walkSpeed)) end
+    for _, s in ipairs(obj.spawnLocations) do print("  [Spawn] " .. s.path) end
+    safeNotify("Objects", string.format("Prompts: %d | Clicks: %d | NPCs: %d | Spawns: %d", #obj.proximityPrompts, #obj.clickDetectors, #obj.humanoids, #obj.spawnLocations))
+end })
 
-TabObjects:CreateButton({
-    Name = "Copy Object List to Clipboard",
-    Callback = function()
-        if type(setclipboard) ~= "function" then return end
-        local objects = scanObjects()
-        local text = "=== ProximityPrompts ===\n"
-        for _, p in ipairs(objects.proximityPrompts) do
-            text = text .. p.path .. "\n"
-        end
-        text = text .. "\n=== ClickDetectors ===\n"
-        for _, c in ipairs(objects.clickDetectors) do
-            text = text .. c.path .. "\n"
-        end
-        text = text .. "\n=== NPCs/Humanoids ===\n"
-        for _, h in ipairs(objects.humanoids) do
-            text = text .. string.format("%s | HP: %.0f/%.0f | Speed: %.0f\n", h.path, h.health, h.maxHealth, h.walkSpeed)
-        end
-        text = text .. "\n=== SpawnLocations ===\n"
-        for _, s in ipairs(objects.spawnLocations) do
-            text = text .. s.path .. "\n"
-        end
-        pcall(setclipboard, text)
-        safeNotify("Objects", "Object list copied to clipboard.")
-    end
-})
+TabObjects:CreateButton({ Name = "Copy Object List", Callback = function()
+    if type(setclipboard) ~= "function" then return end
+    local obj = scanObjects()
+    local text = "=== ProximityPrompts ===\n"
+    for _, p in ipairs(obj.proximityPrompts) do text = text .. p.path .. "\n" end
+    text = text .. "\n=== ClickDetectors ===\n"
+    for _, c in ipairs(obj.clickDetectors) do text = text .. c.path .. "\n" end
+    text = text .. "\n=== NPCs ===\n"
+    for _, h in ipairs(obj.humanoids) do text = text .. string.format("%s | HP: %.0f/%.0f | Speed: %.0f\n", h.path, h.health, h.maxHealth, h.walkSpeed) end
+    text = text .. "\n=== SpawnLocations ===\n"
+    for _, s in ipairs(obj.spawnLocations) do text = text .. s.path .. "\n" end
+    pcall(setclipboard, text)
+    safeNotify("Objects", "Copied!")
+end })
 
 -- ============================================
 -- TAB: KEYWORD SEARCH
 -- ============================================
 local TabSearch = Window:CreateTab("Keyword Search")
 
-local searchKeywordsInput = "FireServer, WalkSpeed, Gravity, Health, Currency, Rebirth, Spin, Buy, Reward, Touched"
+local searchInput = "FireServer, WalkSpeed, Gravity, Health, Currency, Rebirth, Spin, Buy, Reward, Touched"
 
-TabSearch:CreateInput({
-    Name = "Keywords (comma separated)",
-    PlaceholderText = "FireServer, WalkSpeed, Gravity...",
-    RemoveTextWhenFocusLost = false,
-    Callback = function(text)
-        searchKeywordsInput = text or ""
-    end
-})
+TabSearch:CreateInput({ Name = "Keywords (comma separated)", PlaceholderText = "FireServer, WalkSpeed...", RemoveTextWhenFocusLost = false, Callback = function(text) searchInput = text or "" end })
 
-TabSearch:CreateButton({
-    Name = "Search All Scripts for Keywords",
-    Callback = function()
-        if #State.results == 0 then
-            safeNotify("Error", "Run a scan first.")
-            return
-        end
-        local keywords = {}
-        for kw in searchKeywordsInput:gmatch("[^,]+") do
-            kw = kw:gsub("^%s+", ""):gsub("%s+$", "")
-            if #kw > 0 then
-                table.insert(keywords, kw)
-            end
-        end
-        local results = searchKeywords(keywords)
-        print("=== KEYWORD SEARCH ===")
-        local totalMatches = 0
-        for _, kwResult in ipairs(results) do
-            print(string.format("\n--- Keyword: '%s' (%d matches) ---", kwResult.keyword, #kwResult.matches))
-            for _, match in ipairs(kwResult.matches) do
-                print(string.format("  [%s:%d] %s", match.script, match.line, match.text))
-                totalMatches = totalMatches + 1
-            end
-        end
-        print(string.format("\nTotal matches: %d", totalMatches))
-        safeNotify("Search", string.format("%d total matches across %d keywords. Check F9.", totalMatches, #keywords))
+TabSearch:CreateButton({ Name = "Search All Scripts", Callback = function()
+    if #State.results == 0 then safeNotify("Error", "Run a scan first.") return end
+    local keywords = {}
+    for kw in searchInput:gmatch("[^,]+") do kw = kw:gsub("^%s+", ""):gsub("%s+$", "") if #kw > 0 then table.insert(keywords, kw) end end
+    local results = searchKeywords(keywords)
+    local total = 0
+    print("=== KEYWORD SEARCH ===")
+    for _, kr in ipairs(results) do
+        print(string.format("\n--- '%s' (%d matches) ---", kr.keyword, #kr.matches))
+        for _, m in ipairs(kr.matches) do print(string.format("  [%s:%d] %s", m.script, m.line, m.text)) total = total + 1 end
     end
-})
+    safeNotify("Search", string.format("%d matches across %d keywords. Check F9.", total, #keywords))
+end })
 
-TabSearch:CreateButton({
-    Name = "Copy Keyword Results to Clipboard",
-    Callback = function()
-        if #State.results == 0 then return end
-        if type(setclipboard) ~= "function" then return end
-        local keywords = {}
-        for kw in searchKeywordsInput:gmatch("[^,]+") do
-            kw = kw:gsub("^%s+", ""):gsub("%s+$", "")
-            if #kw > 0 then table.insert(keywords, kw) end
-        end
-        local results = searchKeywords(keywords)
-        local text = ""
-        for _, kwResult in ipairs(results) do
-            text = text .. string.format("--- Keyword: '%s' (%d matches) ---\n", kwResult.keyword, #kwResult.matches)
-            for _, match in ipairs(kwResult.matches) do
-                text = text .. string.format("[%s:%d] %s\n", match.script, match.line, match.text)
-            end
-            text = text .. "\n"
-        end
-        pcall(setclipboard, text)
-        safeNotify("Search", "Results copied to clipboard.")
-    end
-})
+TabSearch:CreateButton({ Name = "Quick Search: FireServer", Callback = function()
+    if #State.results == 0 then return end
+    local results = searchKeywords({"FireServer"})
+    print("=== FireServer REFERENCES ===")
+    for _, m in ipairs(results[1].matches) do print(string.format("  [%s:%d] %s", m.script, m.line, m.text)) end
+    safeNotify("Search", string.format("%d FireServer refs. Check F9.", #results[1].matches))
+end })
 
-TabSearch:CreateButton({
-    Name = "Quick Search: FireServer (All Remotes)",
-    Callback = function()
-        if #State.results == 0 then return end
-        local results = searchKeywords({"FireServer"})
-        print("=== FireServer REFERENCES ===")
-        for _, match in ipairs(results[1].matches) do
-            print(string.format("  [%s:%d] %s", match.script, match.line, match.text))
-        end
-        safeNotify("Search", string.format("Found %d FireServer references. Check F9.", #results[1].matches))
-    end
-})
+TabSearch:CreateButton({ Name = "Quick Search: Touched Events", Callback = function()
+    if #State.results == 0 then return end
+    local touches = scanTouchEvents()
+    print("=== TOUCH EVENTS ===")
+    for _, t in ipairs(touches) do print(string.format("  [%s:%d] %s", t.script, t.line, t.text)) end
+    safeNotify("Search", string.format("%d touch events. Check F9.", #touches))
+end })
 
-TabSearch:CreateButton({
-    Name = "Quick Search: Touched Events",
-    Callback = function()
-        if #State.results == 0 then return end
-        local touches = scanTouchEvents()
-        print("=== TOUCH EVENTS ===")
-        for _, t in ipairs(touches) do
-            print(string.format("  [%s:%d] %s", t.script, t.line, t.text))
-        end
-        safeNotify("Search", string.format("Found %d touch events. Check F9.", #touches))
+TabSearch:CreateButton({ Name = "Copy Search Results", Callback = function()
+    if #State.results == 0 or type(setclipboard) ~= "function" then return end
+    local keywords = {}
+    for kw in searchInput:gmatch("[^,]+") do kw = kw:gsub("^%s+", ""):gsub("%s+$", "") if #kw > 0 then table.insert(keywords, kw) end end
+    local results = searchKeywords(keywords)
+    local text = ""
+    for _, kr in ipairs(results) do
+        text = text .. string.format("--- '%s' (%d matches) ---\n", kr.keyword, #kr.matches)
+        for _, m in ipairs(kr.matches) do text = text .. string.format("[%s:%d] %s\n", m.script, m.line, m.text) end
+        text = text .. "\n"
     end
-})
+    pcall(setclipboard, text)
+    safeNotify("Search", "Copied!")
+end })
 
 -- ============================================
--- TAB: EXECUTOR INFO
+-- TAB: EXECUTOR
 -- ============================================
 local TabExec = Window:CreateTab("Executor")
 
-TabExec:CreateButton({
-    Name = "Check Executor Capabilities",
-    Callback = function()
-        local caps = checkExecutor()
-        print("=== EXECUTOR CAPABILITIES ===")
-        local available = 0
-        local unavailable = 0
-        for _, cap in ipairs(caps) do
-            local status = cap.available and "✓ AVAILABLE" or "✗ NOT AVAILABLE"
-            print(string.format("  %-25s %-20s %s", cap.name, cap.desc, status))
-            if cap.available then available = available + 1 else unavailable = unavailable + 1 end
-        end
-        print(string.format("\nAvailable: %d | Unavailable: %d", available, unavailable))
-        safeNotify("Executor", string.format("%d available / %d unavailable. Check F9 for details.", available, unavailable))
+TabExec:CreateButton({ Name = "Check Executor Capabilities", Callback = function()
+    local caps = checkExecutor()
+    local available = 0
+    print("=== EXECUTOR CAPABILITIES ===")
+    for _, c in ipairs(caps) do
+        local status = c.available and "YES" or "NO"
+        print(string.format("  %-25s %-25s %s", c.name, c.desc, status))
+        if c.available then available = available + 1 end
     end
-})
+    safeNotify("Executor", string.format("%d/%d available. Check F9.", available, #caps))
+end })
 
-TabExec:CreateButton({
-    Name = "Copy Capability List to Clipboard",
-    Callback = function()
-        if type(setclipboard) ~= "function" then return end
-        local caps = checkExecutor()
-        local text = "=== EXECUTOR CAPABILITIES ===\n"
-        for _, cap in ipairs(caps) do
-            local status = cap.available and "YES" or "NO"
-            text = text .. string.format("%-25s %-20s %s\n", cap.name, cap.desc, status)
-        end
-        pcall(setclipboard, text)
-        safeNotify("Executor", "Capability list copied.")
-    end
-})
+TabExec:CreateButton({ Name = "Copy Capability List", Callback = function()
+    if type(setclipboard) ~= "function" then return end
+    local caps = checkExecutor()
+    local text = "=== EXECUTOR CAPABILITIES ===\n"
+    for _, c in ipairs(caps) do text = text .. string.format("%-25s %-25s %s\n", c.name, c.desc, c.available and "YES" or "NO") end
+    pcall(setclipboard, text)
+    safeNotify("Executor", "Copied!")
+end })
 
 -- ============================================
 -- TAB: TEAMS & STATS
 -- ============================================
 local TabTeams = Window:CreateTab("Teams & Stats")
 
-TabTeams:CreateButton({
-    Name = "Scan Teams",
-    Callback = function()
-        local data = scanTeamsAndStats()
-        print("=== TEAMS ===")
-        for _, team in ipairs(data.teams) do
-            print(string.format("  %s | Color: %s | Players: %d | AutoAssign: %s",
-                team.name, team.color, team.players, tostring(team.autoAssignable)))
-        end
-        safeNotify("Teams", string.format("Found %d teams. Check F9.", #data.teams))
-    end
-})
+TabTeams:CreateButton({ Name = "Scan Teams", Callback = function()
+    local data = scanTeamsAndStats()
+    print("=== TEAMS ===")
+    for _, t in ipairs(data.teams) do print(string.format("  %s | Color: %s | Players: %d", t.name, t.color, t.players)) end
+    safeNotify("Teams", string.format("%d teams. Check F9.", #data.teams))
+end })
 
-TabTeams:CreateButton({
-    Name = "Scan Leaderstats",
-    Callback = function()
-        local data = scanTeamsAndStats()
-        print("=== LEADERSTATS ===")
-        if #data.leaderstats == 0 then
-            print("  No leaderstats found.")
-            safeNotify("Stats", "No leaderstats found.")
-            return
-        end
-        for _, stat in ipairs(data.leaderstats) do
-            print(string.format("  %s (%s) = %s", stat.name, stat.class, stat.value))
-        end
-        local text = ""
-        for _, stat in ipairs(data.leaderstats) do
-            text = text .. stat.name .. ": " .. stat.value .. "\n"
-        end
-        safeNotify("Stats", text)
-    end
-})
+TabTeams:CreateButton({ Name = "Scan Leaderstats", Callback = function()
+    local data = scanTeamsAndStats()
+    print("=== LEADERSTATS ===")
+    for _, s in ipairs(data.leaderstats) do print(string.format("  %s (%s) = %s", s.name, s.class, s.value)) end
+    safeNotify("Stats", string.format("%d stats. Check F9.", #data.leaderstats))
+end })
 
-TabTeams:CreateButton({
-    Name = "Copy Teams & Stats to Clipboard",
-    Callback = function()
-        if type(setclipboard) ~= "function" then return end
-        local data = scanTeamsAndStats()
-        local text = "=== TEAMS ===\n"
-        for _, team in ipairs(data.teams) do
-            text = text .. string.format("%s | %s | Players: %d\n", team.name, team.color, team.players)
-        end
-        text = text .. "\n=== LEADERSTATS ===\n"
-        for _, stat in ipairs(data.leaderstats) do
-            text = text .. string.format("%s (%s) = %s\n", stat.name, stat.class, stat.value)
-        end
-        pcall(setclipboard, text)
-        safeNotify("Teams", "Copied to clipboard.")
-    end
-})
+TabTeams:CreateButton({ Name = "Copy Teams & Stats", Callback = function()
+    if type(setclipboard) ~= "function" then return end
+    local data = scanTeamsAndStats()
+    local text = "=== TEAMS ===\n"
+    for _, t in ipairs(data.teams) do text = text .. string.format("%s | %s | Players: %d\n", t.name, t.color, t.players) end
+    text = text .. "\n=== LEADERSTATS ===\n"
+    for _, s in ipairs(data.leaderstats) do text = text .. string.format("%s (%s) = %s\n", s.name, s.class, s.value) end
+    pcall(setclipboard, text)
+    safeNotify("Teams", "Copied!")
+end })
 
 -- ============================================
 -- TAB: GUI SCANNER
 -- ============================================
 local TabGUI = Window:CreateTab("GUI Scanner")
 
-TabGUI:CreateButton({
-    Name = "Scan All ScreenGuis",
-    Callback = function()
-        local guis = scanGUIs()
-        print("=== GUI SCAN ===")
-        for _, g in ipairs(guis) do
-            print(string.format("  [%s] %s | Enabled: %s | Children: %d", g.container, g.path, tostring(g.enabled), g.childCount))
-        end
-        safeNotify("GUI", string.format("Found %d ScreenGuis. Check F9.", #guis))
-    end
-})
+TabGUI:CreateButton({ Name = "Scan All ScreenGuis", Callback = function()
+    local guis = scanGUIs()
+    print("=== GUI SCAN ===")
+    for _, g in ipairs(guis) do print(string.format("  [%s] %s | Enabled: %s | Children: %d", g.container, g.path, tostring(g.enabled), g.childCount)) end
+    safeNotify("GUI", string.format("%d ScreenGuis. Check F9.", #guis))
+end })
 
-TabGUI:CreateButton({
-    Name = "Copy GUI List to Clipboard",
-    Callback = function()
-        if type(setclipboard) ~= "function" then return end
-        local guis = scanGUIs()
-        local text = "=== SCREEN GUIS ===\n"
-        for _, g in ipairs(guis) do
-            text = text .. string.format("[%s] %s | Enabled: %s | Children: %d\n", g.container, g.path, tostring(g.enabled), g.childCount)
-        end
-        pcall(setclipboard, text)
-        safeNotify("GUI", "Copied to clipboard.")
-    end
-})
-
--- ============================================
--- TAB: EXPORT
--- ============================================
-local TabExport = Window:CreateTab("Export")
-
-TabExport:CreateButton({
-    Name = "Export Full Dump (.txt)",
-    Callback = function()
-        if #State.results == 0 then
-            safeNotify("Error", "Run a scan first.")
-            return
-        end
-        local file = autoSaveDump()
-        if file then
-            safeNotify("Exported", "Saved to: " .. file)
-        else
-            safeNotify("Error", "Export failed. writefile not available.")
-        end
-    end
-})
-
-TabExport:CreateButton({
-    Name = "Export as JSON",
-    Callback = function()
-        if #State.results == 0 then
-            safeNotify("Error", "Run a scan first.")
-            return
-        end
-        local exportData = {
-            game = GameName,
-            placeId = game.PlaceId,
-            jobId = game.JobId,
-            date = os.date("%Y-%m-%d %H:%M:%S"),
-            stats = State.stats,
-            scripts = {},
-        }
-        for i, r in ipairs(State.results) do
-            table.insert(exportData.scripts, {
-                index = i,
-                path = r.path,
-                class = r.class,
-                status = r.status,
-                category = r.category,
-                container = r.container,
-                hasSource = r.source ~= nil,
-            })
-        end
-        local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".json"
-        local result = exportJSON(exportData, filename)
-        if result then
-            safeNotify("Exported", "JSON saved to: " .. filename)
-        else
-            safeNotify("Error", "JSON export failed.")
-        end
-    end
-})
-
-TabExport:CreateButton({
-    Name = "Export Index Only",
-    Callback = function()
-        if #State.results == 0 then return end
-        if type(writefile) ~= "function" then return end
-        local content = "Script Index for " .. GameName .. "\n"
-        content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
-        content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-        content = content .. string.rep("-", 120) .. "\n"
-        content = content .. string.format("%-5s | %-12s | %-15s | %-8s | %-12s | %s\n", "#", "Container", "Class", "Status", "Category", "Path")
-        content = content .. string.rep("-", 120) .. "\n"
-        for i, r in ipairs(State.results) do
-            content = content .. string.format("[%-4d] | %-20s | %-15s | %-8s | %-12s | %s\n",
-                i, r.container, r.class, r.status, r.category or "Other", r.path)
-        end
-        local filename = "index_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
-        pcall(writefile, filename, content)
-        safeNotify("Exported", "Index saved to: " .. filename)
-    end
-})
-
-TabExport:CreateButton({
-    Name = "Copy All Source Code",
-    Callback = function()
-        if #State.results == 0 then return end
-        if type(setclipboard) ~= "function" then return end
-        local text = ""
-        for i, r in ipairs(State.results) do
-            if r.source and r.status == "OK" then
-                text = text .. "-- Game: " .. GameName .. "\n"
-                text = text .. "-- Container: " .. r.container .. "\n"
-                text = text .. "-- Class: " .. r.class .. "\n"
-                text = text .. "-- Category: " .. (r.category or "Other") .. "\n"
-                text = text .. "-- Path: " .. r.path .. "\n"
-                text = text .. "-- " .. string.rep("-", 60) .. "\n"
-                text = text .. r.source .. "\n\n"
-            end
-        end
-        pcall(setclipboard, text)
-        safeNotify("Exported", "All source code copied!")
-    end
-})
-
-TabExport:CreateButton({
-    Name = "Copy Stats to Clipboard",
-    Callback = function()
-        if #State.results == 0 then return end
-        if type(setclipboard) ~= "function" then return end
-        local text = "Game: " .. GameName .. " | Place: " .. tostring(game.PlaceId) .. "\n"
-        text = text .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\nClient: %d | Server: %d | Module: %d\n\n",
-            State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed,
-            State.stats.client, State.stats.server, State.stats.module)
-        -- category breakdown
-        local cats = {}
-        for _, r in ipairs(State.results) do
-            local cat = r.category or "Other"
-            cats[cat] = (cats[cat] or 0) + 1
-        end
-        text = text .. "Categories:\n"
-        for cat, count in pairs(cats) do
-            text = text .. "  " .. cat .. ": " .. count .. "\n"
-        end
-        pcall(setclipboard, text)
-        safeNotify("Exported", "Stats copied to clipboard!")
-    end
-})
-
-TabExport:CreateButton({
-    Name = "Show Last Saved File",
-    Callback = function()
-        if State.lastFilename == "" then
-            safeNotify("Error", "No file saved yet.")
-            return
-        end
-        safeNotify("Last File", "Filename: " .. State.lastFilename)
-    end
-})
+TabGUI:CreateButton({ Name = "Copy GUI List", Callback = function()
+    if type(setclipboard) ~= "function" then return end
+    local guis = scanGUIs()
+    local text = "=== SCREEN GUIS ===\n"
+    for _, g in ipairs(guis) do text = text .. string.format("[%s] %s | Enabled: %s | Children: %d\n", g.container, g.path, tostring(g.enabled), g.childCount) end
+    pcall(setclipboard, text)
+    safeNotify("GUI", "Copied!")
+end })
 
 -- ============================================
 -- TAB: SCRIPT VIEWER
 -- ============================================
 local TabViewer = Window:CreateTab("Script Viewer")
 
-TabViewer:CreateButton({
-    Name = "Refresh Script List",
-    Callback = function()
-        if #State.results == 0 then
-            safeNotify("Error", "Run a scan first.")
-            return
-        end
-        print("=== SCRIPT LIST ===")
-        for i, r in ipairs(State.results) do
-            local scriptType = ""
-            if r.class == "LocalScript" then scriptType = "[CLIENT]"
-            elseif r.class == "Script" then scriptType = "[SERVER]"
-            elseif r.class == "ModuleScript" then scriptType = "[MODULE]"
-            end
-            print(string.format("  [%d] %s %s (%s) [%s]", i, scriptType, r.path, r.status, r.category or "Other"))
-        end
-        safeNotify("Viewer", string.format("%d scripts listed. Check F9.", #State.results))
+TabViewer:CreateButton({ Name = "List All Scripts", Callback = function()
+    if #State.results == 0 then safeNotify("Error", "Run a scan first.") return end
+    print("=== SCRIPT LIST ===")
+    for i, r in ipairs(State.results) do
+        local t = r.class == "LocalScript" and "[CLIENT]" or r.class == "Script" and "[SERVER]" or "[MODULE]"
+        print(string.format("  [%d] %s %s (%s) [%s]", i, t, r.path, r.status, r.category or "Other"))
     end
-})
+    safeNotify("Viewer", string.format("%d scripts. Check F9.", #State.results))
+end })
 
-TabViewer:CreateInput({
-    Name = "Search Scripts by Name",
-    PlaceholderText = "Type script name...",
-    RemoveTextWhenFocusLost = false,
-    Callback = function(text)
-        if not text or #text < 2 then return end
-        local results = {}
-        for i, r in ipairs(State.results) do
-            if r.path:lower():find(text:lower(), 1, true) then
-                table.insert(results, { index = i, data = r })
-            end
-        end
-        print(string.format("=== SEARCH: '%s' (%d results) ===", text, #results))
-        for _, entry in ipairs(results) do
-            local r = entry.data
-            local scriptType = ""
-            if r.class == "LocalScript" then scriptType = "[CLIENT]"
-            elseif r.class == "Script" then scriptType = "[SERVER]"
-            elseif r.class == "ModuleScript" then scriptType = "[MODULE]"
-            end
-            print(string.format("  [%d] %s %s (%s) [%s]", entry.index, scriptType, r.path, r.status, r.category or "Other"))
-        end
-        safeNotify("Search", string.format("%d scripts matching '%s'. Check F9.", #results, text))
+TabViewer:CreateInput({ Name = "Search Scripts by Name", PlaceholderText = "Type name...", RemoveTextWhenFocusLost = false, Callback = function(text)
+    if not text or #text < 2 then return end
+    local results = {}
+    for i, r in ipairs(State.results) do
+        if r.path:lower():find(text:lower(), 1, true) then table.insert(results, { index = i, data = r }) end
     end
-})
+    print(string.format("=== SEARCH: '%s' (%d) ===", text, #results))
+    for _, e in ipairs(results) do
+        local t = e.data.class == "LocalScript" and "[CLIENT]" or e.data.class == "Script" and "[SERVER]" or "[MODULE]"
+        print(string.format("  [%d] %s %s (%s)", e.index, t, e.data.path, e.data.status))
+    end
+    safeNotify("Search", string.format("%d matches. Check F9.", #results))
+end })
 
-TabViewer:CreateButton({
-    Name = "Copy Selected Script Source",
-    Callback = function()
-        if not State.selectedScript then
-            safeNotify("Error", "Use the search above to find a script first.")
-            return
-        end
-        local r = State.results[State.selectedScript]
-        if r and r.source and type(setclipboard) == "function" then
-            pcall(setclipboard, r.source)
-            safeNotify("Viewer", "Source copied!")
-        else
-            safeNotify("Error", "No source available.")
-        end
-    end
-})
+TabViewer:CreateButton({ Name = "Copy Selected Script Source", Callback = function()
+    if not State.selectedScript then safeNotify("Error", "Search for a script first.") return end
+    local r = State.results[State.selectedScript]
+    if r and r.source and type(setclipboard) == "function" then pcall(setclipboard, r.source) safeNotify("Viewer", "Copied!") end
+end })
 
-TabViewer:CreateButton({
-    Name = "Save Selected Script to File",
-    Callback = function()
-        if not State.selectedScript then return end
-        if type(writefile) ~= "function" then return end
-        local r = State.results[State.selectedScript]
-        if r and r.source then
-            local safePath = r.path:gsub("[^%w%-_]", "_")
-            if #safePath > 80 then safePath = safePath:sub(-80) end
-            local filename = string.format("script_%03d_%s.lua", State.selectedScript, safePath)
-            local content = string.format(
-                "-- Game: %s\n-- Container: %s\n-- Class: %s\n-- Category: %s\n-- Path: %s\n-- Status: %s\n%s\n",
-                GameName, r.container, r.class, r.category or "Other", r.path, r.status, r.source
-            )
-            pcall(writefile, filename, content)
-            safeNotify("Saved", "Saved to: " .. filename)
-        end
+TabViewer:CreateButton({ Name = "Save Selected Script to File", Callback = function()
+    if not State.selectedScript then return end
+    if type(writefile) ~= "function" then return end
+    local r = State.results[State.selectedScript]
+    if r and r.source then
+        local sp = r.path:gsub("[^%w%-_]", "_") if #sp > 80 then sp = sp:sub(-80) end
+        local filename = string.format("script_%03d_%s.lua", State.selectedScript, sp)
+        pcall(writefile, filename, string.format("-- %s\n-- %s\n-- %s\n%s\n", GameName, r.path, r.status, r.source))
+        safeNotify("Saved", filename)
     end
-})
+end })
 
 -- ============================================
 -- TAB: DIFF MODE
 -- ============================================
 local TabDiff = Window:CreateTab("Diff Mode")
 
-TabDiff:CreateButton({
-    Name = "Save Current Scan as Baseline",
-    Callback = function()
-        if #State.results == 0 then
-            safeNotify("Error", "Run a scan first.")
-            return
-        end
-        State.lastScanResults = {}
-        for _, r in ipairs(State.results) do
-            table.insert(State.lastScanResults, {
-                path = r.path,
-                class = r.class,
-                status = r.status,
-                category = r.category,
-            })
-        end
-        safeNotify("Diff", string.format("Baseline saved: %d scripts.", #State.lastScanResults))
-    end
-})
+TabDiff:CreateButton({ Name = "Save Current Scan as Baseline", Callback = function()
+    if #State.results == 0 then safeNotify("Error", "Run a scan first.") return end
+    State.lastScanResults = {}
+    for _, r in ipairs(State.results) do table.insert(State.lastScanResults, { path = r.path, class = r.class, status = r.status, category = r.category }) end
+    safeNotify("Diff", string.format("Baseline saved: %d scripts.", #State.lastScanResults))
+end })
 
-TabDiff:CreateButton({
-    Name = "Compare Current Scan vs Baseline",
-    Callback = function()
-        if not State.lastScanResults or #State.lastScanResults == 0 then
-            safeNotify("Error", "No baseline saved. Run 'Save Baseline' first.")
-            return
-        end
-        if #State.results == 0 then
-            safeNotify("Error", "No current scan. Run a scan first.")
-            return
-        end
+TabDiff:CreateButton({ Name = "Compare vs Baseline", Callback = function()
+    if not State.lastScanResults or #State.lastScanResults == 0 then safeNotify("Error", "Save baseline first.") return end
+    if #State.results == 0 then safeNotify("Error", "Run a scan first.") return end
+    local base = {} for _, r in ipairs(State.lastScanResults) do base[r.path] = r end
+    local curr = {} for _, r in ipairs(State.results) do curr[r.path] = r end
+    local added, removed, changed = {}, {}, {}
+    for _, r in ipairs(State.results) do if not base[r.path] then table.insert(added, r.path) elseif base[r.path].status ~= r.status or base[r.path].category ~= r.category then table.insert(changed, { path = r.path, old = base[r.path].status, new = r.status }) end end
+    for _, r in ipairs(State.lastScanResults) do if not curr[r.path] then table.insert(removed, r.path) end end
+    print("=== DIFF REPORT ===")
+    print(string.format("Added: %d | Removed: %d | Changed: %d", #added, #removed, #changed))
+    for _, p in ipairs(added) do print("  + " .. p) end
+    for _, p in ipairs(removed) do print("  - " .. p) end
+    for _, c in ipairs(changed) do print(string.format("  * %s (%s->%s)", c.path, c.old, c.new)) end
+    safeNotify("Diff", string.format("Added: %d | Removed: %d | Changed: %d. Check F9.", #added, #removed, #changed))
+end })
 
-        local baselinePaths = {}
-        for _, r in ipairs(State.lastScanResults) do
-            baselinePaths[r.path] = r
-        end
-        local currentPaths = {}
-        for _, r in ipairs(State.results) do
-            currentPaths[r.path] = r
-        end
+-- ============================================
+-- TAB: EXPORT
+-- ============================================
+local TabExport = Window:CreateTab("Export")
 
-        local added = {}
-        local removed = {}
-        local changed = {}
+TabExport:CreateButton({ Name = "Re-export Full Dump (.txt)", Callback = function()
+    if #State.results == 0 then safeNotify("Error", "Run a scan first.") return end
+    local file = autoSaveDump()
+    if file then safeNotify("Exported", "Saved to: " .. file) else safeNotify("Error", "Export failed.") end
+end })
 
-        for _, r in ipairs(State.results) do
-            if not baselinePaths[r.path] then
-                table.insert(added, r.path)
-            elseif baselinePaths[r.path].status ~= r.status or baselinePaths[r.path].category ~= r.category then
-                table.insert(changed, {
-                    path = r.path,
-                    oldStatus = baselinePaths[r.path].status,
-                    newStatus = r.status,
-                    oldCategory = baselinePaths[r.path].category,
-                    newCategory = r.category,
-                })
-            end
-        end
-        for _, r in ipairs(State.lastScanResults) do
-            if not currentPaths[r.path] then
-                table.insert(removed, r.path)
-            end
-        end
+TabExport:CreateButton({ Name = "Export as JSON", Callback = function()
+    if #State.results == 0 then return end
+    local data = { game = GameName, placeId = game.PlaceId, date = os.date("%Y-%m-%d %H:%M:%S"), stats = State.stats, scripts = {} }
+    for i, r in ipairs(State.results) do table.insert(data.scripts, { index = i, path = r.path, class = r.class, status = r.status, category = r.category, container = r.container, hasSource = r.source ~= nil }) end
+    local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".json"
+    if exportJSON(data, filename) then safeNotify("Exported", "JSON: " .. filename) else safeNotify("Error", "JSON export failed.") end
+end })
 
-        print("=== DIFF REPORT ===")
-        print(string.format("Added: %d | Removed: %d | Changed: %d", #added, #removed, #changed))
-        print("\n--- ADDED ---")
-        for _, p in ipairs(added) do print("  + " .. p) end
-        print("\n--- REMOVED ---")
-        for _, p in ipairs(removed) do print("  - " .. p) end
-        print("\n--- CHANGED ---")
-        for _, c in ipairs(changed) do
-            print(string.format("  * %s (status: %s->%s, cat: %s->%s)", c.path, c.oldStatus, c.newStatus, c.oldCategory, c.newCategory))
-        end
+TabExport:CreateButton({ Name = "Export Index Only", Callback = function()
+    if #State.results == 0 then return end
+    if type(writefile) ~= "function" then return end
+    local content = "Index for " .. GameName .. "\n" .. string.rep("-", 120) .. "\n"
+    for i, r in ipairs(State.results) do content = content .. string.format("[%d] %s | %s | %s | %s\n", i, r.container, r.class, r.status, r.path) end
+    local filename = "index_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+    pcall(writefile, filename, content)
+    safeNotify("Exported", filename)
+end })
 
-        safeNotify("Diff", string.format("Added: %d | Removed: %d | Changed: %d. Check F9.", #added, #removed, #changed))
-    end
-})
+TabExport:CreateButton({ Name = "Copy All Source Code", Callback = function()
+    if #State.results == 0 or type(setclipboard) ~= "function" then return end
+    local text = ""
+    for _, r in ipairs(State.results) do if r.source and r.status == "OK" then text = text .. "-- " .. r.path .. "\n" .. r.source .. "\n\n" end end
+    pcall(setclipboard, text)
+    safeNotify("Exported", "All source copied!")
+end })
+
+TabExport:CreateButton({ Name = "Copy Stats", Callback = function()
+    if #State.results == 0 or type(setclipboard) ~= "function" then return end
+    local text = "Game: " .. GameName .. "\nTotal: " .. State.stats.total .. " | OK: " .. State.stats.success .. " | Failed: " .. State.stats.failed .. "\n"
+    local cats = {} for _, r in ipairs(State.results) do cats[r.category or "Other"] = (cats[r.category or "Other"] or 0) + 1 end
+    text = text .. "\nCategories:\n" for cat, count in pairs(cats) do text = text .. "  " .. cat .. ": " .. count .. "\n" end
+    pcall(setclipboard, text)
+    safeNotify("Exported", "Stats copied!")
+end })
+
+TabExport:CreateButton({ Name = "Show Last Saved File", Callback = function()
+    if State.lastFilename == "" then safeNotify("Error", "No file saved yet.") return end
+    safeNotify("Last File", State.lastFilename)
+end })
 
 -- ============================================
 -- INIT
 -- ============================================
 Rayfield:LoadConfiguration()
-print("[Universal Scanner v6] Loaded — Game: " .. GameName)
+print("[Universal Scanner v6.1] Loaded — Game: " .. GameName)
 print("Press Right Ctrl to toggle.")
-print("Features: Scanner, Remotes, Objects, Keywords, Executor, Teams, GUI, Viewer, Diff, Export")
