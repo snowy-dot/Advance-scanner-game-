@@ -1,6 +1,6 @@
 --!nocheck
 -- Universal Game Scanner v7.1 — [K]vk (Fixed)
--- Auto-scans everything + Deep Scan monitoring
+-- Based on proven v6.1 + Deep Scan + Auto-Run
 -- Keybind: Right Ctrl to toggle
 
 -- FORWARD DECLARE
@@ -22,33 +22,33 @@ local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 
 -- ============================================
--- STATE
+-- STATE (WITH COMMAS)
 -- ============================================
 local State = {
-    scanning = false
-    deepScanning = false
-    results = {}
-    stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 }
-    lastFilename = ""
-    maxDepth = 0
-    remotes = { events = {}, functions = {} }
-    objects = { prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}
-    teams = {}
-    leaderstats = {}
-    guis = {}
-    executorCaps = {}
-    keywordResults = {}
-    touchEvents = {}
+    scanning = false,
+    deepScanning = false,
+    results = {},
+    stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 },
+    lastFilename = "",
+    maxDepth = 0,
+    remotes = { events = {}, functions = {} },
+    objects = { prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {} },
+    teams = {},
+    leaderstats = {},
+    guis = {},
+    executorCaps = {},
+    keywordResults = {},
+    touchEvents = {},
     deepData = {
-        promptInteractions = {}
-        monsterSpawns = {}
-        monsterMoves = {}
-        workspaceAdds = {}
-        remoteCalls = {}
-        playerPositions = {}
-        startTime = 0
-    }
-    autoRunComplete = false
+        promptInteractions = {},
+        monsterSpawns = {},
+        monsterMoves = {},
+        workspaceAdds = {},
+        remoteCalls = {},
+        playerPositions = {},
+        startTime = 0,
+    },
+    autoRunComplete = false,
 }
 
 local connections = {}
@@ -209,13 +209,13 @@ end
 -- ============================================
 local function getContainers()
     local list = {
-        {Workspace, "Workspace"}
-        {ReplicatedStorage, "ReplicatedStorage"}
-        {ServerScriptService, "ServerScriptService"}
-        {StarterGui, "StarterGui"}
-        {StarterPlayer, "StarterPlayer"}
+        {Workspace, "Workspace"},
+        {ReplicatedStorage, "ReplicatedStorage"},
+        {ServerScriptService, "ServerScriptService"},
+        {StarterGui, "StarterGui"},
+        {StarterPlayer, "StarterPlayer"},
     }
-    pcall(function() table.insert(list, {game:GetService("CoreGui"), "CoreGui"}) end
+    pcall(function() table.insert(list, {game:GetService("CoreGui"), "CoreGui"}) end)
     pcall(function()
         if LocalPlayer:FindFirstChild("PlayerScripts") then
             table.insert(list, {LocalPlayer.PlayerScripts, "PlayerScripts"})
@@ -232,13 +232,13 @@ end
 -- AUTO-CATEGORY
 -- ============================================
 local categoryKeywords = {
-    Combat = {"combat", "punch", "attack", "damage", "weapon", "gun", "melee", "fight", "kill", "health"}
-    Movement = {"movement", "walkspeed", "fly", "noclip", "jump", "gravity", "velocity", "dash", "sprint", "shiftlock", "camera"}
-    UI = {"gui", "frame", "button", "ui", "hud", "menu", "interface", "screen", "panel"}
-    Economy = {"shop", "buy", "currency", "cash", "coin", "reward", "spin", "egg", "pet", "rebirth", "upgrade"}
-    NPC = {"npc", "monster", "enemy", "boss", "ai", "bot", "creature"}
-    Admin = {"cmdr", "command", "admin", "ban", "kick", "teleport", "warn"}
-    Remote = {"remote", "fire", "server", "replicate", "event"}
+    Combat = {"combat", "punch", "attack", "damage", "weapon", "gun", "melee", "fight", "kill", "health"},
+    Movement = {"movement", "walkspeed", "fly", "noclip", "jump", "gravity", "velocity", "dash", "sprint", "shiftlock", "camera"},
+    UI = {"gui", "frame", "button", "ui", "hud", "menu", "interface", "screen", "panel"},
+    Economy = {"shop", "buy", "currency", "cash", "coin", "reward", "spin", "egg", "pet", "rebirth", "upgrade"},
+    NPC = {"npc", "monster", "enemy", "boss", "ai", "bot", "creature"},
+    Admin = {"cmdr", "command", "admin", "ban", "kick", "teleport", "warn"},
+    Remote = {"remote", "fire", "server", "replicate", "event"},
 }
 
 local function categorizeScript(path, className)
@@ -283,11 +283,17 @@ local function autoScanRemotes()
                     table.insert(State.remotes.events, {
                         path = desc:GetFullName(),
                         name = desc.Name,
-                        parent = desc.Parent and desc.Parent.Name or ""
+                        parent = desc.Parent and desc.Parent.Name or "",
                     })
-        end
-    end
-    end)
+                elseif desc:IsA("RemoteFunction") then
+                    table.insert(State.remotes.functions, {
+                        path = desc:GetFullName(),
+                        name = desc.Name,
+                        parent = desc.Parent and desc.Parent.Name or "",
+                    })
+                end
+            end
+        end)
     end
     scanContainer(ReplicatedStorage)
     scanContainer(Workspace)
@@ -311,13 +317,13 @@ local function autoScanObjects()
                     holdDuration = desc.HoldDuration,
                     enabled = desc.Enabled,
                     actionText = desc.ActionText or "",
-                    objectText = desc.ObjectText or ""
+                    objectText = desc.ObjectText or "",
                 })
             elseif desc:IsA("ClickDetector") then
                 table.insert(State.objects.clickDetectors, {
                     path = desc:GetFullName(),
                     name = desc.Name,
-                    parent = desc.Parent and desc.Parent.Name or ""
+                    parent = desc.Parent and desc.Parent.Name or "",
                 })
             elseif desc:IsA("SpawnLocation") then
                 table.insert(State.objects.spawns, {
@@ -325,10 +331,10 @@ local function autoScanObjects()
                     name = desc.Name,
                     position = tostring(desc.Position),
                     duration = desc.Duration,
-                    neutral = desc.Neutral
+                    neutral = desc.Neutral,
                 })
+            end
         end
-    end
     end)
     -- NPCs/Monsters
     pcall(function()
@@ -349,10 +355,11 @@ local function autoScanObjects()
                         position = root and tostring(root.Position) or "unknown",
                         hasAnimator = desc:FindFirstChildOfClass("Animator") ~= nil,
                         childCount = #desc:GetChildren(),
-                        children = table.concat(childNames, ", ")
+                        children = table.concat(childNames, ", "),
                     })
+                end
+            end
         end
-    end
     end)
     print(string.format("[Auto] Objects: %d Prompts, %d Clicks, %d NPCs, %d Spawns",
         #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns))
@@ -375,10 +382,10 @@ local function autoScanTeamsStats()
                     color = tostring(team.TeamColor.Color),
                     players = #team:GetPlayers(),
                     autoAssignable = team.AutoAssignable,
-                    playerNames = table.concat(playerNames, ", ")
+                    playerNames = table.concat(playerNames, ", "),
                 })
+            end
         end
-    end
     end)
     pcall(function()
         local ls = LocalPlayer:FindFirstChild("leaderstats")
@@ -387,10 +394,10 @@ local function autoScanTeamsStats()
                 table.insert(State.leaderstats, {
                     name = stat.Name,
                     class = stat.ClassName,
-                    value = tostring(stat.Value)
+                    value = tostring(stat.Value),
                 })
+            end
         end
-    end
     end)
     print(string.format("[Auto] Teams: %d, Leaderstats: %d", #State.teams, #State.leaderstats))
     return { teams = State.teams, leaderstats = State.leaderstats }
@@ -412,11 +419,12 @@ local function autoScanGUIs()
                         name = desc.Name,
                         container = containerName,
                         enabled = desc.Enabled,
-                        childCount = childCount
+                        childCount = childCount,
+                    })
+                end
+            end
+        end)
     end
-    end)
-    end
-    end)
     scanContainer(StarterGui, "StarterGui")
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
     if pg then scanContainer(pg, "PlayerGui") end
@@ -438,7 +446,7 @@ local function autoCheckExecutor()
         {"getsrc", "Get script source"}, {"getscriptbytecode", "Get bytecode"},
         {"gethui", "Get CoreGui parent"}, {"getgenv", "Global env"},
         {"loadstring", "Load string"}, {"request", "HTTP request"},
-        {"setsimulationradius", "Set sim radius"}, {"newcclosure", "Anti-tamper closure"}
+        {"setsimulationradius", "Set sim radius"}, {"newcclosure", "Anti-tamper closure"},
     }
     local available = 0
     for _, f in ipairs(funcs) do
@@ -448,8 +456,8 @@ local function autoCheckExecutor()
             if type(env[f[1]]) == "function" then
                 avail = true
                 available = available + 1
-        end
-    end)
+            end
+        end)
         table.insert(State.executorCaps, { name = f[1], desc = f[2], available = avail })
     end
     print(string.format("[Auto] Executor: %d/%d functions available", available, #State.executorCaps))
@@ -466,7 +474,7 @@ local function autoKeywordSearch()
         "Currency", "Cash", "Coin", "Rebirth", "Spin", "Buy", "Sell", "Reward",
         "Touched", "ProximityPrompt", "ClickDetector", "Teleport", "CFrame",
         "Humanoid", "Monster", "NPC", "Boss", "RemoteEvent", "RemoteFunction",
-        "LocalScript", "Script", "ModuleScript", "Workspace", "ReplicatedStorage"
+        "LocalScript", "Script", "ModuleScript", "Workspace", "ReplicatedStorage",
     }
     State.keywordResults = {}
     local totalMatches = 0
@@ -486,16 +494,16 @@ local function autoKeywordSearch()
                             if r.source:sub(i, i) == "\n" then lineNum = lineNum + 1 end
                         end
                         table.insert(kwMatches.matches, { script = r.path, line = lineNum })
-        end
+                    end
                     startPos = sourceLower:find(searchKw, startPos + 1, true)
                 end
                 kwMatches.count = kwMatches.count + count
                 totalMatches = totalMatches + count
+            end
         end
-    end
         if kwMatches.count > 0 then
             table.insert(State.keywordResults, kwMatches)
-    end
+        end
     end
     print(string.format("[Auto] Keywords: %d matches across %d keywords", totalMatches, #State.keywordResults))
     return State.keywordResults
@@ -516,11 +524,12 @@ local function autoScanTouchEvents()
                             script = r.path,
                             line = lineNum,
                             text = line:gsub("^%s+", ""):sub(1, 150),
-                            category = r.category
-    end
-    end)
-    end
-    end
+                            category = r.category,
+                        })
+                    end
+                end
+            end
+        end
     end
     print(string.format("[Auto] Touch Events: %d found", #State.touchEvents))
     return State.touchEvents
@@ -540,7 +549,7 @@ local function startDeepScan(duration)
         workspaceAdds = {},
         remoteCalls = {},
         playerPositions = {},
-        startTime = tick()
+        startTime = tick(),
     }
     safeNotify("Deep Scan", string.format("Starting %d-second deep monitoring...", duration))
     print("[Deep Scan] Monitoring game for " .. duration .. " seconds...")
@@ -555,11 +564,13 @@ local function startDeepScan(duration)
                             time = os.date("%H:%M:%S"),
                             prompt = desc.Name,
                             path = desc:GetFullName(),
-                            player = player.Name
-    end
-    end)
-    end
-    end)
+                            player = player.Name,
+                        })
+                        print("[Deep] Prompt triggered: " .. desc.Name)
+                    end
+                end)
+            end
+        end
     end)
 
     -- Workspace additions
@@ -577,16 +588,17 @@ local function startDeepScan(duration)
                 maxHealth = hum and hum.MaxHealth or 0,
                 walkSpeed = hum and hum.WalkSpeed or 0,
                 position = root and tostring(root.Position) or "unknown",
-                children = table.concat(childNames, ", ")
-    end)
+                children = table.concat(childNames, ", "),
+            })
+            print("[Deep] Monster/NPC spawned: " .. desc.Name)
         else
             table.insert(State.deepData.workspaceAdds, {
                 time = os.date("%H:%M:%S"),
                 name = desc.Name,
                 class = desc.ClassName,
-                path = desc:GetFullName()
-    end)
-    end
+                path = desc:GetFullName(),
+            })
+        end
     end)
 
     -- Monster movement
@@ -607,10 +619,12 @@ local function startDeepScan(duration)
                         position = tostring(root.Position),
                         velocity = tostring(root.AssemblyLinearVelocity),
                         walkSpeed = hum and hum.WalkSpeed or 0,
-                        health = hum and hum.Health or 0
-    end
-    end
-    end)
+                        health = hum and hum.Health or 0,
+                    })
+                    if #State.deepData.monsterMoves > 500 then table.remove(State.deepData.monsterMoves, 1) end
+                end
+            end
+        end
     end)
 
     -- Player positions
@@ -625,14 +639,18 @@ local function startDeepScan(duration)
                 if root then
                     if not State.deepData.playerPositions[player.Name] then
                         State.deepData.playerPositions[player.Name] = {}
-        end
+                    end
                     table.insert(State.deepData.playerPositions[player.Name], {
                         time = os.date("%H:%M:%S"),
                         position = tostring(root.Position),
-                        velocity = tostring(root.AssemblyLinearVelocity.Magnitude)
-    end)
-    end
-    end
+                        velocity = tostring(root.AssemblyLinearVelocity.Magnitude),
+                    })
+                    if #State.deepData.playerPositions[player.Name] > 50 then
+                        table.remove(State.deepData.playerPositions[player.Name], 1)
+                    end
+                end
+            end
+        end
     end)
 
     -- Remote sniffer
@@ -654,20 +672,20 @@ local function startDeepScan(duration)
                         elseif type(arg) == "boolean" then argStr = argStr .. tostring(arg)
                         elseif typeof(arg) == "Instance" then argStr = argStr .. arg.ClassName
                         else argStr = argStr .. type(arg) end
-        end
+                    end
                     table.insert(State.deepData.remoteCalls, {
                         time = os.date("%H:%M:%S"),
                         remote = self:GetFullName(),
                         remoteName = self.Name,
                         method = method,
-                        args = argStr
-    end)
+                        args = argStr,
+                    })
                     if #State.deepData.remoteCalls > 1000 then table.remove(State.deepData.remoteCalls, 1) end
-        end
+                end
                 return oldNamecall(self, ...)
-    end)
+            end)
             setreadonly(mt, true)
-    end
+        end
     end)
 
     -- Auto-stop
@@ -677,7 +695,6 @@ local function startDeepScan(duration)
         if connections.deepWorkspace then connections.deepWorkspace:Disconnect() connections.deepWorkspace = nil end
         if connections.deepMonsterMove then connections.deepMonsterMove:Disconnect() connections.deepMonsterMove = nil end
         if connections.deepPlayerPos then connections.deepPlayerPos:Disconnect() connections.deepPlayerPos = nil end
-
         if type(writefile) == "function" then
             local filename = "deepscan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
             local content = "============================================\n"
@@ -710,13 +727,13 @@ local function startDeepScan(duration)
                 content = content .. string.format("  %s (%d samples):\n", playerName, #positions)
                 for _, p in ipairs(positions) do
                     content = content .. string.format("    [%s] %s (vel: %s)\n", p.time, p.position, p.velocity)
-    end
-    end
+            end
+        end
             pcall(writefile, filename, content)
             print("[Deep Scan] Saved to " .. filename)
             safeNotify("Deep Scan Complete", string.format("Saved: %s\nPrompts: %d | Spawns: %d | Remotes: %d",
                 filename, #State.deepData.promptInteractions, #State.deepData.monsterSpawns, #State.deepData.remoteCalls))
-    else
+        else
             safeNotify("Deep Scan Complete", "Data in memory. Use Print button.")
     end
     end)
@@ -752,6 +769,7 @@ local function autoRunAllScans()
     autoScanTouchEvents()
     updateProgress(7, 7, "Auto-Scan", "Complete!")
     task.wait(0.3)
+
     State.autoRunComplete = true
     safeNotify("Auto-Scan Complete", string.format("Remotes: %d | Objects: %d | Teams: %d | GUIs: %d | Keywords: %d",
         #State.remotes.events + #State.remotes.functions,
@@ -763,45 +781,55 @@ local function autoRunAllScans()
 end
 
 -- ============================================
--- MAIN SCRIPT SCAN
+-- AUTO-SAVE DUMP
 -- ============================================
 local function autoSaveDump()
     if #State.results == 0 then return nil end
     if type(writefile) ~= "function" then return nil end
+
     local filename = "scan_" .. safeName .. "_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
     local content = "============================================\n"
     content = content .. "Universal Game Scanner v7.1 Dump\n"
     content = content .. "Game: " .. GameName .. "\n"
     content = content .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
     content = content .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-    content = content .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\n\n", State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
+    content = content .. string.format("Total: %d | OK: %d | Bytecode: %d | Failed: %d\n", State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
+    content = content .. "============================================\n\n"
     content = content .. "SCRIPT INDEX:\n"
     content = content .. string.rep("-", 100) .. "\n"
     for i, r in ipairs(State.results) do
-        local t = r.class == "LocalScript" and "CLIENT" or r.class == "Script" and "SERVER" or r.class == "ModuleScript" and "MODULE" or ""
+        local t = ""
+        if r.class == "LocalScript" then t = "CLIENT"
+        elseif r.class == "Script" then t = "SERVER"
+        elseif r.class == "ModuleScript" then t = "MODULE" end
         content = content .. string.format("[%d] %s | %s | %s | %s | %s | %s\n", i, r.container, r.class, r.status, r.category or "Other", t, r.path)
     end
     content = content .. "\n"
     for i, r in ipairs(State.results) do
         content = content .. string.format("\n=== SCRIPT [%d] ===\nPath: %s\nClass: %s\nStatus: %s\n============================================\n", i, r.path, r.class, r.status)
         if r.source then content = content .. r.source .. "\n"
-        else content = content .. "-- [NO SOURCE]\n"
+        else content = content .. "-- [NO SOURCE]\n" end
     end
-    end
+
     pcall(writefile, filename, content)
     State.lastFilename = filename
     print("[Scan] Saved to " .. filename)
     return filename
 end
 
+-- ============================================
+-- MAIN SCRIPT SCAN
+-- ============================================
 local function performScan()
     if State.scanning then return end
     State.scanning = true
     State.results = {}
     State.stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 }
+
     if not ProgressGui or not ProgressGui.Parent then buildProgressGUI() end
     ProgressGui.Enabled = true
     updateProgress(0, 1, "Counting", "scripts...")
+
     local containers = getContainers()
     local totalScripts = 0
     for _, cd in ipairs(containers) do
@@ -811,12 +839,13 @@ local function performScan()
             for _, child in pairs(d) do
                 if child:IsA("Script") or child:IsA("LocalScript") or child:IsA("ModuleScript") then
                     totalScripts = totalScripts + 1
-    end
-    end)
+                end
+            end
             RunService.RenderStepped:Wait()
-    end
+        end
     end
     State.stats.total = totalScripts
+
     local current = 0
     for _, cd in ipairs(containers) do
         local container = cd[1]
@@ -839,38 +868,52 @@ local function performScan()
                     local category = categorizeScript(path, className)
                     table.insert(State.results, {
                         path = path, class = className, status = status,
-                        source = src, container = name, category = category, instance = child
-    end)
+                        source = src, container = name, category = category, instance = child,
+                    })
                     if current % 10 == 0 then task.wait(0.01) end
+                end
+            end
+        end
     end
-    end
-    end
+
+    -- Auto-save
     updateProgress(totalScripts, totalScripts, "Saving", "to workspace...")
     task.wait(0.3)
     local savedFile = autoSaveDump()
     ProgressGui.Enabled = false
     State.scanning = false
-    -- AUTO-RUN ALL SUB-SCANS
+
+    -- Auto-run all sub-scans
     autoRunAllScans()
+
     if savedFile then
-        safeNotify("Scan Complete & Auto-Analyzed", string.format("%d scripts | OK: %d | Failed: %d\nAuto-ran: Remotes, Objects, Teams, GUI, Executor, Keywords\nSaved: %s", State.stats.total, State.stats.success, State.stats.failed, savedFile))
+        safeNotify("Scan Complete & Auto-Analyzed",
+            string.format("%d scripts | OK: %d | Failed: %d\nAuto-ran: Remotes, Objects, Teams, GUI, Executor, Keywords\nSaved: %s",
+            State.stats.total, State.stats.success, State.stats.failed, savedFile))
     else
-        safeNotify("Scan Complete (No Save)", string.format("%d scripts | OK: %d | Failed: %d\nwritefile not available", State.stats.total, State.stats.success, State.stats.failed))
+        safeNotify("Scan Complete (No Save)",
+            string.format("%d scripts | OK: %d | Failed: %d\nwritefile not available",
+            State.stats.total, State.stats.success, State.stats.failed))
     end
 end
 
 -- ============================================
 -- RAYFIELD
 -- ============================================
+local rayfieldOk = false
 pcall(function()
     Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/SiriusSoftwareLtd/Rayfield/main/source.lua'))()
+    rayfieldOk = true
 end)
-if not Rayfield then
+if not rayfieldOk or not Rayfield then
     pcall(function()
         Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
     end)
 end
-if not Rayfield then warn("[K]vk: Rayfield failed.") return end
+if not Rayfield then
+    warn("[K]vk: Rayfield failed to load.")
+    return
+end
 
 local Window = Rayfield:CreateWindow({
     Name = "Universal Scanner v7.1 — " .. GameName,
@@ -887,11 +930,8 @@ local Window = Rayfield:CreateWindow({
 local TabScan = Window:CreateTab("Scanner")
 
 TabScan:CreateButton({ Name = "Scan Game + Auto-Analyze", Callback = function() performScan() end })
-
 TabScan:CreateSlider({ Name = "Max Scan Depth (0 = Unlimited)", Range = {0, 10}, Increment = 1, Suffix = "levels", CurrentValue = 0, Flag = "MaxDepth", Callback = function(val) State.maxDepth = val end })
-
 TabScan:CreateButton({ Name = "Re-run All Sub-Scans", Callback = function() autoRunAllScans() end })
-
 TabScan:CreateButton({ Name = "Clear All Results", Callback = function()
     State.results = {}
     State.stats = { total = 0, success = 0, failed = 0, bytecode = 0, client = 0, server = 0, module = 0 }
@@ -906,7 +946,6 @@ TabScan:CreateButton({ Name = "Clear All Results", Callback = function()
     State.lastFilename = ""
     safeNotify("Scanner", "All results cleared.")
 end })
-
 TabScan:CreateButton({ Name = "Show Full Stats", Callback = function()
     local text = string.format("Scripts: %d | OK: %d | Failed: %d\nClient: %d | Server: %d | Module: %d\n\nRemotes: %d Events, %d Functions\nObjects: %d Prompts, %d Clicks, %d NPCs, %d Spawns\nTeams: %d | Leaderstats: %d | GUIs: %d\nKeywords: %d | Touch Events: %d",
         State.stats.total, State.stats.success, State.stats.failed,
@@ -925,9 +964,7 @@ end })
 local TabDeep = Window:CreateTab("Deep Scan")
 
 TabDeep:CreateButton({ Name = "Start 5-Minute Deep Scan", Callback = function() startDeepScan(300) end })
-
 TabDeep:CreateButton({ Name = "Start 1-Minute Quick Deep Scan", Callback = function() startDeepScan(60) end })
-
 TabDeep:CreateButton({ Name = "Stop Deep Scan Early", Callback = function()
     State.deepScanning = false
     if connections.deepWorkspace then connections.deepWorkspace:Disconnect() connections.deepWorkspace = nil end
@@ -935,53 +972,33 @@ TabDeep:CreateButton({ Name = "Stop Deep Scan Early", Callback = function()
     if connections.deepPlayerPos then connections.deepPlayerPos:Disconnect() connections.deepPlayerPos = nil end
     safeNotify("Deep Scan", "Stopped early.")
 end })
-
 TabDeep:CreateButton({ Name = "Print Deep Scan Data", Callback = function()
     print("=== DEEP SCAN DATA ===")
     print(string.format("Prompt Interactions: %d", #State.deepData.promptInteractions))
-    for _, p in ipairs(State.deepData.promptInteractions) do
-        print(string.format("  [%s] %s at %s", p.time, p.prompt, p.path))
-    end
+    for _, p in ipairs(State.deepData.promptInteractions) do print(string.format("  [%s] %s at %s", p.time, p.prompt, p.path)) end
     print(string.format("\nMonster Spawns: %d", #State.deepData.monsterSpawns))
-    for _, m in ipairs(State.deepData.monsterSpawns) do
-        print(string.format("  [%s] %s | HP: %d/%d | Speed: %d | Children: %s", m.time, m.name, m.health, m.maxHealth, m.walkSpeed, m.children))
-    end
+    for _, m in ipairs(State.deepData.monsterSpawns) do print(string.format("  [%s] %s | HP: %d/%d | Speed: %d | Children: %s", m.time, m.name, m.health, m.maxHealth, m.walkSpeed, m.children)) end
     print(string.format("\nRemote Calls: %d", #State.deepData.remoteCalls))
-    for _, r in ipairs(State.deepData.remoteCalls) do
-        print(string.format("  [%s] %s (%s) args: %s", r.time, r.remoteName, r.method, r.args))
-    end
+    for _, r in ipairs(State.deepData.remoteCalls) do print(string.format("  [%s] %s (%s) args: %s", r.time, r.remoteName, r.method, r.args)) end
     print(string.format("\nMonster Movement: %d", #State.deepData.monsterMoves))
-    for _, m in ipairs(State.deepData.monsterMoves) do
-        print(string.format("  [%s] %s | Pos: %s | Speed: %d", m.time, m.name, m.position, m.walkSpeed))
-    end
+    for _, m in ipairs(State.deepData.monsterMoves) do print(string.format("  [%s] %s | Pos: %s | Speed: %d", m.time, m.name, m.position, m.walkSpeed)) end
     print(string.format("\nWorkspace Additions: %d", #State.deepData.workspaceAdds))
-    for _, w in ipairs(State.deepData.workspaceAdds) do
-        print(string.format("  [%s] %s (%s) at %s", w.time, w.name, w.class, w.path))
-    end
+    for _, w in ipairs(State.deepData.workspaceAdds) do print(string.format("  [%s] %s (%s) at %s", w.time, w.name, w.class, w.path)) end
     safeNotify("Deep Scan", "Data printed to F9.")
 end })
-
 TabDeep:CreateButton({ Name = "Copy Deep Scan Data", Callback = function()
     if type(setclipboard) ~= "function" then return end
     local text = "=== DEEP SCAN DATA ===\n"
-    text = text .. string.format("Prompt Interactions: %d\n", #State.deepData.promptInteractions)
-    for _, p in ipairs(State.deepData.promptInteractions) do
-        text = text .. string.format("  [%s] %s at %s\n", p.time, p.prompt, p.path)
-    end
-    text = text .. string.format("\nMonster Spawns: %d\n", #State.deepData.monsterSpawns)
-    for _, m in ipairs(State.deepData.monsterSpawns) do
-        text = text .. string.format("  [%s] %s | HP: %d/%d | Speed: %d | Children: %s\n", m.time, m.name, m.health, m.maxHealth, m.walkSpeed, m.children))
-    end
+    text = text .. string.format("Prompt Interactions: %d\n", #State.deepData.promptInteractions))
+    for _, p in ipairs(State.deepData.promptInteractions)) do text = text .. string.format("  [%s] %s at %s\n", p.time, p.prompt, p.path)) end
+    text = text .. string.format("\nMonster Spawns: %d\n", #State.deepData.monsterSpawns))
+    for _, m in ipairs(State.deepData.monsterSpawns)) do text = text .. string.format("  [%s] %s | HP: %d/%d | Speed: %d | Children: %s\n", m.time, m.name, m.health, m.maxHealth, m.walkSpeed, m.children)) end
     text = text .. string.format("\nRemote Calls: %d\n", #State.deepData.remoteCalls))
-    for _, r in ipairs(State.deepData.remoteCalls) do
-        text = text .. string.format("  [%s] %s (%s) args: %s\n", r.time, r.remoteName, r.method, r.args))
-    end
+    for _, r in ipairs(State.deepData.remoteCalls)) do text = text .. string.format("  [%s] %s (%s) args: %s\n", r.time, r.remoteName, r.method, r.args)) end
     pcall(setclipboard, text)
     safeNotify("Deep Scan", "Copied!")
 end })
-
 TabDeep:CreateSlider({ Name = "Custom Duration (seconds)", Range = {30, 600}, Increment = 30, Suffix = "sec", CurrentValue = 300, Flag = "DeepScanDur", Callback = function(val) State.deepScanDuration = val end })
-
 TabDeep:CreateButton({ Name = "Start Custom Duration Deep Scan", Callback = function()
     local dur = Rayfield.Flags.DeepScanDur and Rayfield.Flags.DeepScanDur.Value or 300
     startDeepScan(dur)
@@ -994,63 +1011,51 @@ local TabResults = Window:CreateTab("Auto Results")
 
 TabResults:CreateButton({ Name = "Print All Remotes", Callback = function()
     print("=== REMOTE EVENTS (" .. #State.remotes.events .. ") ===")
-    for _, r in ipairs(State.remotes.events) do print("  [Event] " .. r.path) end
+    for _, r in ipairs(State.remotes.events)) do print("  [Event] " .. r.path) end
     print("\n=== REMOTE FUNCTIONS (" .. #State.remotes.functions .. ") ===")
-    for _, r in ipairs(State.remotes.functions) do print("  [Func] " .. r.path) end
+    for _, r in ipairs(State.remotes.functions)) do print("  [Func] " .. r.path) end
     safeNotify("Remotes", string.format("%d Events, %d Functions. Check F9.", #State.remotes.events, #State.remotes.functions))
 end })
-
 TabResults:CreateButton({ Name = "Print All Objects", Callback = function()
     print("=== OBJECTS ===")
     print(string.format("ProximityPrompts: %d", #State.objects.prompts))
-    for _, p in ipairs(State.objects.prompts) do print(string.format("  [%s] %s (hold: %.1f)", p.name, p.path, p.holdDuration)) end
+    for _, p in ipairs(State.objects.prompts)) do print(string.format("  [%s] %s (hold: %.1f)", p.name, p.path, p.holdDuration)) end
     print(string.format("\nClickDetectors: %d", #State.objects.clickDetectors))
-    for _, c in ipairs(State.objects.clickDetectors) do print("  " .. c.path) end
+    for _, c in ipairs(State.objects.clickDetectors)) do print("  " .. c.path) end
     print(string.format("\nNPCs/Monsters: %d", #State.objects.humanoids))
-    for _, h in ipairs(State.objects.humanoids) do print(string.format("  %s | HP: %.0f/%.0f | Speed: %.0f | Children: %s", h.path, h.health, h.maxHealth, h.walkSpeed, h.children)) end
+    for _, h in ipairs(State.objects.humanoids)) do print(string.format("  %s | HP: %.0f/%.0f | Speed: %.0f | Children: %s", h.path, h.health, h.maxHealth, h.walkSpeed, h.children)) end
     print(string.format("\nSpawnLocations: %d", #State.objects.spawns))
-    for _, s in ipairs(State.objects.spawns) do print("  " .. s.path) end
+    for _, s in ipairs(State.objects.spawns)) do print("  " .. s.path) end
     safeNotify("Objects", string.format("Prompts: %d | Clicks: %d | NPCs: %d | Spawns: %d", #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns))
 end })
-
 TabResults:CreateButton({ Name = "Print Teams & Stats", Callback = function()
     print("=== TEAMS ===")
-    for _, t in ipairs(State.teams) do print(string.format("  %s | Color: %s | Players: %d (%s)", t.name, t.color, t.players, t.playerNames)) end
+    for _, t in ipairs(State.teams)) do print(string.format("  %s | Color: %s | Players: %d (%s)", t.name, t.color, t.players, t.playerNames)) end
     print("\n=== LEADERSTATS ===")
-    for _, s in ipairs(State.leaderstats) do print(string.format("  %s (%s) = %s", s.name, s.class, s.value)) end
+    for _, s in ipairs(State.leaderstats)) do print(string.format("  %s (%s) = %s", s.name, s.class, s.value)) end
     safeNotify("Teams & Stats", string.format("Teams: %d | Stats: %d", #State.teams, #State.leaderstats))
 end })
-
 TabResults:CreateButton({ Name = "Print Executor Caps", Callback = function()
     print("=== EXECUTOR CAPABILITIES ===")
-    for _, c in ipairs(State.executorCaps) do
-        print(string.format("  %-25s %-25s %s", c.name, c.desc, c.available and "YES" or "NO"))
-    end
+    for _, c in ipairs(State.executorCaps)) do print(string.format("  %-25s %-25s %s", c.name, c.desc, c.available and "YES" or "NO")) end
     safeNotify("Executor", string.format("%d capabilities.", #State.executorCaps))
 end })
-
 TabResults:CreateButton({ Name = "Print Keyword Results", Callback = function()
     print("=== KEYWORD SEARCH ===")
-    for _, kr in ipairs(State.keywordResults) do
+    for _, kr in ipairs(State.keywordResults)) do
         print(string.format("--- '%s' (%d matches) ---", kr.keyword, kr.count))
-        for _, m in ipairs(kr.matches) do print(string.format("  [%s:%d]", m.script, m.line)) end
+        for _, m in ipairs(kr.matches)) do print(string.format("  [%s:%d]", m.script, m.line)) end
     end
     safeNotify("Keywords", string.format("%d keywords.", #State.keywordResults))
 end })
-
 TabResults:CreateButton({ Name = "Print Touch Events", Callback = function()
     print("=== TOUCH EVENTS (" .. #State.touchEvents .. ") ===")
-    for _, t in ipairs(State.touchEvents) do
-        print(string.format("  [%s:%d] %s", t.script, t.line, t.text))
-    end
+    for _, t in ipairs(State.touchEvents)) do print(string.format("  [%s:%d] %s", t.script, t.line, t.text)) end
     safeNotify("Touch Events", string.format("%d found.", #State.touchEvents))
 end })
-
 TabResults:CreateButton({ Name = "Print All GUIs", Callback = function()
     print("=== GUIS ===")
-    for _, g in ipairs(State.guis) do
-        print(string.format("  [%s] %s | Enabled: %s | Children: %d", g.container, g.path, tostring(g.enabled), g.childCount))
-    end
+    for _, g in ipairs(State.guis)) do print(string.format("  [%s] %s | Enabled: %s | Children: %d", g.container, g.path, tostring(g.enabled), g.childCount)) end
     safeNotify("GUIs", string.format("%d ScreenGuis.", #State.guis))
 end })
 
@@ -1064,26 +1069,24 @@ TabExport:CreateButton({ Name = "Export Full Dump (.txt)", Callback = function()
     local file = autoSaveDump()
     if file then safeNotify("Exported", "Saved to: " .. file) else safeNotify("Error", "Export failed.") end
 end })
-
 TabExport:CreateButton({ Name = "Copy Full Report", Callback = function()
     if type(setclipboard) ~= "function" then return end
     local text = "=== SCAN REPORT ===\n"
     text = text .. string.format("Scripts: %d | OK: %d | Failed: %d\n", State.stats.total, State.stats.success, State.stats.failed)
-    text = text .. string.format("Remotes: %d Events, %d Functions\n", #State.remotes.events, #State.remotes.functions)
-    text = text .. string.format("Objects: %d Prompts, %d Clicks, %d NPCs, %d Spawns\n", #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns)
-    text = text .. string.format("Teams: %d | Leaderstats: %d | GUIs: %d\n", #State.teams, #State.leaderstats, #State.guis)
+    text = text .. string.format("Remotes: %d Events, %d Functions\n", #State.remotes.events, #State.remotes.functions))
+    text = text .. string.format("Objects: %d Prompts, %d Clicks, %d NPCs, %d Spawns\n", #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns))
+    text = text .. string.format("Teams: %d | Leaderstats: %d | GUIs: %d\n", #State.teams, #State.leaderstats, #State.guis))
     text = text .. "\n=== REMOTE EVENTS ===\n"
-    for _, r in ipairs(State.remotes.events) do text = text .. r.path .. "\n" end
+    for _, r in ipairs(State.remotes.events)) do text = text .. r.path .. "\n" end
     text = text .. "\n=== REMOTE FUNCTIONS ===\n"
-    for _, r in ipairs(State.remotes.functions) do text = text .. r.path .. "\n" end
+    for _, r in ipairs(State.remotes.functions)) do text = text .. r.path .. "\n" end
     text = text .. "\n=== NPCS ===\n"
-    for _, h in ipairs(State.objects.humanoids) do
-        text = text .. string.format("%s | HP: %.0f/%.0f | Speed: %.0f\n", h.path, h.health, h.maxHealth, h.walkSpeed)
+    for _, h in ipairs(State.objects.humanoids)) do
+        text = text .. string.format("%s | HP: %.0f/%.0f | Speed: %.0f\n", h.path, h.health, h.maxHealth, h.walkSpeed))
     end
     pcall(setclipboard, text)
     safeNotify("Exported", "Copied!")
 end })
-
 TabExport:CreateButton({ Name = "Show Last File", Callback = function()
     if State.lastFilename == "" then safeNotify("Error", "No file saved yet.") return end
     safeNotify("Last File", State.lastFilename)
@@ -1098,7 +1101,7 @@ TabMisc:CreateButton({ Name = "Re-check Executor", Callback = function() autoChe
 TabMisc:CreateButton({ Name = "Server Hop", Callback = function() pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer) end) end })
 TabMisc:CreateButton({ Name = "Copy Job ID", Callback = function() pcall(function() if type(setclipboard) == "function" then setclipboard(game.JobId) safeNotify("Misc", "Copied.") end end) end })
 TabMisc:CreateButton({ Name = "Destroy UI", Callback = function()
-    for _, conn in pairs(connections) do pcall(function() if conn and conn.Disconnect then conn:Disconnect() end end) end
+    for _, conn in pairs(connections) do pcall(function() if conn and conn.Disconnect then conn:Disconnect() end) end)
     pcall(function() Rayfield:Destroy() end)
 end })
 
@@ -1120,5 +1123,5 @@ end)
 -- INIT
 -- ============================================
 Rayfield:LoadConfiguration()
-print("[Universal Scanner v7.1] Loaded — Game: " .. GameName)
+print("[Universal Scanner v7.1] Loaded — Game: " .. GameName))
 print("[v7.1] Auto-scans on startup, Deep Scan ready, all features automatic.")
