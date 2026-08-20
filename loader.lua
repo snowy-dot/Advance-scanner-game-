@@ -442,7 +442,7 @@ local function autoCheckExecutor()
         {"getrawmetatable", "Get raw metatable"}, {"setreadonly", "Set table readonly"},
         {"setclipboard", "Copy to clipboard"}, {"writefile", "Write files"},
         {"readfile", "Read files"}, {"appendfile", "Append to files"},
-        {"makefolder", "Create folders"}, {"decompile", "Decompile scripts"},
+        {"makefolder", "Create folders"}, {"decompiled", "Decompile scripts"},
         {"getsrc", "Get script source"}, {"getscriptbytecode", "Get bytecode"},
         {"gethui", "Get CoreGui parent"}, {"getgenv", "Global env"},
         {"loadstring", "Load string"}, {"request", "HTTP request"},
@@ -727,15 +727,15 @@ local function startDeepScan(duration)
                 content = content .. string.format("  %s (%d samples):\n", playerName, #positions)
                 for _, p in ipairs(positions) do
                     content = content .. string.format("    [%s] %s (vel: %s)\n", p.time, p.position, p.velocity)
+                end
             end
-        end
             pcall(writefile, filename, content)
             print("[Deep Scan] Saved to " .. filename)
             safeNotify("Deep Scan Complete", string.format("Saved: %s\nPrompts: %d | Spawns: %d | Remotes: %d",
                 filename, #State.deepData.promptInteractions, #State.deepData.monsterSpawns, #State.deepData.remoteCalls))
         else
             safeNotify("Deep Scan Complete", "Data in memory. Use Print button.")
-    end
+        end
     end)
 end
 
@@ -989,12 +989,12 @@ end })
 TabDeep:CreateButton({ Name = "Copy Deep Scan Data", Callback = function()
     if type(setclipboard) ~= "function" then return end
     local text = "=== DEEP SCAN DATA ===\n"
-    text = text .. string.format("Prompt Interactions: %d\n", #State.deepData.promptInteractions))
-    for _, p in ipairs(State.deepData.promptInteractions)) do text = text .. string.format("  [%s] %s at %s\n", p.time, p.prompt, p.path)) end
-    text = text .. string.format("\nMonster Spawns: %d\n", #State.deepData.monsterSpawns))
-    for _, m in ipairs(State.deepData.monsterSpawns)) do text = text .. string.format("  [%s] %s | HP: %d/%d | Speed: %d | Children: %s\n", m.time, m.name, m.health, m.maxHealth, m.walkSpeed, m.children)) end
-    text = text .. string.format("\nRemote Calls: %d\n", #State.deepData.remoteCalls))
-    for _, r in ipairs(State.deepData.remoteCalls)) do text = text .. string.format("  [%s] %s (%s) args: %s\n", r.time, r.remoteName, r.method, r.args)) end
+    text = text .. string.format("Prompt Interactions: %d\n", #State.deepData.promptInteractions)
+    for _, p in ipairs(State.deepData.promptInteractions) do text = text .. string.format("  [%s] %s at %s\n", p.time, p.prompt, p.path) end
+    text = text .. string.format("\nMonster Spawns: %d\n", #State.deepData.monsterSpawns)
+    for _, m in ipairs(State.deepData.monsterSpawns) do text = text .. string.format("  [%s] %s | HP: %d/%d | Speed: %d | Children: %s\n", m.time, m.name, m.health, m.maxHealth, m.walkSpeed, m.children) end
+    text = text .. string.format("\nRemote Calls: %d\n", #State.deepData.remoteCalls)
+    for _, r in ipairs(State.deepData.remoteCalls) do text = text .. string.format("  [%s] %s (%s) args: %s\n", r.time, r.remoteName, r.method, r.args) end
     pcall(setclipboard, text)
     safeNotify("Deep Scan", "Copied!")
 end })
@@ -1011,51 +1011,51 @@ local TabResults = Window:CreateTab("Auto Results")
 
 TabResults:CreateButton({ Name = "Print All Remotes", Callback = function()
     print("=== REMOTE EVENTS (" .. #State.remotes.events .. ") ===")
-    for _, r in ipairs(State.remotes.events)) do print("  [Event] " .. r.path) end
+    for _, r in ipairs(State.remotes.events) do print("  [Event] " .. r.path) end
     print("\n=== REMOTE FUNCTIONS (" .. #State.remotes.functions .. ") ===")
-    for _, r in ipairs(State.remotes.functions)) do print("  [Func] " .. r.path) end
+    for _, r in ipairs(State.remotes.functions) do print("  [Func] " .. r.path) end
     safeNotify("Remotes", string.format("%d Events, %d Functions. Check F9.", #State.remotes.events, #State.remotes.functions))
 end })
 TabResults:CreateButton({ Name = "Print All Objects", Callback = function()
     print("=== OBJECTS ===")
     print(string.format("ProximityPrompts: %d", #State.objects.prompts))
-    for _, p in ipairs(State.objects.prompts)) do print(string.format("  [%s] %s (hold: %.1f)", p.name, p.path, p.holdDuration)) end
+    for _, p in ipairs(State.objects.prompts) do print(string.format("  [%s] %s (hold: %.1f)", p.name, p.path, p.holdDuration)) end
     print(string.format("\nClickDetectors: %d", #State.objects.clickDetectors))
-    for _, c in ipairs(State.objects.clickDetectors)) do print("  " .. c.path) end
+    for _, c in ipairs(State.objects.clickDetectors) do print("  " .. c.path) end
     print(string.format("\nNPCs/Monsters: %d", #State.objects.humanoids))
-    for _, h in ipairs(State.objects.humanoids)) do print(string.format("  %s | HP: %.0f/%.0f | Speed: %.0f | Children: %s", h.path, h.health, h.maxHealth, h.walkSpeed, h.children)) end
+    for _, h in ipairs(State.objects.humanoids) do print(string.format("  %s | HP: %.0f/%.0f | Speed: %.0f | Children: %s", h.path, h.health, h.maxHealth, h.walkSpeed, h.children)) end
     print(string.format("\nSpawnLocations: %d", #State.objects.spawns))
-    for _, s in ipairs(State.objects.spawns)) do print("  " .. s.path) end
+    for _, s in ipairs(State.objects.spawns) do print("  " .. s.path) end
     safeNotify("Objects", string.format("Prompts: %d | Clicks: %d | NPCs: %d | Spawns: %d", #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns))
 end })
 TabResults:CreateButton({ Name = "Print Teams & Stats", Callback = function()
     print("=== TEAMS ===")
-    for _, t in ipairs(State.teams)) do print(string.format("  %s | Color: %s | Players: %d (%s)", t.name, t.color, t.players, t.playerNames)) end
+    for _, t in ipairs(State.teams) do print(string.format("  %s | Color: %s | Players: %d (%s)", t.name, t.color, t.players, t.playerNames)) end
     print("\n=== LEADERSTATS ===")
-    for _, s in ipairs(State.leaderstats)) do print(string.format("  %s (%s) = %s", s.name, s.class, s.value)) end
+    for _, s in ipairs(State.leaderstats) do print(string.format("  %s (%s) = %s", s.name, s.class, s.value)) end
     safeNotify("Teams & Stats", string.format("Teams: %d | Stats: %d", #State.teams, #State.leaderstats))
 end })
 TabResults:CreateButton({ Name = "Print Executor Caps", Callback = function()
     print("=== EXECUTOR CAPABILITIES ===")
-    for _, c in ipairs(State.executorCaps)) do print(string.format("  %-25s %-25s %s", c.name, c.desc, c.available and "YES" or "NO")) end
+    for _, c in ipairs(State.executorCaps) do print(string.format("  %-25s %-25s %s", c.name, c.desc, c.available and "YES" or "NO")) end
     safeNotify("Executor", string.format("%d capabilities.", #State.executorCaps))
 end })
 TabResults:CreateButton({ Name = "Print Keyword Results", Callback = function()
     print("=== KEYWORD SEARCH ===")
-    for _, kr in ipairs(State.keywordResults)) do
+    for _, kr in ipairs(State.keywordResults) do
         print(string.format("--- '%s' (%d matches) ---", kr.keyword, kr.count))
-        for _, m in ipairs(kr.matches)) do print(string.format("  [%s:%d]", m.script, m.line)) end
+        for _, m in ipairs(kr.matches) do print(string.format("  [%s:%d]", m.script, m.line)) end
     end
     safeNotify("Keywords", string.format("%d keywords.", #State.keywordResults))
 end })
 TabResults:CreateButton({ Name = "Print Touch Events", Callback = function()
     print("=== TOUCH EVENTS (" .. #State.touchEvents .. ") ===")
-    for _, t in ipairs(State.touchEvents)) do print(string.format("  [%s:%d] %s", t.script, t.line, t.text)) end
+    for _, t in ipairs(State.touchEvents) do print(string.format("  [%s:%d] %s", t.script, t.line, t.text)) end
     safeNotify("Touch Events", string.format("%d found.", #State.touchEvents))
 end })
 TabResults:CreateButton({ Name = "Print All GUIs", Callback = function()
     print("=== GUIS ===")
-    for _, g in ipairs(State.guis)) do print(string.format("  [%s] %s | Enabled: %s | Children: %d", g.container, g.path, tostring(g.enabled), g.childCount)) end
+    for _, g in ipairs(State.guis) do print(string.format("  [%s] %s | Enabled: %s | Children: %d", g.container, g.path, tostring(g.enabled), g.childCount)) end
     safeNotify("GUIs", string.format("%d ScreenGuis.", #State.guis))
 end })
 
@@ -1073,16 +1073,16 @@ TabExport:CreateButton({ Name = "Copy Full Report", Callback = function()
     if type(setclipboard) ~= "function" then return end
     local text = "=== SCAN REPORT ===\n"
     text = text .. string.format("Scripts: %d | OK: %d | Failed: %d\n", State.stats.total, State.stats.success, State.stats.failed)
-    text = text .. string.format("Remotes: %d Events, %d Functions\n", #State.remotes.events, #State.remotes.functions))
-    text = text .. string.format("Objects: %d Prompts, %d Clicks, %d NPCs, %d Spawns\n", #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns))
-    text = text .. string.format("Teams: %d | Leaderstats: %d | GUIs: %d\n", #State.teams, #State.leaderstats, #State.guis))
+    text = text .. string.format("Remotes: %d Events, %d Functions\n", #State.remotes.events, #State.remotes.functions)
+    text = text .. string.format("Objects: %d Prompts, %d Clicks, %d NPCs, %d Spawns\n", #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids, #State.objects.spawns)
+    text = text .. string.format("Teams: %d | Leaderstats: %d | GUIs: %d\n", #State.teams, #State.leaderstats, #State.guis)
     text = text .. "\n=== REMOTE EVENTS ===\n"
-    for _, r in ipairs(State.remotes.events)) do text = text .. r.path .. "\n" end
+    for _, r in ipairs(State.remotes.events) do text = text .. r.path .. "\n" end
     text = text .. "\n=== REMOTE FUNCTIONS ===\n"
-    for _, r in ipairs(State.remotes.functions)) do text = text .. r.path .. "\n" end
+    for _, r in ipairs(State.remotes.functions) do text = text .. r.path .. "\n" end
     text = text .. "\n=== NPCS ===\n"
-    for _, h in ipairs(State.objects.humanoids)) do
-        text = text .. string.format("%s | HP: %.0f/%.0f | Speed: %.0f\n", h.path, h.health, h.maxHealth, h.walkSpeed))
+    for _, h in ipairs(State.objects.humanoids) do
+        text = text .. string.format("%s | HP: %.0f/%.0f | Speed: %.0f\n", h.path, h.health, h.maxHealth, h.walkSpeed)
     end
     pcall(setclipboard, text)
     safeNotify("Exported", "Copied!")
@@ -1101,7 +1101,7 @@ TabMisc:CreateButton({ Name = "Re-check Executor", Callback = function() autoChe
 TabMisc:CreateButton({ Name = "Server Hop", Callback = function() pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer) end) end })
 TabMisc:CreateButton({ Name = "Copy Job ID", Callback = function() pcall(function() if type(setclipboard) == "function" then setclipboard(game.JobId) safeNotify("Misc", "Copied.") end end) end })
 TabMisc:CreateButton({ Name = "Destroy UI", Callback = function()
-    for _, conn in pairs(connections) do pcall(function() if conn and conn.Disconnect then conn:Disconnect() end) end)
+    for _, conn in pairs(connections) do pcall(function() if conn and conn.Disconnect then conn:Disconnect() end end) end
     pcall(function() Rayfield:Destroy() end)
 end })
 
@@ -1123,5 +1123,5 @@ end)
 -- INIT
 -- ============================================
 Rayfield:LoadConfiguration()
-print("[Universal Scanner v7.1] Loaded — Game: " .. GameName))
+print("[Universal Scanner v7.1] Loaded — Game: " .. GameName)
 print("[v7.1] Auto-scans on startup, Deep Scan ready, all features automatic.")
