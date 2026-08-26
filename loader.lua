@@ -1,6 +1,6 @@
 --!nocheck
 -- ══════════════════════════════════════════════════════════════
---  UNIVERSAL GAME SCANNER v9.7 — STABLE FINAL
+--  UNIVERSAL GAME SCANNER v9.8 — TXT EXPORT BUILD
 --  Repo: snowy-dot/Advance-scanner-game-
 --  Loader: loadstring(game:HttpGet("RAW_URL"))()
 -- ══════════════════════════════════════════════════════════════
@@ -15,7 +15,7 @@ local StarterGui = game:GetService("StarterGui")
 local LocalPlayer = Players.LocalPlayer
 
 -- ══════════════════════════════════════════════════════════════
---  EXECUTOR FUNCTION RESOLVER (no linter warnings)
+--  EXECUTOR FUNCTION RESOLVER
 -- ══════════════════════════════════════════════════════════════
 
 local function getExecFunc(name)
@@ -30,7 +30,6 @@ local getsrc             = getExecFunc("getsrc")
 local decompile          = getExecFunc("decompile")
 local getscriptbytecode  = getExecFunc("getscriptbytecode")
 local writefile          = getExecFunc("writefile")
-local readfile           = getExecFunc("readfile")
 local isfolder           = getExecFunc("isfolder")
 local makefolder         = getExecFunc("makefolder")
 local setclipboard       = getExecFunc("setclipboard")
@@ -48,7 +47,7 @@ local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 local Window = Rayfield:CreateWindow({
     Name = "Universal Game Scanner",
     LoadingTitle = "Game Scanner",
-    LoadingSubtitle = "v9.7 Stable",
+    LoadingSubtitle = "v9.8 TXT Export",
     ConfigurationSaving = {Enabled = false},
     KeySystem = false
 })
@@ -70,7 +69,8 @@ local State = {
     stats          = {total = 0, success = 0, failed = 0, deduped = 0, skipped = 0},
     excludeBuildings = true,
     maxDepth       = 0,
-    deepScanning   = false
+    deepScanning   = false,
+    lastExportPath = ""
 }
 
 local connections = {}
@@ -87,7 +87,7 @@ local excludedKeywords = {
 }
 
 -- ══════════════════════════════════════════════════════════════
---  UTILITY FUNCTIONS
+--  UTILITY
 -- ══════════════════════════════════════════════════════════════
 
 local function notify(title, content, dur)
@@ -226,7 +226,7 @@ local function categorize(path, className, source)
 end
 
 -- ══════════════════════════════════════════════════════════════
---  SCANNER FUNCTIONS
+--  SCANNERS
 -- ══════════════════════════════════════════════════════════════
 
 local function scanScripts()
@@ -423,27 +423,140 @@ local function scanSecurity()
         #State.acDetections, #State.bdDetections, #State.requireMap), 5)
 end
 
-local function exportJSON()
-    local export = {
-        meta = {
-            time = os.date("%Y-%m-%d %H:%M:%S"),
-            placeId = game.PlaceId,
-            version = "v9.7"
-        },
-        stats = State.stats,
-        scripts = State.results,
-        remotes = State.remotes,
-        objects = State.objects,
-        assets = State.assets,
-        security = {
-            antiCheat = State.acDetections,
-            backdoors = State.bdDetections,
-            requires = State.requireMap
-        },
-        deepData = State.deepData
-    }
+-- ══════════════════════════════════════════════════════════════
+--  TXT EXPORT — AUTO-RUNS AFTER SCAN + MANUAL BUTTON
+-- ══════════════════════════════════════════════════════════════
 
-    local json = HttpService:JSONEncode(export)
+local function exportTXT()
+    local out = ""
+
+    out = out .. "==========================================\n"
+    out = out .. "  UNIVERSAL GAME SCANNER - EXPORT v9.8\n"
+    out = out .. "==========================================\n"
+    out = out .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
+    out = out .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
+    out = out .. "Job ID: " .. tostring(game.JobId) .. "\n"
+    out = out .. "\n"
+
+    out = out .. "========== STATS ==========\n"
+    out = out .. "Total Scripts: " .. State.stats.total .. "\n"
+    out = out .. "Successful: " .. State.stats.success .. "\n"
+    out = out .. "Failed: " .. State.stats.failed .. "\n"
+    out = out .. "Deduped: " .. State.stats.deduped .. "\n"
+    out = out .. "Skipped (Buildings): " .. State.stats.skipped .. "\n"
+    out = out .. "\n"
+
+    out = out .. "========== REMOTES ==========\n"
+    out = out .. "--- RemoteEvents (" .. #State.remotes.events .. ") ---\n"
+    for _, e in ipairs(State.remotes.events) do
+        out = out .. e.path .. "\n"
+    end
+    out = out .. "\n--- RemoteFunctions (" .. #State.remotes.functions .. ") ---\n"
+    for _, f in ipairs(State.remotes.functions) do
+        out = out .. f.path .. "\n"
+    end
+    out = out .. "\n--- BindableEvents (" .. #State.remotes.bindables .. ") ---\n"
+    for _, b in ipairs(State.remotes.bindables) do
+        out = out .. b.path .. "\n"
+    end
+    out = out .. "\n--- BindableFunctions (" .. #State.remotes.bindableFuncs .. ") ---\n"
+    for _, b in ipairs(State.remotes.bindableFuncs) do
+        out = out .. b.path .. "\n"
+    end
+    out = out .. "\n"
+
+    out = out .. "========== OBJECTS ==========\n"
+    out = out .. "--- ProximityPrompts (" .. #State.objects.prompts .. ") ---\n"
+    for _, p in ipairs(State.objects.prompts) do
+        out = out .. p.path .. "\n"
+    end
+    out = out .. "\n--- ClickDetectors (" .. #State.objects.clickDetectors .. ") ---\n"
+    for _, c in ipairs(State.objects.clickDetectors) do
+        out = out .. c.path .. "\n"
+    end
+    out = out .. "\n--- NPCs / Humanoids (" .. #State.objects.humanoids .. ") ---\n"
+    for _, n in ipairs(State.objects.humanoids) do
+        out = out .. n.name .. " | HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp)
+            .. " WS:" .. tostring(n.ws) .. " | " .. n.path .. "\n"
+    end
+    out = out .. "\n--- SpawnLocations (" .. #State.objects.spawns .. ") ---\n"
+    for _, s in ipairs(State.objects.spawns) do
+        out = out .. s.path .. " @ " .. s.pos .. "\n"
+    end
+    out = out .. "\n--- Values (" .. #State.objects.values .. ") ---\n"
+    for _, v in ipairs(State.objects.values) do
+        out = out .. "[" .. v.class .. "] " .. v.path .. " = " .. v.val .. "\n"
+    end
+    out = out .. "\n"
+
+    out = out .. "========== ASSETS ==========\n"
+    out = out .. "--- Sounds (" .. #State.assets.sounds .. ") ---\n"
+    for _, s in ipairs(State.assets.sounds) do
+        out = out .. s.path .. " | " .. s.id .. "\n"
+    end
+    out = out .. "\n--- Animations (" .. #State.assets.animations .. ") ---\n"
+    for _, a in ipairs(State.assets.animations) do
+        out = out .. a.path .. " | " .. a.id .. "\n"
+    end
+    out = out .. "\n--- Decals (" .. #State.assets.decals .. ") ---\n"
+    for _, d in ipairs(State.assets.decals) do
+        out = out .. d.path .. " | " .. d.tex .. "\n"
+    end
+    out = out .. "\n--- Meshes (" .. #State.assets.meshes .. ") ---\n"
+    for _, m in ipairs(State.assets.meshes) do
+        out = out .. m.path .. " | " .. m.id .. "\n"
+    end
+    out = out .. "\n"
+
+    out = out .. "========== SECURITY ==========\n"
+    out = out .. "--- Anti-Cheat Detections (" .. #State.acDetections .. ") ---\n"
+    for _, d in ipairs(State.acDetections) do
+        out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n"
+        out = out .. "  " .. d.text .. "\n"
+    end
+    out = out .. "\n--- Backdoor Detections (" .. #State.bdDetections .. ") ---\n"
+    for _, d in ipairs(State.bdDetections) do
+        out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n"
+        out = out .. "  " .. d.text .. "\n"
+    end
+    out = out .. "\n--- Require Map (" .. #State.requireMap .. ") ---\n"
+    for _, r in ipairs(State.requireMap) do
+        out = out .. r.script .. " -> " .. r.target .. "\n"
+    end
+    out = out .. "\n"
+
+    out = out .. "========== DEEP SCAN DATA ==========\n"
+    out = out .. "--- Captured Remote Calls (" .. #State.deepData.remoteCalls .. ") ---\n"
+    for _, c in ipairs(State.deepData.remoteCalls) do
+        out = out .. "[" .. c.time .. "] " .. c.method .. "." .. c.remote .. "\n"
+        out = out .. "  Path: " .. c.path .. "\n"
+        out = out .. "  Args: " .. c.args .. "\n"
+    end
+    out = out .. "\n--- Prompt Hits (" .. #State.deepData.promptHits .. ") ---\n"
+    for _, c in ipairs(State.deepData.promptHits) do
+        out = out .. "[" .. c.time .. "] " .. c.prompt .. "\n"
+        out = out .. "  " .. c.path .. "\n"
+    end
+    out = out .. "\n--- Spawns (" .. #State.deepData.spawns .. ") ---\n"
+    for _, c in ipairs(State.deepData.spawns) do
+        out = out .. "[" .. c.time .. "] " .. c.name .. "\n"
+        out = out .. "  " .. c.path .. "\n"
+    end
+    out = out .. "\n"
+
+    out = out .. "==========================================\n"
+    out = out .. "  SCRIPT SOURCES\n"
+    out = out .. "==========================================\n\n"
+
+    for _, r in ipairs(State.results) do
+        out = out .. "------ " .. r.path .. " [" .. r.className .. "] ------\n"
+        out = out .. "Category: " .. r.category .. " | Size: " .. r.size .. " | Status: " .. r.status .. "\n\n"
+        if r.source and #r.source > 0 then
+            out = out .. r.source .. "\n\n"
+        else
+            out = out .. "[NO SOURCE AVAILABLE]\n\n"
+        end
+    end
 
     local wrote = false
     if writefile then
@@ -451,22 +564,31 @@ local function exportJSON()
             if isfolder and not isfolder("ScannerResults") then
                 makefolder("ScannerResults")
             end
-            local fname = "ScannerResults/scan_" .. os.time() .. ".json"
-            writefile(fname, json)
-            print("[Scanner] Saved: " .. fname)
-            notify("Export", "Saved to workspace/ScannerResults/", 5)
+            local fname = "ScannerResults/scan_" .. tostring(os.time()) .. ".txt"
+            writefile(fname, out)
+            State.lastExportPath = fname
+            print("[Scanner] FILE SAVED: " .. fname)
+            notify("Export Success", fname, 6)
             wrote = true
         end)
     end
 
-    if setclipboard then
-        setclipboard(json)
-        notify("Clipboard", "JSON copied to clipboard too", 3)
+    if not wrote then
+        if setclipboard then
+            setclipboard(out)
+            notify("Export Failed", "writefile error. Full report copied to clipboard instead.", 7)
+        else
+            notify("Export Failed", "writefile and clipboard both unavailable.", 7)
+        end
+        print("[Scanner] writefile FAILED — clipboard fallback used")
+    else
+        if setclipboard then
+            setclipboard(out)
+            print("[Scanner] also copied to clipboard as backup")
+        end
     end
 
-    if not wrote then
-        notify("Export", "writefile failed, clipboard only", 5)
-    end
+    return wrote
 end
 
 -- ══════════════════════════════════════════════════════════════
@@ -535,8 +657,7 @@ local function startDeepScan(duration)
                 local argStr = ""
                 for i, arg in ipairs(args) do
                     local t = typeof(arg) == "Instance" and arg.ClassName or type(arg)
-                    argStr = argStr .. string.format("[%d]:%s=%s ",
-                        i, t, tostring(arg):sub(1, 30))
+                    argStr = argStr .. "[" .. i .. "]:" .. t .. "=" .. tostring(arg):sub(1, 30) .. " "
                 end
                 table.insert(State.deepData.remoteCalls, {
                     time = os.date("%H:%M:%S"),
@@ -583,7 +704,7 @@ local TabMain = Window:CreateTab("Main", 4483345998)
 TabMain:CreateSection("Scanner Control")
 
 TabMain:CreateButton({
-    Name = "FULL SCAN (Everything)",
+    Name = "FULL SCAN + AUTO EXPORT TXT",
     Callback = function()
         task.spawn(function()
             scanScripts()
@@ -591,23 +712,29 @@ TabMain:CreateButton({
             scanObjects()
             scanAssets()
             scanSecurity()
-            notify("Done", "All scans complete", 4)
+            exportTXT()
+            notify("All Done", "Scan complete + file exported", 5)
         end)
     end
 })
 
 TabMain:CreateButton({
-    Name = "Scripts Only",
-    Callback = function() task.spawn(scanScripts) end
+    Name = "Scan Scripts Only",
+    Callback = function()
+        task.spawn(function()
+            scanScripts()
+            exportTXT()
+        end)
+    end
 })
 
 TabMain:CreateButton({
-    Name = "Remotes Only",
+    Name = "Scan Remotes Only",
     Callback = function() task.spawn(scanRemotes) end
 })
 
 TabMain:CreateButton({
-    Name = "Objects + Assets",
+    Name = "Scan Objects + Assets",
     Callback = function()
         task.spawn(function()
             scanObjects()
@@ -672,7 +799,7 @@ TabScr:CreateButton({
         local all = ""
         for _, r in ipairs(State.results) do
             if r.status == "OK" and r.source and #r.source > 0 then
-                all = all .. "--=====" .. r.path .. " [" .. r.className .. "] =====\n" .. r.source .. "\n\n"
+                all = all .. "--===== " .. r.path .. " [" .. r.className .. "] =====\n" .. r.source .. "\n\n"
             end
         end
         if setclipboard then setclipboard(all) end
@@ -695,8 +822,7 @@ TabSec:CreateButton({
         local out = ""
         for i, d in ipairs(State.acDetections) do
             if i > 30 then break end
-            out = out .. string.format("%s:L%d [%s]\n  %s\n\n",
-                d.script, d.line, d.pattern, d.text)
+            out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n  " .. d.text .. "\n\n"
         end
         if out == "" then out = "Clean." end
         SecLabel:Set(out)
@@ -709,8 +835,7 @@ TabSec:CreateButton({
         local out = ""
         for i, d in ipairs(State.bdDetections) do
             if i > 30 then break end
-            out = out .. string.format("%s:L%d [%s]\n  %s\n\n",
-                d.script, d.line, d.pattern, d.text)
+            out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n  " .. d.text .. "\n\n"
         end
         if out == "" then out = "Clean." end
         SecLabel:Set(out)
@@ -723,8 +848,7 @@ TabSec:CreateButton({
         local out = ""
         for i, d in ipairs(State.requireMap) do
             if i > 30 then break end
-            out = out .. string.format("%s -> %s\n  %s\n\n",
-                d.script, d.target, d.text)
+            out = out .. d.script .. " -> " .. d.target .. "\n  " .. d.text .. "\n\n"
         end
         if out == "" then out = "None." end
         SecLabel:Set(out)
@@ -780,8 +904,8 @@ TabObj:CreateButton({
         local out = ""
         for i, n in ipairs(State.objects.humanoids) do
             if i > 25 then break end
-            out = out .. string.format("%s\n  HP:%s/%s WS:%s\n  %s\n\n",
-                n.name, tostring(n.hp), tostring(n.mhp), tostring(n.ws), n.path)
+            out = out .. n.name .. "\n  HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp)
+                .. " WS:" .. tostring(n.ws) .. "\n  " .. n.path .. "\n\n"
         end
         if out == "" then out = "No NPCs." end
         ObjLabel:Set(out)
@@ -832,8 +956,8 @@ TabDeep:CreateButton({
         local out = ""
         for i, c in ipairs(State.deepData.remoteCalls) do
             if i > 30 then break end
-            out = out .. string.format("[%s] %s.%s\n  Path:%s\n  Args:%s\n\n",
-                c.time, c.method, c.remote, c.path, c.args)
+            out = out .. "[" .. c.time .. "] " .. c.method .. "." .. c.remote
+                .. "\n  Path: " .. c.path .. "\n  Args: " .. c.args .. "\n\n"
         end
         if out == "" then out = "No calls captured." end
         DeepLabel:Set(out)
@@ -846,8 +970,7 @@ TabDeep:CreateButton({
         local out = ""
         for i, c in ipairs(State.deepData.promptHits) do
             if i > 30 then break end
-            out = out .. string.format("[%s] %s\n  %s\n\n",
-                c.time, c.prompt, c.path)
+            out = out .. "[" .. c.time .. "] " .. c.prompt .. "\n  " .. c.path .. "\n\n"
         end
         if out == "" then out = "No prompt hits." end
         DeepLabel:Set(out)
@@ -860,7 +983,7 @@ TabDeep:CreateButton({
         local out = ""
         for i, c in ipairs(State.deepData.spawns) do
             if i > 30 then break end
-            out = out .. string.format("[%s] %s\n  %s\n\n", c.time, c.name, c.path)
+            out = out .. "[" .. c.time .. "] " .. c.name .. "\n  " .. c.path .. "\n\n"
         end
         if out == "" then out = "No spawns captured." end
         DeepLabel:Set(out)
@@ -872,33 +995,28 @@ TabDeep:CreateButton({
 -- ══════════════════════════════════════════════════════════════
 
 local TabExp = Window:CreateTab("Export", 4483345998)
-TabExp:CreateSection("Dump Results")
+TabExp:CreateSection("TXT Export")
+
+local ExportLabel = TabExp:CreateLabel("No export yet.")
 
 TabExp:CreateButton({
-    Name = "Export All to JSON",
-    Callback = function() exportJSON() end
+    Name = "Export Everything to TXT",
+    Callback = function()
+        task.spawn(function()
+            local ok = exportTXT()
+            if ok then
+                ExportLabel:Set("Last export: " .. State.lastExportPath)
+            end
+        end)
+    end
 })
 
 TabExp:CreateButton({
-    Name = "Copy Security Report",
+    Name = "Copy Full Report to Clipboard",
     Callback = function()
-        local rpt = "=== SECURITY REPORT ===\n"
-        rpt = rpt .. "AntiCheat: " .. #State.acDetections .. " hits\n"
-        for _, d in ipairs(State.acDetections) do
-            rpt = rpt .. string.format("  %s:L%d [%s] %s\n",
-                d.script, d.line, d.pattern, d.text)
-        end
-        rpt = rpt .. "\nBackdoors: " .. #State.bdDetections .. " hits\n"
-        for _, d in ipairs(State.bdDetections) do
-            rpt = rpt .. string.format("  %s:L%d [%s] %s\n",
-                d.script, d.line, d.pattern, d.text)
-        end
-        rpt = rpt .. "\nRequire Map: " .. #State.requireMap .. " calls\n"
-        for _, d in ipairs(State.requireMap) do
-            rpt = rpt .. string.format("  %s -> %s\n", d.script, d.target)
-        end
-        if setclipboard then setclipboard(rpt) end
-        notify("Copy", "Report copied", 3)
+        task.spawn(function()
+            exportTXT()
+        end)
     end
 })
 
@@ -939,5 +1057,6 @@ TabSet:CreateSlider({
 --  FINAL
 -- ══════════════════════════════════════════════════════════════
 
-notify("Scanner Ready", "v9.7 loaded. Right Shift toggles UI.", 6)
-print("=== Universal Game Scanner v9.7 loaded ===")
+notify("Scanner Ready", "v9.8 loaded. FULL SCAN auto-exports TXT now.", 6)
+print("=== Universal Game Scanner v9.8 loaded ===")
+print("=== Export saves to: workspace/ScannerResults/scan_<timestamp>.txt ===")
