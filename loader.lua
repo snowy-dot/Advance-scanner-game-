@@ -1,6 +1,9 @@
 --!nocheck
--- Universal Game Scanner v9.6 - Full Build + Export Fix
--- snowy-dot/Advance-scanner-game-
+-- ══════════════════════════════════════════════════════════════
+--  UNIVERSAL GAME SCANNER v9.7 — STABLE FINAL
+--  Repo: snowy-dot/Advance-scanner-game-
+--  Loader: loadstring(game:HttpGet("RAW_URL"))()
+-- ══════════════════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -11,7 +14,10 @@ local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
 
--- Executor function loader (kills linter warnings)
+-- ══════════════════════════════════════════════════════════════
+--  EXECUTOR FUNCTION RESOLVER (no linter warnings)
+-- ══════════════════════════════════════════════════════════════
+
 local function getExecFunc(name)
     local ok, fn = pcall(function()
         return getgenv()[name]
@@ -20,52 +26,77 @@ local function getExecFunc(name)
     return _G[name]
 end
 
-local getsrc = getExecFunc("getsrc")
-local decompile = getExecFunc("decompile")
-local getscriptbytecode = getExecFunc("getscriptbytecode")
-local writefile = getExecFunc("writefile")
-local readfile = getExecFunc("readfile")
-local isfolder = getExecFunc("isfolder")
-local makefolder = getExecFunc("makefolder")
-local setclipboard = getExecFunc("setclipboard")
-local newcclosure = getExecFunc("newcclosure")
-local getrawmetatable = getExecFunc("getrawmetatable")
-local setreadonly = getExecFunc("setreadonly")
-local getnamecallmethod = getExecFunc("getnamecallmethod")
+local getsrc             = getExecFunc("getsrc")
+local decompile          = getExecFunc("decompile")
+local getscriptbytecode  = getExecFunc("getscriptbytecode")
+local writefile          = getExecFunc("writefile")
+local readfile           = getExecFunc("readfile")
+local isfolder           = getExecFunc("isfolder")
+local makefolder         = getExecFunc("makefolder")
+local setclipboard       = getExecFunc("setclipboard")
+local newcclosure        = getExecFunc("newcclosure")
+local getrawmetatable    = getExecFunc("getrawmetatable")
+local setreadonly        = getExecFunc("setreadonly")
+local getnamecallmethod  = getExecFunc("getnamecallmethod")
+
+-- ══════════════════════════════════════════════════════════════
+--  RAYFIELD
+-- ══════════════════════════════════════════════════════════════
 
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
     Name = "Universal Game Scanner",
     LoadingTitle = "Game Scanner",
-    LoadingSubtitle = "v9.6",
+    LoadingSubtitle = "v9.7 Stable",
     ConfigurationSaving = {Enabled = false},
     KeySystem = false
 })
 
+-- ══════════════════════════════════════════════════════════════
+--  STATE
+-- ══════════════════════════════════════════════════════════════
+
 local State = {
-    results = {},
-    hashes = {},
-    remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}},
-    objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}},
-    assets = {sounds = {}, animations = {}, decals = {}, meshes = {}},
-    acDetections = {},
-    bdDetections = {},
-    requireMap = {},
-    deepData = {remoteCalls = {}, promptHits = {}, spawns = {}},
-    stats = {total = 0, success = 0, failed = 0, deduped = 0, skipped = 0},
+    results        = {},
+    hashes         = {},
+    remotes        = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}},
+    objects        = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}},
+    assets         = {sounds = {}, animations = {}, decals = {}, meshes = {}},
+    acDetections   = {},
+    bdDetections   = {},
+    requireMap     = {},
+    deepData       = {remoteCalls = {}, promptHits = {}, spawns = {}},
+    stats          = {total = 0, success = 0, failed = 0, deduped = 0, skipped = 0},
     excludeBuildings = true,
-    maxDepth = 0,
-    deepScanning = false
+    maxDepth       = 0,
+    deepScanning   = false
 }
 
 local connections = {}
-local excludedClasses = {"Part", "WedgePart", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"}
-local excludedKeywords = {"building", "house", "wall", "floor", "ceiling", "roof", "door", "window", "terrain", "baseplate", "ground"}
+
+local excludedClasses = {
+    "Part", "WedgePart", "TrussPart",
+    "SpawnLocation", "Seat", "VehicleSeat"
+}
+
+local excludedKeywords = {
+    "building", "house", "wall", "floor",
+    "ceiling", "roof", "door", "window",
+    "terrain", "baseplate", "ground"
+}
+
+-- ══════════════════════════════════════════════════════════════
+--  UTILITY FUNCTIONS
+-- ══════════════════════════════════════════════════════════════
 
 local function notify(title, content, dur)
     pcall(function()
-        Rayfield:Notify({Title = title, Content = content, Duration = dur or 4})
+        Rayfield:Notify({
+            Title = title,
+            Content = content,
+            Duration = dur or 4
+        })
     end)
 end
 
@@ -96,12 +127,14 @@ end
 
 local function shouldScan(inst)
     if not State.excludeBuildings then return true end
+
     for _, cls in ipairs(excludedClasses) do
         if inst:IsA(cls) then
             State.stats.skipped = State.stats.skipped + 1
             return false
         end
     end
+
     local ln = inst.Name:lower()
     for _, kw in ipairs(excludedKeywords) do
         if ln:find(kw, 1, true) then
@@ -109,6 +142,7 @@ local function shouldScan(inst)
             return false
         end
     end
+
     local cur = inst.Parent
     while cur and cur ~= game do
         local pl = cur.Name:lower()
@@ -120,6 +154,7 @@ local function shouldScan(inst)
         end
         cur = cur.Parent
     end
+
     return true
 end
 
@@ -163,15 +198,15 @@ local function getAllDescendants(container, maxDepth)
 end
 
 local catKeywords = {
-    Combat = {"combat", "damage", "weapon", "gun", "kill", "sword", "attack"},
-    Movement = {"walkspeed", "fly", "noclip", "jump", "teleport", "cframe"},
-    Economy = {"shop", "buy", "cash", "coin", "rebirth", "sell", "pet", "egg"},
-    NPC = {"npc", "monster", "enemy", "boss", "mob", "spawn"},
-    Remote = {"remoteevent", "remotefunction", "fireserver", "invokeserver"},
+    Combat    = {"combat", "damage", "weapon", "gun", "kill", "sword", "attack"},
+    Movement  = {"walkspeed", "fly", "noclip", "jump", "teleport", "cframe"},
+    Economy   = {"shop", "buy", "cash", "coin", "rebirth", "sell", "pet", "egg"},
+    NPC       = {"npc", "monster", "enemy", "boss", "mob", "spawn"},
+    Remote    = {"remoteevent", "remotefunction", "fireserver", "invokeserver"},
     DataStore = {"datastore", "save", "load", "profile"},
-    Security = {"anticheat", "detect", "flag", "integrity"},
+    Security  = {"anticheat", "detect", "flag", "integrity"},
     Animation = {"animation", "animator", "motor6d"},
-    Audio = {"sound", "music", "sfx"}
+    Audio     = {"sound", "music", "sfx"}
 }
 
 local function categorize(path, className, source)
@@ -189,6 +224,10 @@ local function categorize(path, className, source)
     if className == "ModuleScript" then return "Module" end
     return "Other"
 end
+
+-- ══════════════════════════════════════════════════════════════
+--  SCANNER FUNCTIONS
+-- ══════════════════════════════════════════════════════════════
 
 local function scanScripts()
     State.results = {}
@@ -333,8 +372,14 @@ local function scanSecurity()
     State.bdDetections = {}
     State.requireMap = {}
 
-    local acPatterns = {"anticheat", "anti-cheat", "exploit", "detect", "flag", "tamper", "noclip", "speedhack", "kick", "crash"}
-    local bdPatterns = {"loadstring(game:httpget", "require(", "backdoor", "getfenv(", "setfenv(", "admin%."}
+    local acPatterns = {
+        "anticheat", "anti-cheat", "exploit", "detect",
+        "flag", "tamper", "noclip", "speedhack", "kick", "crash"
+    }
+    local bdPatterns = {
+        "loadstring(game:httpget", "require(", "backdoor",
+        "getfenv(", "setfenv(", "admin%."
+    }
 
     for _, r in ipairs(State.results) do
         if r.source and #r.source > 0 and r.status == "OK" then
@@ -383,7 +428,7 @@ local function exportJSON()
         meta = {
             time = os.date("%Y-%m-%d %H:%M:%S"),
             placeId = game.PlaceId,
-            version = "v9.6"
+            version = "v9.7"
         },
         stats = State.stats,
         scripts = State.results,
@@ -416,13 +461,17 @@ local function exportJSON()
 
     if setclipboard then
         setclipboard(json)
-        notify("Clipboard", "JSON also copied to clipboard", 3)
+        notify("Clipboard", "JSON copied to clipboard too", 3)
     end
 
     if not wrote then
         notify("Export", "writefile failed, clipboard only", 5)
     end
 end
+
+-- ══════════════════════════════════════════════════════════════
+--  DEEP SCAN
+-- ══════════════════════════════════════════════════════════════
 
 local originalNamecall = nil
 local namecallHooked = false
@@ -486,7 +535,8 @@ local function startDeepScan(duration)
                 local argStr = ""
                 for i, arg in ipairs(args) do
                     local t = typeof(arg) == "Instance" and arg.ClassName or type(arg)
-                    argStr = argStr .. string.format("[%d]:%s=%s ", i, t, tostring(arg):sub(1, 30))
+                    argStr = argStr .. string.format("[%d]:%s=%s ",
+                        i, t, tostring(arg):sub(1, 30))
                 end
                 table.insert(State.deepData.remoteCalls, {
                     time = os.date("%H:%M:%S"),
@@ -525,7 +575,9 @@ local function stopDeepScan()
         #State.deepData.spawns), 5)
 end
 
--- UI
+-- ══════════════════════════════════════════════════════════════
+--  UI — MAIN TAB
+-- ══════════════════════════════════════════════════════════════
 
 local TabMain = Window:CreateTab("Main", 4483345998)
 TabMain:CreateSection("Scanner Control")
@@ -565,7 +617,9 @@ TabMain:CreateButton({
 })
 
 TabMain:CreateSection("Stats")
+
 local StatsLabel = TabMain:CreateLabel("Run a scan first.")
+
 TabMain:CreateButton({
     Name = "Refresh Stats",
     Callback = function()
@@ -576,13 +630,22 @@ TabMain:CreateButton({
     end
 })
 
+-- ══════════════════════════════════════════════════════════════
+--  UI — SCRIPTS TAB
+-- ══════════════════════════════════════════════════════════════
+
 local TabScr = Window:CreateTab("Scripts", 4483345998)
 TabScr:CreateSection("Browse Scripts")
+
 local ScriptOutput = TabScr:CreateLabel("Run scan first.")
 
 TabScr:CreateDropdown({
     Name = "Category Filter",
-    Options = {"All", "Combat", "Movement", "Economy", "NPC", "Remote", "DataStore", "Security", "Animation", "Audio", "Client", "Server", "Module", "Other"},
+    Options = {
+        "All", "Combat", "Movement", "Economy", "NPC",
+        "Remote", "DataStore", "Security", "Animation",
+        "Audio", "Client", "Server", "Module", "Other"
+    },
     CurrentOption = {"All"},
     Callback = function(opt)
         local selCat = opt[1]
@@ -617,8 +680,13 @@ TabScr:CreateButton({
     end
 })
 
+-- ══════════════════════════════════════════════════════════════
+--  UI — SECURITY TAB
+-- ══════════════════════════════════════════════════════════════
+
 local TabSec = Window:CreateTab("Security", 4483345998)
 TabSec:CreateSection("Detections")
+
 local SecLabel = TabSec:CreateLabel("Run security scan first.")
 
 TabSec:CreateButton({
@@ -627,7 +695,8 @@ TabSec:CreateButton({
         local out = ""
         for i, d in ipairs(State.acDetections) do
             if i > 30 then break end
-            out = out .. string.format("%s:L%d [%s]\n  %s\n\n", d.script, d.line, d.pattern, d.text)
+            out = out .. string.format("%s:L%d [%s]\n  %s\n\n",
+                d.script, d.line, d.pattern, d.text)
         end
         if out == "" then out = "Clean." end
         SecLabel:Set(out)
@@ -640,7 +709,8 @@ TabSec:CreateButton({
         local out = ""
         for i, d in ipairs(State.bdDetections) do
             if i > 30 then break end
-            out = out .. string.format("%s:L%d [%s]\n  %s\n\n", d.script, d.line, d.pattern, d.text)
+            out = out .. string.format("%s:L%d [%s]\n  %s\n\n",
+                d.script, d.line, d.pattern, d.text)
         end
         if out == "" then out = "Clean." end
         SecLabel:Set(out)
@@ -653,15 +723,21 @@ TabSec:CreateButton({
         local out = ""
         for i, d in ipairs(State.requireMap) do
             if i > 30 then break end
-            out = out .. string.format("%s -> %s\n  %s\n\n", d.script, d.target, d.text)
+            out = out .. string.format("%s -> %s\n  %s\n\n",
+                d.script, d.target, d.text)
         end
         if out == "" then out = "None." end
         SecLabel:Set(out)
     end
 })
 
+-- ══════════════════════════════════════════════════════════════
+--  UI — REMOTES TAB
+-- ══════════════════════════════════════════════════════════════
+
 local TabRem = Window:CreateTab("Remotes", 4483345998)
 TabRem:CreateSection("Found Remotes")
+
 local RemLabel = TabRem:CreateLabel("Scan first.")
 
 TabRem:CreateButton({
@@ -689,8 +765,13 @@ TabRem:CreateButton({
     end
 })
 
+-- ══════════════════════════════════════════════════════════════
+--  UI — OBJECTS TAB
+-- ══════════════════════════════════════════════════════════════
+
 local TabObj = Window:CreateTab("Objects", 4483345998)
 TabObj:CreateSection("NPCs and Interactables")
+
 local ObjLabel = TabObj:CreateLabel("Scan first.")
 
 TabObj:CreateButton({
@@ -719,24 +800,32 @@ TabObj:CreateButton({
         out = out .. "\n=== Values (" .. #State.objects.values .. ") ===\n"
         for i, v in ipairs(State.objects.values) do
             if i > 15 then break end
-            out = out .. "* [" .. v.class .. "] " .. v.path .. .. "\n"
+            out = out .. "* [" .. v.class .. "] " .. v.path .. " = " .. v.val .. "\n"
         end
         if out == "" then out = "Nothing found." end
         ObjLabel:Set(out)
     end
 })
 
-local TabDeep = Window:CreateTab("Deep Scan", 4383345998)
+-- ══════════════════════════════════════════════════════════════
+--  UI — DEEP SCAN TAB
+-- ══════════════════════════════════════════════════════════════
+
+local TabDeep = Window:CreateTab("Deep Scan", 4483345998)
 TabDeep:CreateSection("Live Monitor")
+
 TabDeep:CreateButton({
     Name = "Start Deep Scan (300s)",
     Callback = function() startDeepScan(300) end
 })
+
 TabDeep:CreateButton({
     Name = "Stop Deep Scan",
     Callback = function() stopDeepScan() end
 })
+
 local DeepLabel = TabDeep:CreateLabel("No captures yet.")
+
 TabDeep:CreateButton({
     Name = "View Remote Calls",
     Callback = function()
@@ -751,8 +840,40 @@ TabDeep:CreateButton({
     end
 })
 
+TabDeep:CreateButton({
+    Name = "View Prompt Hits",
+    Callback = function()
+        local out = ""
+        for i, c in ipairs(State.deepData.promptHits) do
+            if i > 30 then break end
+            out = out .. string.format("[%s] %s\n  %s\n\n",
+                c.time, c.prompt, c.path)
+        end
+        if out == "" then out = "No prompt hits." end
+        DeepLabel:Set(out)
+    end
+})
+
+TabDeep:CreateButton({
+    Name = "View Spawns",
+    Callback = function()
+        local out = ""
+        for i, c in ipairs(State.deepData.spawns) do
+            if i > 30 then break end
+            out = out .. string.format("[%s] %s\n  %s\n\n", c.time, c.name, c.path)
+        end
+        if out == "" then out = "No spawns captured." end
+        DeepLabel:Set(out)
+    end
+})
+
+-- ══════════════════════════════════════════════════════════════
+--  UI — EXPORT TAB
+-- ══════════════════════════════════════════════════════════════
+
 local TabExp = Window:CreateTab("Export", 4483345998)
 TabExp:CreateSection("Dump Results")
+
 TabExp:CreateButton({
     Name = "Export All to JSON",
     Callback = function() exportJSON() end
@@ -764,11 +885,13 @@ TabExp:CreateButton({
         local rpt = "=== SECURITY REPORT ===\n"
         rpt = rpt .. "AntiCheat: " .. #State.acDetections .. " hits\n"
         for _, d in ipairs(State.acDetections) do
-            rpt = rpt .. string.format("  %s:L%d [%s] %s\n", d.script, d.line, d.pattern, d.text)
+            rpt = rpt .. string.format("  %s:L%d [%s] %s\n",
+                d.script, d.line, d.pattern, d.text)
         end
         rpt = rpt .. "\nBackdoors: " .. #State.bdDetections .. " hits\n"
         for _, d in ipairs(State.bdDetections) do
-            rpt = rpt .. string.format("  %s:L%d [%s] %s\n", d.script, d.line, d.pattern, d.text)
+            rpt = rpt .. string.format("  %s:L%d [%s] %s\n",
+                d.script, d.line, d.pattern, d.text)
         end
         rpt = rpt .. "\nRequire Map: " .. #State.requireMap .. " calls\n"
         for _, d in ipairs(State.requireMap) do
@@ -779,8 +902,13 @@ TabExp:CreateButton({
     end
 })
 
+-- ══════════════════════════════════════════════════════════════
+--  UI — SETTINGS TAB
+-- ══════════════════════════════════════════════════════════════
+
 local TabSet = Window:CreateTab("Settings", 4483345998)
 TabSet:CreateSection("Filter Config")
+
 TabSet:CreateToggle({
     Name = "Exclude Buildings",
     CurrentValue = true,
@@ -807,5 +935,9 @@ TabSet:CreateSlider({
     end
 })
 
-notify("Scanner Ready", "v9.6 loaded. Right Shift toggles UI.", 6)
-print("=== Universal Game Scanner v9.6 loaded ===")
+-- ══════════════════════════════════════════════════════════════
+--  FINAL
+-- ══════════════════════════════════════════════════════════════
+
+notify("Scanner Ready", "v9.7 loaded. Right Shift toggles UI.", 6)
+print("=== Universal Game Scanner v9.7 loaded ===")
