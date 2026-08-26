@@ -1,737 +1,885 @@
-    DeepScan.connections.monsterTick = RunService.Heartbeat:Connect(function()
-        if not DeepScan.active then return end
-        if tick() - lastMove < 5 then return end
-        lastMove = tick()
-        local mf = Workspace:FindFirstChild("Monsters")
-            or Workspace:FindFirstChild("Enemies")
-            or Workspace:FindFirstChild("NPCs")
-            or Workspace:FindFirstChild("Mobs")
-        if mf then
-            for _, m in ipairs(mf:GetChildren()) do
-                local root = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("RootPart")
-                if root then
-                    local hum = m:FindFirstChildOfClass("Humanoid")
-                    DeepScan.data.monsterMoves.push({
-                        time = os.date("%H:%M:%S"),
-                        name = m.Name,
-                        pos = tostring(root.Position),
-                        vel = tostring(root.AssemblyLinearVelocity.Magnitude),
-                        hp = hum and hum.Health or 0,
+--!nocheck
+-- ══════════════════════════════════════════════════════════════
+--  UNIVERSAL GAME SCANNER v9.0
+--  Bypass Scanner | Excludes Buildings | Rayfield UI
+--  Base: snowy-dot/Advance-scanner-game- (improved)
+-- ══════════════════════════════════════════════════════════════
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Teams = game:GetService("Teams")
+local StarterGui = game:GetService("StarterGui")
+local CollectionService = game:GetService("CollectionService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ── RAYFIELD LOAD ─────────────────────────────────────────────
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- ── STATE ──────────────────────────────────────────────────────
+local State = {
+    scanning = false,
+    deepScanning = false,
+    results = {},
+    hashes = {},
+    remotes = {events={}, functions={}, bindables={}, bindableFuncs={}},
+    objects = {prompts={}, clickDetectors={}, humanoids={}, spawns={}, values={} },
+    assets = {sounds={}, animations={}, decals={}, meshes={}},
+    acDetections = {},
+    bdDetections = {},
+    requireMap = {},
+    keywordResults = {},
+    stats = {total=0, success=0, failed=0, deduped=0, skipped=0},
+    excludeBuildings = true,
+    maxDepth = 0,
+}
+
+local connections = {}
+
+-- Building exclusion lists
+local excludedClasses = {
+    "Part", "WedgePart", "CornerWedgePart", "TrussPart",
+    "SpawnLocation", "Seat", "VehicleSeat"
+}
+local excludedKeywords = {
+    "building","house","wall","floor","ceiling","roof",
+    "door","window","structure","terrain","baseplate","ground","map"
+}
+
+-- ── UTILITY ────────────────────────────────────────────────────
+local function quickHash(str)
+    if not str then return "nil" end
+    local h = 5381
+    for i = 1, #str do
+        h = (h * 33) ~ string.byte(str, i)
+        h = h % 0x100000000
+    end
+    return string.format("%08x", h)
+end
+
+local function getScriptSource(script)
+    if type(getsrc) == "function" then
+        local ok, r = pcall(getsrc, script)
+        if ok and type(r) == "string" and #r > 0 then return r, "OK" end
+    end
+    if type(decompile) == "function" then
+        local ok, r = pcall(decompile, script)
+        if ok and type(r) == "string" and #r > 0 then return r, "OK" end
+    end
+    if type(getscriptbytecode) == "function" then
+        local ok, r = pcall(getscriptbytecode, script)
+        if ok and type(r) == "string" and #r > 0 then return r, "BYTECODE" end
+    end
+    return nil, "FAILED"
+end
+
+local function notify(title, content, dur)
+    pcall(function()
+        Rayfield:Notify({
+            Title = title,
+            Content = content,
+            Duration = dur or 5
+        })
+    end)
+end
+
+-- ── BUILDING FILTER ───────────────────────────────────────────
+local function shouldScan(instance)
+    if not State.excludeBuildings then return true end
+    
+    -- Skip building-class parts
+    for _, cls in ipairs(excludedClasses) do
+        if instance:IsA(cls) then
+            State.stats.skipped += 1
+            return false
+        end
+    end
+    
+    -- Skip instances with building-related names
+    local lower = instance.Name:lower()
+    for _, kw in ipairs(excludedKeywords) do
+        if lower:find(kw, 1, true) then
+            State.stats.skipped += 1
+            return false
+        end
+    end
+    
+    -- Check parent chain
+    local current = instance.Parent
+    while current and current ~= game do
+        local pl = current.Name:lower()
+        for _, kw in ipairs(excludedKeywords) do
+            if pl:find(kw, 1, true) then
+                State.stats.skipped += 1
+                return false
+            end
+        end
+        current = current.Parent
+    end
+    
+    return true
+end
+
+-- ── CONTAINERS ────────────────────────────────────────────────
+local function getContainers()
+    local list = {
+        {Workspace, "Workspace"},
+        {ReplicatedStorage, "ReplicatedStorage"},
+        {game:GetService("ServerScriptService"), "ServerScriptService"},
+        {StarterGui, "StarterGui"},
+        {game:GetService("StarterPlayer"), "StarterPlayer"},
+    }
+    pcall(function()
+        list[#list+1] = {LocalPlayer.PlayerScripts, "PlayerScripts"}
+    end)
+    pcall(function()
+        list[#list+1] = {LocalPlayer.PlayerGui, "PlayerGui"}
+    end)
+    return list
+end
+
+-- Iterative traversal (no stack overflow on huge games)
+local function getAllDescendants(container, maxDepth)
+    local results = {}
+    local stack = {{obj=container, depth=0}}
+    
+    while #stack > 0 do
+        local node = table.remove(stack)
+        if node and node.obj then
+            for _, child in ipairs(node.obj:GetChildren()) do
+                table.insert(results, child)
+                if maxDepth <= 0 or node.depth < maxDepth then
+                    table.insert(stack, {obj=child, depth=node.depth+1})
+                end
+            end
+        end
+        if #results % 300 == 0 then RunService.RenderStepped:Wait() end
+    end
+    
+    return results
+end
+
+-- ── CATEGORIZATION ────────────────────────────────────────────
+local catKeywords = {
+    Combat={"combat","damage","weapon","gun","kill","sword","attack"},
+    Movement={"walkspeed","fly","noclip","jump","teleport","cframe","dash"},
+    Economy={"shop","buy","cash","coin","rebirth","sell","currency","pet","egg"},
+    NPC={"npc","monster","enemy","boss","ai","mob","spawn"},
+    Remote={"remoteevent","remotefunction","fireserver","invokeserver"},
+    DataStore={"datastore","save","load","profile"},
+    Security={"anticheat","detect","flag","integrity","checksum"},
+    Networking={"httpget","request","webhook","jsonencode"},
+    Animation={"animation","animator","motor6d","keyframe"},
+    Audio={"sound","music","sfx","volume"},
+}
+
+local function categorize(path, className, source)
+    local combined = path:lower() .. ((source and #source > 0) and source:lower() or "")
+    for cat, kws in pairs(catKeywords) do
+        for _, kw in ipairs(kws) do
+            if combined:find(kw, 1, true) then return cat end
+        end
+    end
+    if className == "LocalScript" then return "Client" end
+    if className == "Script" then return "Server" end
+    if className == "ModuleScript" then return "Module" end
+    return "Other"
+end
+
+-- ── CORE SCAN: SCRIPTS + MODULES ─────────────────────────────
+local function scanScripts()
+    State.results = {}
+    State.hashes = {}
+    State.stats = {total=0, success=0, failed=0, deduped=0, skipped=State.stats.skipped}
+    
+    local containers = getContainers()
+    local allScripts = {}
+    
+    -- Collect all script-type instances
+    for _, cd in ipairs(containers) do
+        pcall(function()
+            local desc = getAllDescendants(cd[1], State.maxDepth)
+            for _, d in ipairs(desc) do
+                if d:IsA("LocalScript") or d:IsA("Script") or d:IsA("ModuleScript") then
+                    table.insert(allScripts, {inst=d, container=cd[2]})
+                end
+            end
+        end)
+    end
+    
+    State.stats.total = #allScripts
+    notify("Scanner", string.format("Found %d scripts. Scanning...", #allScripts), 3)
+    
+    for i, entry in ipairs(allScripts) do
+        local script = entry.inst
+        
+        if script.Parent and shouldScan(script) then
+            local path = script:GetFullName()
+            local hash = quickHash(path)
+            
+            if not State.hashes[hash] then
+                State.hashes[hash] = true
+                
+                local source, status = getScriptSource(script)
+                local className = script.ClassName
+                local category = categorize(path, className, source)
+                
+                table.insert(State.results, {
+                    path = path,
+                    name = script.Name,
+                    className = className,
+                    category = category,
+                    container = entry.container,
+                    source = source or "",
+                    size = source and #source or 0,
+                    status = status,
+                    hash = hash
+                })
+                
+                if status == "OK" then
+                    State.stats.success += 1
+                else
+                    State.stats.failed += 1
+                end
+            else
+                State.stats.deduped += 1
+            end
+        end
+        
+        if i % 25 == 0 then RunService.RenderStepped:Wait() end
+    end
+    
+    notify("Scan Complete",
+        string.format("✅ %d OK | ❌ %d Failed | 🔄 %d Deduped | 🚫 %d Skipped",
+            State.stats.success, State.stats.failed, State.stats.deduped, State.stats.skipped), 6)
+end
+
+-- ── REMOTE SCANNER ────────────────────────────────────────────
+local function scanRemotes()
+    State.remotes = {events={}, functions={}, bindables={}, bindableFuncs={}}
+    
+    for _, cd in ipairs(getContainers()) do
+        pcall(function()
+            for _, d in ipairs(cd[1]:GetDescendants()) do
+                if d:IsA("RemoteEvent") then
+                    table.insert(State.remotes.events, {
+                        path=d:GetFullName(), name=d.Name,
+                        parent=d.Parent and d.Parent.Name or "?"
+                    })
+                elseif d:IsA("RemoteFunction") then
+                    table.insert(State.remotes.functions, {
+                        path=d:GetFullName(), name=d.Name,
+                        parent=d.Parent and d.Parent.Name or "?"
+                    })
+                elseif d:IsA("BindableEvent") then
+                    table.insert(State.remotes.bindables, {path=d:GetFullName(), name=d.Name})
+                elseif d:IsA("BindableFunction") then
+                    table.insert(State.remotes.bindableFuncs, {path=d:GetFullName(), name=d.Name})
+                end
+            end
+        end)
+    end
+    
+    local total = #State.remotes.events + #State.remotes.functions +
+                  #State.remotes.bindables + #State.remotes.bindableFuncs
+    notify("Remotes Found",
+        string.format("Events: %d | Functions: %d | Bindables: %d",
+            #State.remotes.events, #State.remotes.functions, total - #State.remotes.events - #State.remotes.functions), 4)
+end
+
+-- ── OBJECT SCANNER ────────────────────────────────────────────
+local function scanObjects()
+    State.objects = {prompts={}, clickDetectors={}, humanoids={}, spawns={}, values={}}
+    
+    pcall(function()
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if shouldScan(d) then
+                if d:IsA("ProximityPrompt") then
+                    table.insert(State.objects.prompts, {
+                        path=d:GetFullName(), name=d.Name,
+                        holdDuration=d.HoldDuration, enabled=d.Enabled,
+                        actionText=d.ActionText, objectText=d.ObjectText
+                    })
+                elseif d:IsA("ClickDetector") then
+                    table.insert(State.objects.clickDetectors, {
+                        path=d:GetFullName(), name=d.Name,
+                        maxDist=d.MaxActivationDistance
+                    })
+                elseif d:IsA("SpawnLocation") then
+                    table.insert(State.objects.spawns, {
+                        path=d:GetFullName(), name=d.Name,
+                        pos=tostring(d.Position), neutral=d.Neutral
+                    })
+                end
+                
+                if d:IsA("Model") then
+                    local hum = d:FindFirstChildOfClass("Humanoid")
+                    if hum and not Players:GetPlayerFromCharacter(d) then
+                        local root = d:FindFirstChild("HumanoidRootPart") or d.PrimaryPart
+                        table.insert(State.objects.humanoids, {
+                            path=d:GetFullName(), name=d.Name,
+                            hp=hum.Health, maxHp=hum.MaxHealth,
+                            speed=hum.WalkSpeed, jump=hum.JumpPower,
+                            pos=root and tostring(root.Position) or "?"
+                        })
+                    end
+                end
+                
+                if d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("StringValue") or d:IsA("BoolValue") then
+                    table.insert(State.objects.values, {
+                        path=d:GetFullName(), name=d.Name,
+                        class=d.ClassName, value=tostring(d.Value):sub(1,60)
                     })
                 end
             end
         end
     end)
+end
 
-    -- Player position sampling
-    local lastPP = 0
-    DeepScan.connections.playerTick = RunService.Heartbeat:Connect(function()
-        if not DeepScan.active then return end
-        if tick() - lastPP < 10 then return end
-        lastPP = tick()
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p.Character then
-                local root = p.Character:FindFirstChild("HumanoidRootPart")
-                if root then
-                    DeepScan.data.playerPos.push({
-                        t = os.date("%H:%M:%S"),
-                        who = p.Name,
-                        pos = tostring(root.Position),
+-- ── ASSET SCANNER ─────────────────────────────────────────────
+local function scanAssets()
+    State.assets = {sounds={}, animations={}, decals={}, meshes={}}
+    
+    for _, root in ipairs({Workspace, ReplicatedStorage}) do
+        pcall(function()
+            for _, d in ipairs(root:GetDescendants()) do
+                if d:IsA("Sound") then
+                    table.insert(State.assets.sounds, {path=d:GetFullName(), id=tostring(d.SoundId), vol=d.Volume})
+                elseif d:IsA("Animation") then
+                    table.insert(State.assets.animations, {path=d:GetFullName(), id=tostring(d.AnimationId)})
+                elseif d:IsA("Decal") then
+                    table.insert(State.assets.decals, {path=d:GetFullName(), tex=tostring(d.Texture)})
+                elseif d:IsA("SpecialMesh") or d:IsA("MeshPart") then
+                    table.insert(State.assets.meshes, {path=d:GetFullName(), class=d.ClassName, meshId=tostring(d.MeshId or "")})
+                end
+            end
+        end)
+    end
+end
+
+-- ── SECURITY SCAN: ANTICHEAT + BACKDOORS ─────────────────────
+local acPatterns = {"anticheat","anti-cheat","exploit","detect","flag","tamper","velocity","noclip","speedhack","kick","crash"}
+local bdPatterns = {"loadstring(game:HttpGet","require%(","backdoor","getfenv(","setfenv(","admin%.","SourceCode"}
+
+local function scanSecurity()
+    State.acDetections = {}
+    State.bdDetections = {}
+    State.requireMap = {}
+    
+    for _, r in ipairs(State.results) do
+        if r.source and #r.source > 0 and r.status == "OK" then
+            local lower = r.source:lower()
+            local lines = r.source:split("\n")
+            
+            for li, line in ipairs(lines) do
+                local ll = line:lower()
+                
+                for _, pat in ipairs(acPatterns) do
+                    if ll:find(pat, 1, true) then
+                        table.insert(State.acDetections, {
+                            script=r.path, line=li, pattern=pat,
+                            text=line:gsub("^%s+",""):sub(1,100)
+                        })
+                        break
+                    end
+                end
+                
+                for _, pat in ipairs(bdPatterns) do
+                    if ll:find(pat, 1, true) then
+                        table.insert(State.bdDetections, {
+                            script=r.path, line=li, pattern=pat,
+                            text=line:gsub("^%s+",""):sub(1,100)
+                        })
+                        break
+                    end
+                end
+                
+                if ll:find("require(", 1, true) then
+                    local arg = line:match("require%s*%(%s*(.-)%s*%)") or "?"
+                    table.insert(State.requireMap, {
+                        script=r.path, target=arg:sub(1,80),
+                        text=line:gsub("^%s+",""):sub(1,100)
                     })
                 end
             end
         end
-    end)
+    end
+    
+    notify("Security Scan",
+        string.format("AC: %d detections | BD: %d | Requires: %d",
+            #State.acDetections, #State.bdDetections, #State.requireMap), 5)
+end
 
-    -- __namecall hook (hardened, both paths use newcclosure if available)
+-- ── KEYWORD ENGINE ────────────────────────────────────────────
+local keywords = {"FireServer","InvokeServer","WalkSpeed","Health","Damage","Teleport","CFrame","DataStore","loadstring","require","HttpGet"}
+
+local function scanKeywords()
+    State.keywordResults = {}
+    
+    for _, kw in ipairs(keywords) do
+        local matches = {keyword=kw, count=0, hits={}}
+        local sk = kw:lower()
+        
+        for _, r in ipairs(State.results) do
+            if r.source and r.status == "OK" then
+                local lines = r.source:split("\n")
+                for ln, line in ipairs(lines) do
+                    if line:lower():find(sk, 1, true) then
+                        matches.count += 1
+                        if #matches.hits < 5 then
+                            table.insert(matches.hits, {
+                                script=r.path, line=ln,
+                                text=line:gsub("^%s+",""):sub(1,90)
+                            })
+                        end
+                    end
+                end
+            end
+        end
+        
+        if matches.count > 0 then
+            table.insert(State.keywordResults, matches)
+        end
+    end
+end
+
+-- ── DEEP SCAN SYSTEM ──────────────────────────────────────────
+local originalNamecall = nil
+local namecallHooked = false
+
+local function restoreHook()
+    if namecallHooked and originalNamecall then
+        pcall(function()
+            local mt = getrawmetatable(game)
+            setreadonly(mt, false)
+            mt.__namecall = originalNamecall
+            setreadonly(mt, true)
+        end)
+        namecallHooked = false
+    end
+end
+
+State.deepData = {
+    remoteCalls = {},
+    promptHits = {},
+    spawns = {},
+}
+
+local function startDeepScan(duration)
+    duration = duration or 300
+    if State.deepScanning then return end
+    State.deepScanning = true
+    
+    State.deepData = {remoteCalls={}, promptHits={}, spawns={}}
+    notify("Deep Scan", "Monitoring for "..duration.."s...", 4)
+    
+    -- Prompt trigger logging
+    pcall(function()
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if d:IsA("ProximityPrompt") then
+                d.Triggered:Connect(function(plr)
+                    if plr == LocalPlayer then
+                        table.insert(State.deepData.promptHits, {
+                            time=os.date("%H:%M:%S"),
+                            prompt=d.Name, path=d:GetFullName()
+                        })
+                    end
+                end)
+            end
+        end
+    end)
+    
+    -- Workspace spawn watcher
+    connections.spawnWatch = Workspace.DescendantAdded:Connect(function(d)
+        if d:IsA("Model") and d:FindFirstChildOfClass("Humanoid") then
+            table.insert(State.deepData.spawns, {
+                time=os.date("%H:%M:%S"), name=d.Name,
+                path=d:GetFullName()
+            })
+        end
+    end)
+    
+    -- Namecall hook for FireServer/InvokeServer
     pcall(function()
         local mt = getrawmetatable(game)
-        if not mt then return end
-
-        DeepScan.originalNamecall = mt.__namecall
-
-        local function namecallHook(self, ...)
+        setreadonly(mt, false)
+        if not originalNamecall then originalNamecall = mt.__namecall end
+        
+        mt.__namecall = newcclosure(function(self, ...)
             local method = getnamecallmethod()
             if method == "FireServer" or method == "InvokeServer" then
                 local args = {...}
-                local argStrs = {}
-                for i, a in ipairs(args) do
-                    local t = typeof(a)
-                    argStrs[i] = (t == "Instance") and a.ClassName or tostring(a):sub(1, 60)
+                local argStr = ""
+                for i, arg in ipairs(args) do
+                    local t = typeof(arg) == "Instance" and arg.ClassName or type(arg)
+                    argStr = argStr .. string.format("[%d]:%s=%s ", i, t, tostring(arg):sub(1,30))
                 end
-                DeepScan.data.remoteCalls.push({
-                    time = os.date("%H:%M:%S"),
-                    remote = tostring(self.Name),
-                    method = tostring(method),
-                    args = table.concat(argStrs, ", "),
+                table.insert(State.deepData.remoteCalls, {
+                    time=os.date("%H:%M:%S"),
+                    method=method,
+                    remote=self.Name,
+                    path=self:GetFullName(),
+                    args=argStr
                 })
             end
-            return DeepScan.originalNamecall(self, ...)
-        end
-
-        -- wrap in C closure whenever possible — both primary and fallback
-        local safeHook
-        if type(hookmetamethod) == "function" then
-            safeHook = hookmetamethod("__namecall", namecallHook)
-            DeepScan.hooked = true
-        else
-            if type(newcclosure) == "function" then
-                safeHook = newcclosure(namecallHook)
-            else
-                safeHook = namecallHook
-            end
-            setreadonly(mt, false)
-            mt.__namecall = safeHook
-            setreadonly(mt, true)
-            DeepScan.hooked = true
-        end
+            return originalNamecall(self, ...)
+        end)
+        
+        setreadonly(mt, true)
+        namecallHooked = true
     end)
-
-    -- auto-stop timer
-    task.delay(durationSec, function()
-        if DeepScan.active then
-            DeepScan.stop()
-        end
+    
+    delay(duration, function()
+        if State.deepScanning then stopDeepScan() end
     end)
 end
 
---=============================================================
--- HELPERS
---=============================================================
-
---- Resolve a dotted instance path with recursive search.
---- Handles names containing dots by trying longest-match-first.
---- @param path string  e.g. "game.ReplicatedStorage.Folder.Remote"
---- @return Instance?
-local function resolveInstancePath(path)
-    if not path or path == "" then return nil end
-    local current = game
-    local rest = path
-    -- strip leading "game." or "game"
-    if rest:sub(1, 5) == "game." then
-        rest = rest:sub(6)
-    elseif rest == "game" then
-        return game
-    end
-    -- split on dots, resolve each segment recursively
-    for segment in rest:gmatch("[^.]+") do
-        if not current then return nil end
-        current = current:FindFirstChild(segment, true)
-    end
-    return current
+function stopDeepScan()
+    if not State.deepScanning then return end
+    State.deepScanning = false
+    
+    if connections.spawnWatch then connections.spawnWatch:Disconnect() end
+    restoreHook()
+    
+    notify("Deep Scan Done",
+        string.format("Calls: %d | Prompts: %d | Spawns: %d",
+            #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns), 6)
 end
 
---- Parse a comma-separated arg string with type-hint support.
---- Supported prefixes: v3: c3: enum: inst: bf: (boolean shorthand true/false)
---- Plain values auto-detect number vs string.
---- @param input string
---- @return table
-local function parseArgs(input)
-    local args = {}
-    if not input or input == "" then return args end
-    for tok in input:gmatch("[^,]+") do
-        tok = tok:gsub("^%s+", ""):gsub("%s+$", "")
-        if tok == "true" then
-            table.insert(args, true)
-        elseif tok == "false" then
-            table.insert(args, false)
-        elseif tok:sub(1, 3) == "v3:" then
-            local nums = {}
-            for n in tok:sub(4):gmatch("[-%d.]+") do
-                table.insert(nums, tonumber(n) or 0)
-            end
-            table.insert(args, Vector3.new(nums[1] or 0, nums[2] or 0, nums[3] or 0))
-        elseif tok:sub(1, 3) == "c3:" then
-            local nums = {}
-            for n in tok:sub(4):gmatch("[-%d.]+") do
-                table.insert(nums, tonumber(n) or 0)
-            end
-            table.insert(args, Color3.new(
-                math.clamp((nums[1] or 0) / 255, 0, 1),
-                math.clamp((nums[2] or 0) / 255, 0, 1),
-                math.clamp((nums[3] or 0) / 255, 0, 1)
-            ))
-        elseif tok:sub(1, 5) == "enum:" then
-            local enumPath = tok:sub(6)
-            local parts = {}
-            for p in enumPath:gmatch("[^.]+") do
-                table.insert(parts, p)
-            end
-            local ok, result = pcall(function()
-                local e = Enum
-                for i = 1, #parts do
-                    e = e[parts[i]]
-                end
-                return e
-            end)
-            table.insert(args, ok and result or tok)
-        elseif tok:sub(1, 5) == "inst:" then
-            local instPath = tok:sub(6)
-            local inst = resolveInstancePath(instPath)
-            table.insert(args, inst or nil)
-        elseif tonumber(tok) then
-            table.insert(args, tonumber(tok))
-        else
-            table.insert(args, tok)
-        end
+-- ── EXPORT ────────────────────────────────────────────────────
+local function exportJSON()
+    local export = {
+        meta={
+            time=os.date("%Y-%m-%d %H:%M:%S"),
+            placeId=game.PlaceId,
+            jobId=game.JobId,
+            version="v9.0"
+        },
+        stats=State.stats,
+        scripts=State.results,
+        remotes=State.remotes,
+        objects=State.objects,
+        assets=State.assets,
+        security={
+            antiCheat=State.acDetections,
+            backdoors=State.bdDetections,
+            requires=State.requireMap
+        },
+        keywords=State.keywordResults,
+        deepData=State.deepData
+    }
+    
+    local json = HttpService:JSONEncode(export)
+    
+    if writefile then
+        local fname = "scanner_" .. tostring(game.PlaceId) .. "_" .. os.time() .. ".json"
+        writefile(fname, json)
+        notify("Export", "Saved to workspace/"..fname, 5)
     end
-    return args
+    
+    if setclipboard then
+        setclipboard(json)
+        notify("Clipboard", "Full JSON copied!", 3)
+    end
 end
 
---=============================================================
--- EXPORT
---=============================================================
-
-local function exportResults()
-    local out = {}
-    out[#out + 1] = "=== Universal Game Scanner v9.0 ==="
-    out[#out + 1] = ("Game: %s | PlaceId: %d"):format(tostring(GameName), game.PlaceId)
-    out[#out + 1] = ("Executor: %s"):format(State.executorInfo)
-    out[#out + 1] = ("Scan: %d scripts found / %d OK / %d bytecode / %d failed\n"):
-        format(State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
-
-    out[#out + 1] = "--- SCRIPTS ---"
-    for _, r in ipairs(State.results) do
-        out[#out + 1] = ("[%s][%s] %s (%s)"):format(r.className, r.status, r.path, r.hash)
-    end
-
-    out[#out + 1] = "\n--- REMOTES ---"
-    out[#out + 1] = ("Events (%d):"):format(#State.remotes.events)
-    for _, e in ipairs(State.remotes.events) do out[#out + 1] = "  " .. e.path end
-    out[#out + 1] = ("Functions (%d):"):format(#State.remotes.functions)
-    for _, f in ipairs(State.remotes.functions) do out[#out + 1] = "  " .. f.path end
-    out[#out + 1] = ("Bindables (%d/%d):"):format(#State.remotes.bindables, #State.remotes.bindableFuncs)
-    for _, b in ipairs(State.remotes.bindables) do out[#out + 1] = "  " .. b.path end
-
-    out[#out + 1] = "\n--- OBJECTS ---"
-    out[#out + 1] = ("Prompts (%d), ClickDetectors (%d), NPCs (%d), Spawns (%d), Highlights (%d), BBGui (%d), SurfaceGui (%d), Values (%d), Configs (%d)"):
-        format(#State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids,
-               #State.objects.spawns, #State.objects.highlights, #State.objects.billboards,
-               #State.objects.surfaces, #State.objects.values, #State.objects.configurations)
-
-    out[#out + 1] = "\n--- ASSETS ---"
-    out[#out + 1] = ("Sounds (%d), Animations (%d), Decals (%d), Meshes (%d), Textures (%d)"):
-        format(#State.assets.sounds, #State.assets.animations,
-               #State.assets.decals, #State.assets.meshes, #State.assets.textures)
-
-    if #State.keywordResults > 0 then
-        out[#out + 1] = "\n--- KEYWORD HITS ---"
-        for _, kr in ipairs(State.keywordResults) do
-            out[#out + 1] = ("%s : %d matches"):format(kr.keyword, kr.count)
-            for _, m in ipairs(kr.matches) do
-                out[#out + 1] = ("    %s:%d -> %s"):format(m.script, m.line, m.text)
-            end
-        end
-    end
-
-    if #State.acDetections > 0 then
-        out[#out + 1] = "\n--- ANTI-CHEAT PATTERNS ---"
-        for _, d in ipairs(State.acDetections) do
-            out[#out + 1] = ("[%s] %s:%d -> %s"):format(d.pattern, d.script, d.line, d.text)
-        end
-    end
-
-    if #State.bdDetections > 0 then
-        out[#out + 1] = "\n--- BACKDOOR SUSPECTS ---"
-        for _, d in ipairs(State.bdDetections) do
-            out[#out + 1] = ("[%s] %s:%d -> %s"):format(d.pattern, d.script, d.line, d.text)
-        end
-    end
-
-    if #State.requireMap > 0 then
-        out[#out + 1] = "\n--- REQUIRE MAP ---"
-        for _, r in ipairs(State.requireMap) do
-            out[#out + 1] = ("%s -> %s (line %s)"):format(r.script, r.target, tostring(r.line))
-        end
-    end
-
-    return table.concat(out, "\n")
-end
-
-local function saveToFile(content)
-    if not _writefile then
-        notify("Export", "writefile unavailable on this executor.", 5)
-        return nil
-    end
-    _makefolder("UGS_Scans")
-    local fname = ("UGS_Scans/%s_%s.txt"):format(safeName, os.date("%Y%m%d_%H%M%S"))
-    local ok = pcall(_writefile, fname, content)
-    if ok then
-        notify("Export", "Saved to " .. fname, 6)
-        return fname
-    end
-    notify("Export", "Write failed.", 5)
-    return nil
-end
-
-local function toClipboard(text)
-    if not _setclipboard then
-        notify("Clipboard", "setclipboard unavailable on this executor.", 4)
-        return
-    end
-    _setclipboard(text)
-    notify("Clipboard", "Copied " .. #text .. " chars.", 3)
-end
-
---=============================================================
--- RAYFIELD UI
---=============================================================
-
+-- ── RAYFIELD UI BUILD ─────────────────────────────────────────
 local Window = Rayfield:CreateWindow({
     Name = "Universal Game Scanner v9.0",
-    LoadingTitle = "UGS",
-    LoadingSubtitle = "by Kovak's edition",
+    LoadingTitle = "Game Scanner",
+    LoadingSubtitle = "by snowy-dot & [K]vk",
     ConfigurationSaving = {
-        Enabled = false,
+        Enabled = false
     },
+    KeySystem = false
 })
-getgenv().__UGS_Window = Window
 
-local TabMain    = Window:CreateTab("Main", "scan-search")
-local TabScripts = Window:CreateTab("Scripts", "file-code")
-local TabRemote  = Window:CreateTab("Remotes", "satellite-dish")
-local TabObjects = Window:CreateTab("Objects", "box")
-local TabAnalysis = Window:CreateTab("Analysis", "search")
-local TabDeep    = Window:CreateTab("Deep Scan", "activity")
-local TabExec    = Window:CreateTab("Executor", "cpu")
-local TabInfo    = Window:CreateTab("Info", "info")
+-- TAB: MAIN
+local TabMain = Window:CreateTab("Main", 4483362458)
 
---// MAIN
-TabMain:CreateSection("Control")
+TabMain:CreateSection("Scanner Control")
 
-local runBtn = TabMain:CreateButton({
-    Name = "Run Full Scan",
+TabMain:CreateButton({
+    Name = "🔍 Full Scan (Scripts + Modules)",
     Callback = function()
-        if State.scanning then notify("Scanner", "Already scanning.", 3) return end
-        State.scanning = true
-        ScanCancelled = false
+        task.spawn(scanScripts)
+    end
+})
 
+TabMain:CreateButton({
+    Name = "📡 Scan Remotes Only",
+    Callback = function()
+        task.spawn(scanRemotes)
+    end
+})
+
+TabMain:CreateButton({
+    Name = "🎯 Scan Objects + Assets",
+    Callback = function()
         task.spawn(function()
-            local steps = {
-                {"Scripts", scanScripts},
-                {"Remotes", scanRemotes},
-                {"Objects", scanObjects},
-                {"Assets", scanAssets},
-                {"Attributes", scanAttributes},
-                {"Tags", scanTags},
-                {"Teams/Stats", scanTeamsStats},
-                {"GUIs", scanGUIs},
-                {"Executor Caps", scanExecutorCaps},
-            }
-            local total = #steps
-            for i, step in ipairs(steps) do
-                if ScanCancelled then break end
-                Rayfield:SetStatus(("Scanning %s (%d/%d)..."):format(step[1], i, total))
-                task.spawn(step[2])
-                task.wait(0.05)
-            end
-
-            Rayfield:SetStatus("Analyzing sources...")
-            analyzeSources()
-
-            State.scanning = false
-            Rayfield:SetStatus(("Done. %d scripts, %d keywords hit, %d AC patterns."):
-                format(State.stats.total, #State.keywordResults, #State.acDetections))
-            notify("Scan Complete",
-                ("Total scripts: %d\nOK: %d | BC: %d | Failed: %d\nKeywords: %d categories\nAC: %d hits | BD: %d suspects"):
-                format(State.stats.total, State.stats.success, State.stats.bytecode,
-                       State.stats.failed, #State.keywordResults,
-                       #State.acDetections, #State.bdDetections), 8)
+            scanObjects()
+            scanAssets()
         end)
-    end,
+    end
 })
 
 TabMain:CreateButton({
-    Name = "Cancel Current Scan",
-    Callback = function() ScanCancelled = true end,
-})
-
-local lastExportText = ""
-TabMain:CreateButton({
-    Name = "Export to file + clipboard",
+    Name = "🔥 Run Everything",
     Callback = function()
-        if #State.results == 0 then notify("Export", "Nothing to export yet.", 3) return end
-        lastExportText = exportResults()
-        toClipboard(lastExportText)
-        saveToFile(lastExportText)
-    end,
+        task.spawn(function()
+            scanScripts()
+            scanRemotes()
+            scanObjects()
+            scanAssets()
+            scanSecurity()
+            scanKeywords()
+            notify("Done", "All scans complete!", 4)
+        end)
+    end
 })
 
-TabMain:CreateDivider()
-TabMain:CreateLabel(("Game: %s | PlaceId: %d"):format(GameName, game.PlaceId))
+TabMain:CreateSection("Statistics")
 
---// SCRIPTS TAB
-TabScripts:CreateSection("Script Results")
-local scriptListLabel = TabScripts:CreateLabel("No scripts scanned yet.")
+local StatsLabel = TabMain:CreateLabel("Total: 0 | Success: 0 | Failed: 0 | Deduped: 0 | Skipped Buildings: 0")
 
-TabScripts:CreateInput({
-    Name = "Get Source by Index",
-    PlaceholderText = "Enter index (1..N)",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(val)
-        local idx = tonumber(val)
-        if not idx or not State.results[idx] then
-            notify("Source", "Invalid index.", 3)
-            return
+TabMain:CreateButton({
+    Name = "📊 Refresh Stats",
+    Callback = function()
+        StatsLabel:Set(string.format(
+            "Total: %d | ✅ %d | ❌ %d | 🔄 %d | 🏗️ %d",
+            State.stats.total, State.stats.success, State.stats.failed,
+            State.stats.deduped, State.stats.skipped))
+    end
+})
+
+-- TAB: SCRIPTS
+local TabScripts = Window:CreateTab("Scripts", 4483362458)
+
+TabScripts:CreateSection("Filter & Browse")
+
+local ScriptOutput = TabScripts:CreateLabel("Run a scan to see results here.")
+
+local selectedCat = "All"
+TabScripts:CreateDropdown({
+    Name = "Category Filter",
+    Options = {"All","Combat","Movement","Economy","NPC","Remote","DataStore","Security","Networking","Animation","Audio","Client","Server","Module","Other"},
+    CurrentOption = "All",
+    Callback = function(opt)
+        selectedCat = opt[1]
+        local out = ""
+        local count = 0
+        for _, r in ipairs(State.results) do
+            if selectedCat == "All" or r.category == selectedCat then
+                count += 1
+                if count <= 40 then
+                    local icon = r.status == "OK" and "✅" or "❌"
+                    out = out .. icon .. " [" .. r.className .. "] " .. r.name ..
+                          "\n   📁 " .. r.path .. "\n\n"
+                end
+            end
         end
-        local r = State.results[idx]
-        local head = r.source and r.source:sub(1, 4000) or "(no source)"
-        toClipboard(head)
-        notify(r.className .. ": " .. r.path,
-            ("Status: %s | Hash: %s\nFirst %d chars copied to clipboard."):
-            format(r.status, r.hash, #head), 8)
-    end,
+        if count == 0 then out = "No results for filter." end
+        if count > 40 then out = out .. "...+" .. (count-40) .. " more\n" end
+        ScriptOutput:Set(out)
+    end
 })
 
 TabScripts:CreateButton({
-    Name = "[Refresh list]",
+    Name = "📋 Copy All Source Code",
     Callback = function()
-        if #State.results == 0 then
-            scriptListLabel:Set("No scripts scanned yet.")
-        else
-            local lines = {}
-            lines[1] = ("%d scripts | OK:%d BC:%d FAIL:%d\n"):format(
-                State.stats.total, State.stats.success, State.stats.bytecode, State.stats.failed)
-            local maxShow = math.min(#State.results, 80)
-            for i = 1, maxShow do
-                local r = State.results[i]
-                lines[#lines + 1] = ("[%d][%s|%s] %s"):format(i, r.status, r.className, r.path)
-            end
-            if #State.results > maxShow then
-                lines[#lines + 1] = ("... +%d more (use index lookup)"):format(#State.results - maxShow)
-            end
-            scriptListLabel:Set(table.concat(lines, "\n"))
-        end
-    end,
-})
-
---// REMOTES TAB
-TabRemote:CreateSection("Discovered Remotes")
-local remoteLabel = TabRemote:CreateLabel("Not scanned.")
-
-TabRemote:CreateButton({
-    Name = "[Refresh remotes]",
-    Callback = function()
-        local L = {}
-        L[#L + 1] = ("Events (%d):"):format(#State.remotes.events)
-        for _, e in ipairs(State.remotes.events) do L[#L + 1] = "  " .. e.path end
-        L[#L + 1] = ("Functions (%d):"):format(#State.remotes.functions)
-        for _, f in ipairs(State.remotes.functions) do L[#L + 1] = "  " .. f.path end
-        L[#L + 1] = ("Bindables (%d/%d)"):format(#State.remotes.bindables, #State.remotes.bindableFuncs)
-        remoteLabel:Set(table.concat(L, "\n"))
-    end,
-})
-
-TabRemote:CreateSection("Fire Remote (test)")
-TabRemote:CreateParagraph({
-    Title = "Warning",
-    Content = "Firing an unknown remote can get you kicked/banned. Use with judgment."
-})
-
--- FIXED: input values are now captured in variables, not lost
-local firePathValue = ""
-local fireArgsValue = ""
-
-TabRemote:CreateInput({
-    Name = "Remote Event Path",
-    PlaceholderText = "Path or partial path to a RemoteEvent",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(val) firePathValue = val end,
-})
-
-TabRemote:CreateInput({
-    Name = "Args (comma-sep; supports v3: c3: enum: inst: prefixes)",
-    PlaceholderText = 'Example: Hello, 123, v3:1,5,3, enum:Material.Neon',
-    RemoveTextAfterFocusLost = false,
-    Callback = function(val) fireArgsValue = val end,
-})
-
-TabRemote:CreateButton({
-    Name = "Fire RemoteEvent with Args",
-    Callback = function()
-        if firePathValue == "" then
-            notify("Fire", "No path given.", 3)
-            return
-        end
-
-        local target = nil
-        for _, e in ipairs(State.remotes.events) do
-            if e.path == firePathValue or e.path:lower():find(firePathValue:lower(), 1, true) then
-                target = e
-                break
+        local all = ""
+        for _, r in ipairs(State.results) do
+            if r.status == "OK" and r.source and #r.source > 0 then
+                all = all .. "-- ===== " .. r.path .. " [" .. r.className .. "] =====\n"
+                all = all .. r.source .. "\n\n"
             end
         end
-        if not target then
-            notify("Fire", "Remote not found in results.", 3)
-            return
-        end
-
-        -- FIXED: robust recursive path resolution
-        local inst = resolveInstancePath(target.path)
-        if not inst then
-            -- fallback: try partial name match in ReplicatedStorage
-            inst = game:GetService("ReplicatedStorage"):FindFirstChild(target.name, true)
-        end
-        if not inst or not inst:IsA("RemoteEvent") then
-            notify("Fire", "Instance lookup failed for: " .. target.path, 4)
-            return
-        end
-
-        -- FIXED: upgraded arg parser with type-hint support
-        local args = parseArgs(fireArgsValue)
-
-        notify("Firing", target.name, 3)
-        task.spawn(function()
-            inst:FireServer(unpack(args))
-        end)
-    end,
-})
-
---// OBJECTS TAB
-TabObjects:CreateSection("World Objects")
-local objLabel = TabObjects:CreateLabel("Not scanned.")
-
-TabObjects:CreateButton({
-    Name = "[Refresh objects]",
-    Callback = function()
-        objLabel:Set(("Prompts: %d\nClickDetectors: %d\nNPCs/Humanoids: %d\nSpawns: %d\nHighlights: %d\nBillboards: %d\nSurfaces: %d\nValues: %d\nConfigs: %d\n\nAssets:\nSounds %d | Anims %d | Decals %d | Meshes %d"):
-            format(
-                #State.objects.prompts, #State.objects.clickDetectors, #State.objects.humanoids,
-                #State.objects.spawns, #State.objects.highlights, #State.objects.billboards,
-                #State.objects.surfaces, #State.objects.values, #State.objects.configurations,
-                #State.assets.sounds, #State.assets.animations, #State.assets.decals, #State.assets.meshes))
-    end,
-})
-
---// ANALYSIS TAB
-TabAnalysis:CreateSection("Keyword / AC / Backdoor Hits")
-local analysisLabel = TabAnalysis:CreateLabel("Not analyzed.")
-
-TabAnalysis:CreateButton({
-    Name = "[Refresh analysis]",
-    Callback = function()
-        local L = {}
-
-        if #State.keywordResults > 0 then
-            L[#L + 1] = "== Keywords =="
-            for _, k in ipairs(State.keywordResults) do
-                L[#L + 1] = ("%s: %d hits"):format(k.keyword, k.count)
-                for _, m in ipairs(k.matches) do
-                    L[#L + 1] = ("   %s:%d %s"):format(m.script:match("[^.]+$") or "?", m.line, m.text)
-                end
-            end
-        end
-
-        if #State.acDetections > 0 then
-            L[#L + 1] = "\n== Anti-cheat suspect patterns =="
-            for _, d in ipairs(State.acDetections) do
-                L[#L + 1] = ("[%s] %s:%d %s"):format(d.pattern, d.script:match("[^.]+$"), d.line, d.text)
-            end
-        end
-
-        if #State.bdDetections > 0 then
-            L[#L + 1] = "\n== Backdoor suspects =="
-            for _, d in ipairs(State.bdDetections) do
-                L[#L + 1] = ("[%s] %s:%d %s"):format(d.pattern, d.script:match("[^.]+$"), d.line, d.text)
-            end
-        end
-
-        if #State.requireMap > 0 then
-            L[#L + 1] = "\n== Require calls =="
-            for _, r in ipairs(State.requireMap) do
-                L[#L + 1] = ("%s -> %s"):format(r.script:match("[^.]+$"), r.target)
-            end
-        end
-
-        analysisLabel:Set((#L > 0) and table.concat(L, "\n") or "No hits.")
-    end,
-})
-
---// DEEP SCAN TAB
-TabDeep:CreateSection("Live Monitoring")
-local deepStatusLabel = TabDeep:CreateLabel("Idle.")
-
--- FIXED: slider value is now captured and wired
-local durValue = 300
-local useDurToggle = true
-
-TabDeep:CreateSlider({
-    Name = "Duration (sec)",
-    Range = {30, 1800},
-    Increment = 30,
-    Suffix = "s",
-    CurrentValue = 300,
-    Flag = "DeepDur",
-    Callback = function(v)
-        durValue = v
-    end,
-})
-
-TabDeep:CreateToggle({
-    Name = "Apply slider on start",
-    CurrentValue = true,
-    Flag = "UseDeepDur",
-    Callback = function(v)
-        useDurToggle = v
-    end,
-})
-
-TabDeep:CreateButton({
-    Name = "Start Deep Scan",
-    Callback = function()
-        local chosen = useDurToggle and durValue or 300
-        DeepScan.start(chosen)
-        deepStatusLabel:Set(("Running for %ds..."):format(chosen))
-    end,
-})
-
-TabDeep:CreateButton({
-    Name = "Stop Deep Scan",
-    Callback = function()
-        DeepScan.stop()
-        deepStatusLabel:Set("Stopped.")
-    end,
-})
-
-TabDeep:CreateButton({
-    Name = "Dump Deep Data to clipboard",
-    Callback = function()
-        local dd = DeepScan.data
-        local L = {"=== DEEP SCAN DUMP ==="}
-
-        L[#L + 1] = ("Prompt Interactions: %d"):format(dd.prompts.count())
-        -- FIXED: consistent ipairs iteration everywhere
-        local prompts = dd.prompts.items()
-        if type(prompts) == "table" then
-            for _, item in ipairs(prompts) do
-                L[#L + 1] = ("  [%s] %s"):format(item.time or "?", item.path or "?")
-            end
-        end
-
-        L[#L + 1] = ("Monster Spawns: %d"):format(dd.monsterSpawns.count())
-        local spawns = dd.monsterSpawns.items()
-        if type(spawns) == "table" then
-            for _, m in ipairs(spawns) do
-                L[#L + 1] = ("  [%s] %s hp=%s pos=%s"):format(m.time, m.name, tostring(m.hp), tostring(m.pos))
-            end
-        end
-
-        L[#L + 1] = ("Monster Moves sampled: %d"):format(dd.monsterMoves.count())
-        local moves = dd.monsterMoves.items()
-        if type(moves) == "table" then
-            for _, m in ipairs(moves) do
-                L[#L + 1] = ("  [%s] %s pos=%s vel=%s hp=%s"):format(m.time, m.name, m.pos, m.vel, tostring(m.hp))
-            end
-        end
-
-        L[#L + 1] = ("WS Adds: %d | Removes: %d"):format(dd.workspaceAdds.count(), dd.workspaceRms.count())
-
-        L[#L + 1] = ("Remote Calls captured: %d"):format(dd.remoteCalls.count())
-        local calls = dd.remoteCalls.items()
-        if type(calls) == "table" then
-            for _, r in ipairs(calls) do
-                L[#L + 1] = ("  [%s] %s:%s(%s)"):format(r.time, r.remote, r.method, r.args)
-            end
-        end
-
-        L[#L + 1] = ("Player Pos samples: %d"):format(dd.playerPos.count())
-        local ppos = dd.playerPos.items()
-        if type(ppos) == "table" then
-            for _, p in ipairs(ppos) do
-                L[#L + 1] = ("  [%s] %s pos=%s"):format(p.t, p.who, p.pos)
-            end
-        end
-
-        local text = table.concat(L, "\n")
-        toClipboard(text)
-        notify("Deep Dump", ("%d chars copied."):format(#text), 5)
-    end,
-})
-
--- FIXED: status loop guarded, only runs label updates when active
-task.spawn(function()
-    while true do
-        if DeepScan.active then
-            local elapsed = os.time() - DeepScan.data.startTime
-            deepStatusLabel:Set(("Running... %ds elapsed. PromptHits=%d MonSpawns=%d RemoteCalls=%d"):
-                format(elapsed,
-                    DeepScan.data.prompts.count(),
-                    DeepScan.data.monsterSpawns.count(),
-                    DeepScan.data.remoteCalls.count()))
-        end
-        task.wait(2)
+        if setclipboard then setclipboard(all) end
+        notify("Copy", "All script sources copied ("..#all.." bytes)", 4)
     end
-end)
+})
 
---// EXECUTOR TAB
-TabExec:CreateSection("Capabilities")
-local execLabel = TabExec:CreateLabel("Probing...")
+-- TAB: SECURITY
+local TabSec = Window:CreateTab("Security", 4483362458)
 
-TabExec:CreateButton({
-    Name = "[Probe executor]",
+TabSec:CreateSection("Anti-Cheat Detections")
+
+local ACLabel = TabSec:CreateLabel("No detections yet.")
+
+TabSec:CreateButton({
+    Name = "🛡️ Show Anti-Cheat Hits",
     Callback = function()
-        scanExecutorCaps()
-        local byCat = {}
-        for _, c in ipairs(State.executorCaps) do
-            byCat[c.cat] = byCat[c.cat] or {yes = {}, no = {}}
-            if c.avail then
-                table.insert(byCat[c.cat].yes, c.name)
-            else
-                table.insert(byCat[c.cat].no, c.name)
-            end
+        local out = ""
+        for i, d in ipairs(State.acDetections) do
+            if i > 30 then break end
+            out = out .. string.format("%s:L%d [%s]\n  %s\n\n", 
+                d.script, d.line, d.pattern, d.text)
         end
-        local L = {"Executor: " .. State.executorInfo}
-        local totalYes = 0
-        for cat, data in pairs(byCat) do
-            totalYes += #data.yes
-            if #data.yes > 0 then
-                L[#L + 1] = ("\n[" .. cat .. "] + " .. table.concat(data.yes, ", "))
-            end
-            if #data.no > 0 then
-                L[#L + 1] = "[" .. cat .. "] - " .. table.concat(data.no, ", ")
-            end
-        end
-        execLabel:Set(table.concat(L, "\n"))
-        notify("Executor Probe", ("%s supports %d/%d functions."):format(
-            State.executorInfo, totalYes, #State.executorCaps), 6)
-    end,
+        if out == "" then out = "Clean." end
+        ACLabel:Set(out)
+    end
 })
 
---// INFO TAB
-TabInfo:CreateSection("About")
-TabInfo:CreateParagraph({
-    Title = "Universal Game Scanner v9.0",
-    Content = [[
-Rewritten from v8.1.
+TabSec:CreateSection("Backdoor Detections")
 
-FIXES:
-- Traversal yield fixed (per-node yield instead of modulo check)
-- O(n) capped buffers replaced with O(1) ring buffer class
-- Keyword search single-pass per source instead of O(N*M*lines)
-- All ProximityPrompt connections tracked and torn down on stop
-- Full deep-scan teardown restores original __namecall properly
-- newcclosure existence-checked with fallback shim
-- Executor probe uses existence-checked functions only
-- Fire Remote input values now properly captured
-- Slider duration now wired to start button
-- Deep dump uses consistent ipairs iteration
-- __namecall fallback hook wrapped in newcclosure when available
-- Remote path resolution now recursive with partial-name fallback
-- Arg parser supports v3: c3: enum: inst: type prefixes
+local BDLabel = TabSec:CreateLabel("No detections yet.")
 
-USAGE:
-- Run Full Scan -> wait -> Export to clipboard/file
-- Check Analysis tab for keyword & anticheat hits
-- Fire RemoteEvent tab to test specific remotes
-- Deep Scan for live monitoring (remotes/spawns/prompts)
-
-NOTES:
-- Nothing is sent anywhere. All data stays local.
-- Bytecode-only scripts still count as "success" but have no source.
-]]
+TabSec:CreateButton({
+    Name = "🔓 Show Backdoor Hits",
+    Callback = function()
+        local out = ""
+        for i, d in ipairs(State.bdDetections) do
+            if i > 30 then break end
+            out = out .. string.format("%s:L%d [%s]\n  %s\n\n",
+                d.script, d.line, d.pattern, d.text)
+        end
+        if out == "" then out = "Clean." end
+        BDLabel:Set(out)
+    end
 })
 
-notify("UGS v9.0 loaded",
-    ("Game: %s\nPress 'Run Full Scan' on Main tab."):format(GameName), 8)
+TabSec:CreateSection("Require Map")
 
-Rayfield:SetStatus("Ready — awaiting scan.")
+local ReqLabel = TabSec:CreateLabel("No require() calls found.")
+
+TabSec:CreateButton({
+    Name = "🔗 Show Require Map",
+    Callback = function()
+        local out = ""
+        for i, d in ipairs(State.requireMap) do
+            if i > 30 then break end
+            out = out .. string.format("%s → %s\n  %s\n\n", d.script, d.target, d.text)
+        end
+        if out == "" then out = "None found." end
+        ReqLabel:Set(out)
+    end
+})
+
+-- TAB: REMOTES
+local TabRemotes = Window:CreateTab("Remotes", 4483362458)
+
+TabRemotes:CreateSection("Found Remotes")
+
+local RemoteLabel = TabRemotes:CreateLabel("Press 'Scan Remotes' first.")
+
+TabRemotes:CreateButton({
+    Name = "📡 Refresh Remote List",
+    Callback = function()
+        local out = ""
+        out = out .. "── RemoteEvents ──\n"
+        for i, e in ipairs(State.remotes.events) do
+            if i > 20 then out = out .. "...more\n" break end
+            out = out .. "• " .. e.path .. "\n"
+        end
+        out = out .. "\n── RemoteFunctions ──\n"
+        for i, f in ipairs(State.remotes.functions) do
+            if i > 20 then out = out .. "...more\n" break end
+            out = out .. "• " .. f.path .. "\n"
+        end
+        if out == "" then out = "Nothing found." end
+        RemoteLabel:Set(out)
+    end
+})
+
+-- TAB: DEEP SCAN
+local TabDeep = Window:CreateTab("Deep Scan", 4483362458)
+
+TabDeep:CreateSection("Live Monitoring")
+
+TabDeep:CreateButton({
+    Name = "▶ Start Deep Scan (300s)",
+    Callback = function()
+        startDeepScan(300)
+    end
+})
+
+TabDeep:CreateButton({
+    Name = "⏹ Stop Deep Scan",
+    Callback = function()
+        stopDeepScan()
+    end
+})
+
+local DeepLabel = TabDeep:CreateLabel("No deep data yet.")
+
+TabDeep:CreateButton({
+    Name = "👁 View Captured Remote Calls",
+    Callback = function()
+        local out = ""
+        for i, c in ipairs(State.deepData.remoteCalls) do
+            if i > 30 then break end
+            out = out .. string.format("[%s] %s %s\n  Path: %s\n  Args: %s\n\n",
+                c.time, c.method, c.remote, c.path, c.args)
+        end
+        if out == "" then out = "No calls captured yet." end
+        DeepLabel:Set(out)
+    end
+})
+
+-- TAB: SETTINGS
+local TabSettings = Window:CreateTab("Settings", 4483362458)
+
+TabSettings:CreateSection("Filters")
+
+TabSettings:CreateToggle({
+    Name = "🏗️ Exclude Buildings / Structures",
+    CurrentValue = true,
+    Flag = "ExcludeBuildings",
+    Callback = function(val)
+        State.excludeBuildings = val
+        notify("Setting", val and "Building exclusion ON" or "Building exclusion OFF", 3)
+    end
+})
+
+TabSettings:CreateSlider({
+    Name = "Max Scan Depth (0 = unlimited)",
+    Range = {0, 15},
+    Increment = 1,
+    Suffix = "lvl",
+    CurrentValue = 0,
+    Flag = "MaxDepth",
+    Callback = function(val)
+        State.maxDepth = val
+    end
+})
+
+-- TAB: EXPORT
+local TabExport = Window:CreateTab("Export", 4483362458)
+
+TabExport:CreateSection("Dump Results")
+
+TabExport:CreateButton({
+    Name = "💾 Export All to JSON",
+    Callback = function()
+        exportJSON()
+    end
+})
+
+TabExport:CreateButton({
+    Name = "📋 Copy Security Report",
+    Callback = function()
+        local report = ""
+        report = report .. "=== SECURITY REPORT ===\n"
+        report = report .. "AntiCheat: " .. #State.acDetections .. " hits\n"
+        for _, d in ipairs(State.acDetections) do
+            report = report .. string.format("  %s:L%d [%s] %s\n", d.script, d.line, d.pattern, d.text)
+        end
+        report = report .. "\nBackdoors: " .. #State.bdDetections .. " hits\n"
+        for _, d in ipairs(State.bdDetections) do
+            report = report .. string.format("  %s:L%d [%s] %s\n", d.script, d.line, d.pattern, d.text)
+        end
+        if setclipboard then setclipboard(report) end
+        notify("Copied", "Security report copied.", 3)
+    end
+})
+
+-- ── INIT ──────────────────────────────────────────────────────
+notify("Scanner Ready", "Universal Game Scanner v9.0 loaded.\nPress Right Shift to toggle UI.", 6)
+
+print("═══════════════════════════════════════")
+print("   Universal Game Scanner v9.0 ready")
+print("   Buildings excluded from scanning")
+print("═══════════════════════════════════════")
