@@ -1,5 +1,5 @@
 --!nocheck
--- Universal Game Scanner v9.5 - Verified Clean
+-- Universal Game Scanner v9.6 - Full Build + Export Fix
 -- snowy-dot/Advance-scanner-game-
 
 local Players = game:GetService("Players")
@@ -11,22 +11,34 @@ local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
 
-local getsrc = getsrc
-local decompile = decompile
-local getscriptbytecode = getscriptbytecode
-local writefile = writefile
-local setclipboard = setclipboard
-local newcclosure = newcclosure
-local getrawmetatable = getrawmetatable
-local setreadonly = setreadonly
-local getnamecallmethod = getnamecallmethod
+-- Executor function loader (kills linter warnings)
+local function getExecFunc(name)
+    local ok, fn = pcall(function()
+        return getgenv()[name]
+    end)
+    if ok and type(fn) == "function" then return fn end
+    return _G[name]
+end
+
+local getsrc = getExecFunc("getsrc")
+local decompile = getExecFunc("decompile")
+local getscriptbytecode = getExecFunc("getscriptbytecode")
+local writefile = getExecFunc("writefile")
+local readfile = getExecFunc("readfile")
+local isfolder = getExecFunc("isfolder")
+local makefolder = getExecFunc("makefolder")
+local setclipboard = getExecFunc("setclipboard")
+local newcclosure = getExecFunc("newcclosure")
+local getrawmetatable = getExecFunc("getrawmetatable")
+local setreadonly = getExecFunc("setreadonly")
+local getnamecallmethod = getExecFunc("getnamecallmethod")
 
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
 local Window = Rayfield:CreateWindow({
     Name = "Universal Game Scanner",
     LoadingTitle = "Game Scanner",
-    LoadingSubtitle = "v9.5",
+    LoadingSubtitle = "v9.6",
     ConfigurationSaving = {Enabled = false},
     KeySystem = false
 })
@@ -371,7 +383,7 @@ local function exportJSON()
         meta = {
             time = os.date("%Y-%m-%d %H:%M:%S"),
             placeId = game.PlaceId,
-            version = "v9.5"
+            version = "v9.6"
         },
         stats = State.stats,
         scripts = State.results,
@@ -382,17 +394,33 @@ local function exportJSON()
             antiCheat = State.acDetections,
             backdoors = State.bdDetections,
             requires = State.requireMap
-        }
+        },
+        deepData = State.deepData
     }
+
     local json = HttpService:JSONEncode(export)
+
+    local wrote = false
     if writefile then
-        local fname = "scanner_" .. game.PlaceId .. "_" .. os.time() .. ".json"
-        writefile(fname, json)
-        notify("Export", "Saved: " .. fname, 5)
+        pcall(function()
+            if isfolder and not isfolder("ScannerResults") then
+                makefolder("ScannerResults")
+            end
+            local fname = "ScannerResults/scan_" .. os.time() .. ".json"
+            writefile(fname, json)
+            print("[Scanner] Saved: " .. fname)
+            notify("Export", "Saved to workspace/ScannerResults/", 5)
+            wrote = true
+        end)
     end
+
     if setclipboard then
         setclipboard(json)
-        notify("Clipboard", "JSON copied", 3)
+        notify("Clipboard", "JSON also copied to clipboard", 3)
+    end
+
+    if not wrote then
+        notify("Export", "writefile failed, clipboard only", 5)
     end
 end
 
@@ -497,7 +525,7 @@ local function stopDeepScan()
         #State.deepData.spawns), 5)
 end
 
--- UI TABS
+-- UI
 
 local TabMain = Window:CreateTab("Main", 4483345998)
 TabMain:CreateSection("Scanner Control")
@@ -691,14 +719,14 @@ TabObj:CreateButton({
         out = out .. "\n=== Values (" .. #State.objects.values .. ") ===\n"
         for i, v in ipairs(State.objects.values) do
             if i > 15 then break end
-            out = out .. "* [" .. v.class .. "] " .. v.path .. " = " .. v.val .. "\n"
+            out = out .. "* [" .. v.class .. "] " .. v.path .. .. "\n"
         end
         if out == "" then out = "Nothing found." end
         ObjLabel:Set(out)
     end
 })
 
-local TabDeep = Window:CreateTab("Deep Scan", 4483345998)
+local TabDeep = Window:CreateTab("Deep Scan", 4383345998)
 TabDeep:CreateSection("Live Monitor")
 TabDeep:CreateButton({
     Name = "Start Deep Scan (300s)",
@@ -779,5 +807,5 @@ TabSet:CreateSlider({
     end
 })
 
-notify("Scanner Ready", "v9.5 loaded. Right Shift toggles UI.", 6)
-print("=== Universal Game Scanner v9.5 loaded ===")
+notify("Scanner Ready", "v9.6 loaded. Right Shift toggles UI.", 6)
+print("=== Universal Game Scanner v9.6 loaded ===")
