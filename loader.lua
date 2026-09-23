@@ -1,27 +1,16 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v14 — FULL RECON EDITION
---  Uncover any game's code + architecture + protocol
---
---  ENGINE (unfreezable, from v13):
---    unified single-walk, time-sliced, container-isolated
---  INTELLIGENCE (new):
---    - Fingerprint engine: auto tier classification + risk report
---    - Traffic capture: args + RETURN VALUES + cooldown analysis
---    - Code coverage: getsrc→decompile→bytecode ladder + %
---    - Structure map: remote sub-system grouping, folder architecture
---    - Value intelligence: game-state detection vs noise
---    - One-click briefing: everything analyzed automatically
+--  PHANTOM RECON DROP v1
+--  Paste → scan → full briefing. No UI. One shot.
+--  Output: F9 console + "PhantomRecon_<game>.txt"
 -- ==============================================================
 
-local Players              = game:GetService("Players")
-local RunService           = game:GetService("RunService")
-local HttpService          = game:GetService("HttpService")
-local ReplicatedStorage    = game:GetService("ReplicatedStorage")
-local MarketplaceService   = game:GetService("MarketplaceService")
+local Players            = game:GetService("Players")
+local RunService         = game:GetService("RunService")
+local HttpService        = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local LocalPlayer = Players.LocalPlayer
-local unpack = table.unpack or unpack
 
 local function getExecFunc(name)
     local ok, fn = pcall(function() return getgenv()[name] end)
@@ -33,15 +22,9 @@ local getsrc            = getExecFunc("getsrc")
 local decompile         = getExecFunc("decompile")
 local getscriptbytecode = getExecFunc("getscriptbytecode")
 local writefile         = getExecFunc("writefile")
-local readfile          = getExecFunc("readfile")
 local isfolder          = getExecFunc("isfolder")
 local makefolder        = getExecFunc("makefolder")
-local isfile            = getExecFunc("isfile")
 local setclipboard      = getExecFunc("setclipboard")
-local newcclosure       = getExecFunc("newcclosure")
-local getrawmetatable   = getExecFunc("getrawmetatable")
-local setreadonly       = getExecFunc("setreadonly")
-local getnamecallmethod = getExecFunc("getnamecallmethod")
 local identifyexecutor  = getExecFunc("identifyexecutor")
 
 local GameName = "UnknownGame"
@@ -49,2136 +32,646 @@ pcall(function()
     local info = MarketplaceService:GetProductInfo(game.PlaceId)
     if info and info.Name and info.Name ~= "" then GameName = info.Name end
 end)
-if GameName == "UnknownGame" then
-    pcall(function() if game.Name ~= "" then GameName = game.Name end end)
-end
 
-local function sanitizeFilename(str)
-    return tostring(str):gsub("[^%w%-_]", "_"):sub(1, 60)
-end
-local safeGameName = sanitizeFilename(GameName)
+local safeGameName = tostring(GameName):gsub("[^%w%-_]", "_"):sub(1, 50)
 
 local executorInfo = "Unknown"
 pcall(function()
     local n, v = identifyexecutor()
-    executorInfo = tostring(n) .. (v and (" v" .. tostring(v)) or "")
+    executorInfo = tostring(n)
 end)
 
-print("[Phantom v14] Game: " .. GameName)
-print("[Phantom v14] Executor: " .. executorInfo)
-
--- config
-local CONFIG_FILE = "PhantomScanner/config.json"
-
-local function saveConfig(cfg)
-    if writefile then
-        pcall(function()
-            if isfolder and makefolder and not isfolder("PhantomScanner") then
-                makefolder("PhantomScanner")
-            end
-            writefile(CONFIG_FILE, HttpService:JSONEncode(cfg))
-        end)
-    end
-end
-
-local function loadConfig()
-    if readfile and isfile and isfile(CONFIG_FILE) then
-        local ok, data = pcall(function()
-            return HttpService:JSONDecode(readfile(CONFIG_FILE))
-        end)
-        if ok and type(data) == "table" then return data end
-    end
-    return {}
-end
-
-local CFG = loadConfig()
-if CFG.dedup == nil then CFG.dedup = true end
-if CFG.scanCoreGui == nil then CFG.scanCoreGui = false end
-if CFG.frameBudgetMS == nil then CFG.frameBudgetMS = 8 end
-if CFG.maxInstances == nil then CFG.maxInstances = 1000000 end
-if CFG.captureReturns == nil then CFG.captureReturns = true end
-if CFG.skipCharacters == nil then CFG.skipCharacters = true end
-
--- state
-local State = {
-    results          = {},
-    hashes           = {},
-    remotes          = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}},
-    objects          = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}},
-    assets           = {sounds = {}, animations = {}, decals = {}, meshes = {}},
-    acDetections     = {},
-    bdDetections     = {},
-    webhookHits      = {},
-    requireMap       = {},
-    deepData         = {remoteCalls = {}, promptHits = {}, spawns = {}, returns = {}},
-    stats            = {
-        total = 0, source = 0, bytecode = 0, needDecomp = 0, failed = 0, deduped = 0,
-        instancesWalked = 0, containersFailed = 0
-    },
-    fingerprint      = nil,
-    deepScanning     = false,
-    busy             = false,
-    cancelScan       = false,
-    lastExportPath   = "",
-    scanStart        = 0,
-    scanDuration     = 0,
-    selectedScript   = nil,
-    selectedNPC      = nil,
-    selectedValue    = nil,
-    selectedRemote   = nil,
-    filteredScripts  = {},
-    remoteList       = {},
-    filteredValues   = {},
-    _searchQuery     = "",
-    _valueQuery      = "",
-    _newValue        = "",
-    remotePath       = "",
-    remoteArgs       = "",
-    decompiling      = false
-}
-
-local connections = {}
-local restoreHook
-local refreshScriptDropdown
-
--- rayfield
-local Rayfield, Window
-do
-    local ok, result = pcall(function()
-        return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
-    end)
-    if ok and type(result) == "table" then
-        Rayfield = result
-        Window = Rayfield:CreateWindow({
-            Name = "Phantom Scanner v14",
-            LoadingTitle = GameName,
-            LoadingSubtitle = "full recon | uncover everything",
-            ConfigurationSaving = {Enabled = false},
-            KeySystem = false
-        })
-    else
-        warn("[Phantom] RAYFIELD LOAD FAILED: " .. tostring(result))
-        return
-    end
-end
-
-local function notify(title, content, dur)
+local function sendNotif(title, msg, dur)
     pcall(function()
-        Rayfield:Notify({
-            Title = title,
-            Content = content,
-            Duration = dur or 4
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title, Text = msg, Duration = dur or 4
         })
     end)
 end
 
+sendNotif("Phantom Recon", "Scanning " .. GameName .. "...", 5)
+print("[Phantom] =========================================")
+print("[Phantom] RECON DROP STARTED: " .. GameName)
+print("[Phantom] =========================================")
+
 -- ==============================================================
---  UNIFIED WALK ENGINE (v13 core, + character skip + full dedup)
+--  UNIFIED WALK (v13/14 engine — unfreezable)
 -- ==============================================================
 
-local junkValueNames = {
+local scripts = {}
+local scriptHashes = {}
+local remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
+local objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}}
+local assets = {sounds = {}, animations = {}, meshes = {}, decals = {}}
+local stats = {instancesWalked = 0, containersFailed = 0, deduped = 0}
+
+local remoteHashes = {}
+local valueHashes = {}
+local objHashes = {}
+
+local junkValues = {
     OriginalSize = true,
     OriginalPosition = true,
     AvatarPartScaleType = true
 }
 
-local function getContainers()
-    local list = {}
-    local function tryAdd(svc, name)
-        pcall(function()
-            local s = game:GetService(svc)
-            if s then list[#list + 1] = {s, name} end
-        end)
-    end
-    tryAdd("Workspace", "Workspace")
-    tryAdd("ReplicatedStorage", "ReplicatedStorage")
-    tryAdd("ReplicatedFirst", "ReplicatedFirst")
-    tryAdd("StarterGui", "StarterGui")
-    tryAdd("StarterPack", "StarterPack")
-    tryAdd("StarterPlayer", "StarterPlayer")
-    tryAdd("Lighting", "Lighting")
-    tryAdd("SoundService", "SoundService")
-    tryAdd("Teams", "Teams")
-    tryAdd("ServerScriptService", "ServerScriptService")
-    tryAdd("ServerStorage", "ServerStorage")
+local containers = {}
+local function tryAdd(svc)
     pcall(function()
-        if LocalPlayer:FindFirstChild("PlayerScripts") then
-            list[#list + 1] = {LocalPlayer.PlayerScripts, "PlayerScripts"}
-        end
-    end)
-    pcall(function()
-        if LocalPlayer:FindFirstChild("PlayerGui") then
-            list[#list + 1] = {LocalPlayer.PlayerGui, "PlayerGui"}
-        end
-    end)
-    if CFG.scanCoreGui then
-        pcall(function()
-            local cg = gethui and gethui() or game:GetService("CoreGui")
-            if cg then list[#list + 1] = {cg, "CoreGui"} end
-        end)
-    end
-    return list
-end
-
-local function quickHash(str)
-    if not str then return "nil" end
-    local h = 5381
-    for i = 1, #str do
-        h = (h * 33 + string.byte(str, i)) % 0x100000000
-    end
-    return string.format("%08x", h)
-end
-
-local function unifiedWalk(progressCb)
-    State.results = {}
-    State.hashes = {}
-    State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
-    State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}}
-    State.assets = {sounds = {}, animations = {}, decals = {}, meshes = {}}
-    State.stats.instancesWalked = 0
-    State.stats.containersFailed = 0
-
-    -- full dedup across all capture types
-    local remoteHashes = {}
-    local valueHashes = {}
-    local objHashes = {}
-
-    local budget = CFG.frameBudgetMS / 1000
-    local frameStart = os.clock()
-
-    local function maybeYield(force)
-        if force or (os.clock() - frameStart) >= budget then
-            if progressCb then progressCb(State.stats.instancesWalked) end
-            RunService.RenderStepped:Wait()
-            frameStart = os.clock()
-        end
-    end
-
-    for _, cd in ipairs(getContainers()) do
-        if State.cancelScan then break end
-        local ok, err = pcall(function()
-            local stack = {cd[1]}
-            while #stack > 0 do
-                if State.cancelScan then return end
-                if State.stats.instancesWalked >= CFG.maxInstances then
-                    notify("Walk", "Instance cap reached — results valid", 5)
-                    return
-                end
-
-                local node = table.remove(stack)
-                local gotKids, children = pcall(node.GetChildren, node)
-                if not gotKids then
-                    maybeYield(true)
-                else
-                    for _, inst in ipairs(children) do
-                        State.stats.instancesWalked = State.stats.instancesWalked + 1
-                        local cls = inst.ClassName
-
-                        if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
-                            table.insert(stack, inst)
-                            local okPath, path = pcall(inst.GetFullName, inst)
-                            if okPath then
-                                local hash = quickHash(path .. "|" .. cls)
-                                if CFG.dedup and State.hashes[hash] then
-                                    State.stats.deduped = State.stats.deduped + 1
-                                else
-                                    State.hashes[hash] = true
-                                    table.insert(State.results, {
-                                        path = path,
-                                        name = inst.Name,
-                                        className = cls,
-                                        inst = inst,
-                                        source = "",
-                                        size = 0,
-                                        status = "PENDING"
-                                    })
-                                end
-                            end
-
-                        elseif cls == "RemoteEvent" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not remoteHashes[p] then
-                                remoteHashes[p] = true
-                                table.insert(State.remotes.events, {path = p, name = inst.Name})
-                            end
-                        elseif cls == "RemoteFunction" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not remoteHashes[p] then
-                                remoteHashes[p] = true
-                                table.insert(State.remotes.functions, {path = p, name = inst.Name})
-                            end
-                        elseif cls == "BindableEvent" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not remoteHashes[p] then
-                                remoteHashes[p] = true
-                                table.insert(State.remotes.bindables, {path = p, name = inst.Name})
-                            end
-                        elseif cls == "BindableFunction" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not remoteHashes[p] then
-                                remoteHashes[p] = true
-                                table.insert(State.remotes.bindableFuncs, {path = p, name = inst.Name})
-                            end
-
-                        elseif cls == "ProximityPrompt" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not objHashes[p] then
-                                objHashes[p] = true
-                                table.insert(State.objects.prompts, {path = p, name = inst.Name})
-                            end
-                        elseif cls == "ClickDetector" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not objHashes[p] then
-                                objHashes[p] = true
-                                table.insert(State.objects.clickDetectors, {path = p, name = inst.Name})
-                            end
-                        elseif cls == "SpawnLocation" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not objHashes[p] then
-                                objHashes[p] = true
-                                local okPos, pos = pcall(function() return tostring(inst.Position) end)
-                                table.insert(State.objects.spawns, {path = p, pos = okPos and pos or "?"})
-                            end
-
-                        elseif cls == "IntValue" or cls == "NumberValue" or cls == "StringValue"
-                            or cls == "BoolValue" or cls == "ObjectValue" then
-                            if not (junkValueNames[inst.Name]) then
-                                local okP, p = pcall(inst.GetFullName, inst)
-                                if okP and not valueHashes[p] then
-                                    valueHashes[p] = true
-                                    local entry = {path = p, class = cls, ref = inst}
-                                    pcall(function() entry.val = tostring(inst.Value):sub(1, 80) end)
-                                    table.insert(State.objects.values, entry)
-                                end
-                            end
-
-                        elseif cls == "Sound" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not objHashes[p] then
-                                objHashes[p] = true
-                                local id = ""
-                                pcall(function() id = tostring(inst.SoundId) end)
-                                table.insert(State.assets.sounds, {path = p, id = id})
-                            end
-                        elseif cls == "Animation" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP and not objHashes[p] then
-                                objHashes[p] = true
-                                local id = ""
-                                pcall(function() id = tostring(inst.AnimationId) end)
-                                table.insert(State.assets.animations, {path = p, id = id})
-                            end
-                        elseif cls == "SpecialMesh" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
-                                local id = ""
-                                pcall(function() id = tostring(inst.MeshId) end)
-                                table.insert(State.assets.meshes, {path = p, id = id})
-                            end
-                        elseif cls == "Decal" then
-                            local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
-                                local tex = ""
-                                pcall(function() tex = tostring(inst.Texture) end)
-                                table.insert(State.assets.decals, {path = p, tex = tex})
-                            end
-                        end
-
-                        if cls == "Model" then
-                            -- record NPC humanoid but skip player characters
-                            local isChar = CFG.skipCharacters and Players:GetPlayerFromCharacter(inst)
-                            if not isChar then
-                                local hum = inst:FindFirstChildOfClass("Humanoid")
-                                if hum then
-                                    local okP, p = pcall(inst.GetFullName, inst)
-                                    if okP and not objHashes[p] then
-                                        objHashes[p] = true
-                                        local root = inst:FindFirstChild("HumanoidRootPart") or inst.PrimaryPart
-                                        local px, py, pz
-                                        if root then
-                                            pcall(function()
-                                                px, py, pz = root.Position.X, root.Position.Y, root.Position.Z
-                                            end)
-                                        end
-                                        table.insert(State.objects.humanoids, {
-                                            path = p,
-                                            name = inst.Name,
-                                            hp = hum.Health,
-                                            mhp = hum.MaxHealth,
-                                            ws = hum.WalkSpeed,
-                                            pos = px and string.format("%.1f, %.1f, %.1f", px, py, pz) or "?",
-                                            px = px, py = py, pz = pz
-                                        })
-                                    end
-                                end
-                            end
-                            table.insert(stack, inst)
-                        else
-                            table.insert(stack, inst)
-                        end
-
-                        maybeYield(false)
-                    end
-                end
-            end
-        end)
-
-        if not ok then
-            State.stats.containersFailed = State.stats.containersFailed + 1
-            warn("[Phantom] container walk failed: " .. tostring(err))
-        end
-        RunService.RenderStepped:Wait()
-    end
-
-    State.stats.total = #State.results
-end
-
--- ==============================================================
---  CODE COVERAGE ENGINE
---  Pass B: getsrc + bytecode. Pass C: decompile ladder.
--- ==============================================================
-
-local function grabSources(progressCb)
-    State.stats.source = 0
-    State.stats.bytecode = 0
-    State.stats.needDecomp = 0
-    State.stats.failed = 0
-
-    local budget = CFG.frameBudgetMS / 1000
-    local frameStart = os.clock()
-
-    for i, r in ipairs(State.results) do
-        if State.cancelScan then break end
-        local s = r.inst
-        if s and s.Parent then
-            local got = false
-            if getsrc then
-                local ok, src = pcall(getsrc, s)
-                if ok and type(src) == "string" and #src > 0 then
-                    r.source = src
-                    r.size = #src
-                    r.status = "SOURCE"
-                    State.stats.source = State.stats.source + 1
-                    got = true
-                end
-            end
-            if not got and getscriptbytecode then
-                local ok, bc = pcall(getscriptbytecode, s)
-                if ok and type(bc) == "string" and #bc > 0 then
-                    r.status = "BYTECODE"
-                    State.stats.bytecode = State.stats.bytecode + 1
-                    got = true
-                end
-            end
-            if not got then
-                r.status = "NODECOMP"
-                State.stats.needDecomp = State.stats.needDecomp + 1
-            end
-        else
-            r.status = "GONE"
-            State.stats.failed = State.stats.failed + 1
-        end
-
-        if (os.clock() - frameStart) >= budget then
-            if progressCb then progressCb(i, #State.results) end
-            RunService.RenderStepped:Wait()
-            frameStart = os.clock()
-        end
-    end
-end
-
-local function decompileOne(entry)
-    if not decompile then
-        return nil, "decompile not available"
-    end
-    local inst = entry.inst
-    if not inst or not inst.Parent then
-        return nil, "script gone"
-    end
-    for _ = 1, 2 do
-        local ok, r = pcall(decompile, inst)
-        if ok and type(r) == "string" and #r > 0 then
-            entry.source = r
-            entry.size = #r
-            entry.status = "SOURCE"
-            State.stats.needDecomp = State.stats.needDecomp - 1
-            State.stats.source = State.stats.source + 1
-            return r, nil
-        end
-    end
-    if getsrc then
-        local ok, r = pcall(getsrc, inst)
-        if ok and type(r) == "string" and #r > 0 then
-            entry.source = r
-            entry.size = #r
-            entry.status = "SOURCE"
-            State.stats.needDecomp = State.stats.needDecomp - 1
-            State.stats.source = State.stats.source + 1
-            return r, nil
-        end
-    end
-    return nil, "failed (server-only or VM-packed)"
-end
-
-local function decompileAllRemaining(progressCb)
-    if State.decompiling then return end
-    local targets = {}
-    for _, r in ipairs(State.results) do
-        if r.status == "NODECOMP" and r.inst and r.inst.Parent then
-            table.insert(targets, r)
-        end
-    end
-    if #targets == 0 then
-        notify("Pass C", "Nothing needs decompiling", 3)
-        return
-    end
-    State.decompiling = true
-    notify("Pass C", "Decompiling " .. #targets .. " — cancelable", 4)
-
-    local ok, fail = 0, 0
-    for i, r in ipairs(targets) do
-        if State.cancelScan then break end
-        local _, err = decompileOne(r)
-        if r.status == "SOURCE" then
-            ok = ok + 1
-        else
-            fail = fail + 1
-            r.status = "FAILED"
-            State.stats.failed = State.stats.failed + 1
-        end
-        if progressCb then progressCb(i, #targets, ok, fail) end
-        RunService.RenderStepped:Wait()
-        RunService.RenderStepped:Wait()
-    end
-    State.decompiling = false
-    notify("Pass C done", "OK: " .. ok .. " | failed: " .. fail, 6)
-end
-
--- ==============================================================
---  SECURITY SCAN
--- ==============================================================
-
-local function splitLines(source)
-    local lines = {}
-    for line in (source .. "\n"):gmatch("(.-)\n") do
-        table.insert(lines, line)
-    end
-    return lines
-end
-
-local function scanSecurity()
-    State.acDetections = {}
-    State.bdDetections = {}
-    State.webhookHits = {}
-    State.requireMap = {}
-
-    local acPatterns = {"anticheat", "anti-cheat", "exploit", "detect", "flag", "tamper", "noclip", "speedhack", "kick", "crash", "rejoin", "ban"}
-    local bdPatterns = {"loadstring(game:httpget", "require(", "backdoor", "getfenv(", "setfenv(", "getgenv("}
-    local webhookPatterns = {"discord.com/api/webhooks", "discordapp.com/api/webhooks", "webhook"}
-
-    for si, r in ipairs(State.results) do
-        if r.source and #r.source > 0 and r.status == "SOURCE" then
-            local lines = splitLines(r.source)
-            for li, line in ipairs(lines) do
-                local ll = line:lower()
-                for _, pat in ipairs(acPatterns) do
-                    if ll:find(pat, 1, true) then
-                        table.insert(State.acDetections, {script = r.path, line = li, pattern = pat, text = line:gsub("^%s+", ""):sub(1, 100)})
-                        break
-                    end
-                end
-                for _, pat in ipairs(bdPatterns) do
-                    if ll:find(pat, 1, true) then
-                        table.insert(State.bdDetections, {script = r.path, line = li, pattern = pat, text = line:gsub("^%s+", ""):sub(1, 100)})
-                        break
-                    end
-                end
-                for _, pat in ipairs(webhookPatterns) do
-                    if ll:find(pat, 1, true) then
-                        table.insert(State.webhookHits, {script = r.path, line = li, pattern = pat, text = line:gsub("^%s+", ""):sub(1, 120)})
-                        break
-                    end
-                end
-                if ll:find("require(", 1, true) then
-                    local arg = line:match("require%s*%(%s*(.-)%s*%)") or "?"
-                    table.insert(State.requireMap, {script = r.path, target = arg:sub(1, 80), text = line:gsub("^%s+", ""):sub(1, 100)})
-                end
-            end
-        end
-        if si % 40 == 0 then
-            RunService.RenderStepped:Wait()
-        end
-    end
-end
-
--- ==============================================================
---  FINGERPRINT ENGINE — the tier classifier
--- ==============================================================
-
-local function analyzeFingerprint()
-    local fp = {
-        tier = "?",
-        tierName = "unknown",
-        confidence = 0,
-        signals = {},
-        risks = {},
-        recommendations = {},
-        clientAuthSignals = 0,
-        serverAuthSignals = 0,
-        obfuscationScore = 0
-    }
-
-    -- SIGNAL 1: validation bindables (the big warning)
-    local validationNames = {"dataverification", "validate", "anticheat", "securitycheck", "verifyaction", "integritycheck"}
-    local foundValidation = false
-    for _, b in ipairs(State.remotes.bindables) do
-        local low = b.path:lower()
-        for _, vn in ipairs(validationNames) do
-            if low:find(vn, 1, true) then
-                foundValidation = true
-                table.insert(fp.signals, "validation bindable: " .. b.path)
-                break
-            end
-        end
-    end
-    if foundValidation then
-        fp.serverAuthSignals = fp.serverAuthSignals + 3
-        table.insert(fp.risks, "SERVER-SIDE ACTION VALIDATION DETECTED — economy remotes are fingerprinted")
-    end
-
-    -- SIGNAL 2: remote naming entropy (obfuscated vs descriptive)
-    local totalLen, totalRemotes = 0, 0
-    local shortNames = 0
-    for _, e in ipairs(State.remotes.events) do
-        totalLen = totalLen + #e.name
-        totalRemotes = totalRemotes + 1
-        if #e.name <= 3 then shortNames = shortNames + 1 end
-    end
-    if totalRemotes > 0 then
-        local avgLen = totalLen / totalRemotes
-        local shortRatio = shortNames / totalRemotes
-        if avgLen < 4 or shortRatio > 0.3 then
-            fp.obfuscationScore = fp.obfuscationScore + 2
-            table.insert(fp.signals, string.format("obfuscated remote naming (avg len %.1f, short %.0f%%)", avgLen, shortRatio * 100))
-            table.insert(fp.risks, "PROFESSIONAL CODEBASE — assume all remotes validated")
-        else
-            table.insert(fp.signals, string.format("descriptive remote naming (avg len %.1f)", avgLen))
-            fp.clientAuthSignals = fp.clientAuthSignals + 1
-        end
-    end
-
-    -- SIGNAL 3: script coverage ratio
-    local total = State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed
-    if total > 0 then
-        local srcRatio = State.stats.source / total
-        local failRatio = (State.stats.needDecomp + State.stats.failed) / total
-        if srcRatio > 0.7 then
-            fp.clientAuthSignals = fp.clientAuthSignals + 2
-            table.insert(fp.signals, string.format("high source visibility (%.0f%% readable)", srcRatio * 100))
-        elseif failRatio > 0.4 then
-            fp.serverAuthSignals = fp.serverAuthSignals + 2
-            table.insert(fp.signals, string.format("high server-only ratio (%.0f%% unreachable)", failRatio * 100))
-            table.insert(fp.risks, "logic mostly server-side — client edits are visual only")
-        end
-    end
-
-    -- SIGNAL 4: value-based game state
-    local gameStateValues = 0
-    local statePatterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory"}
-    for _, v in ipairs(State.objects.values) do
-        local low = v.path:lower()
-        for _, sp in ipairs(statePatterns) do
-            if low:find(sp, 1, true) then
-                gameStateValues = gameStateValues + 1
-                break
-            end
-        end
-    end
-    if gameStateValues > 20 then
-        fp.clientAuthSignals = fp.clientAuthSignals + 2
-        table.insert(fp.signals, string.format("game state replicated as values (%d candidates) — client-readable", gameStateValues))
-        table.insert(fp.recommendations, "check Values tab for currency/inventory — often client-writable in low-security games")
-    end
-
-    -- SIGNAL 5: webhook logging (snitch detection)
-    if #State.webhookHits > 0 then
-        table.insert(fp.risks, "GAME LOGS TO DISCORD WEBHOOKS — exploits may be reported in real-time")
-        fp.serverAuthSignals = fp.serverAuthSignals + 1
-    end
-
-    -- SIGNAL 6: anti-cheat mentions in source
-    if #State.acDetections > 10 then
-        fp.serverAuthSignals = fp.serverAuthSignals + 1
-        table.insert(fp.signals, #State.acDetections .. " anti-cheat related lines in captured source")
-    end
-
-    -- CLASSIFY
-    local score = fp.serverAuthSignals - fp.clientAuthSignals
-    if score >= 4 then
-        fp.tier = "TIER 3"
-        fp.tierName = "server-auth + hardened"
-        fp.confidence = 85
-        table.insert(fp.recommendations, "SAFE: teleport menu, ESP, fullbright, database browsers (replicated data)")
-        table.insert(fp.recommendations, "AVOID: firing economy/damage remotes — validation + ban teams likely")
-        table.insert(fp.recommendations, "USE: deep scan while playing for protocol recon only")
-    elseif score >= 1 then
-        fp.tier = "TIER 2"
-        fp.tierName = "hybrid validation"
-        fp.confidence = 70
-        table.insert(fp.recommendations, "SAFE: movement mods, ESP, TPs, prompt automation, client visuals")
-        table.insert(fp.recommendations, "TEST ON ALT: any remote that spends/moves/creates — observe response pattern")
-        table.insert(fp.recommendations, "USE: deep scan → smart templates → replicate exact observed args")
-    else
-        fp.tier = "TIER 1"
-        fp.tierName = "client-authoritative"
-        fp.confidence = 75
-        table.insert(fp.recommendations, "FULL SURFACE: value edits, remote firing, auto-farm loops all viable")
-        table.insert(fp.recommendations, "start with the Values tab — game state is probably writable")
-    end
-
-    if fp.obfuscationScore >= 2 and fp.tier == "TIER 1" then
-        fp.tier = "TIER 2"
-        fp.confidence = 60
-        table.insert(fp.risks, "downgraded to tier 2 due to obfuscation despite client-visible sources")
-    end
-
-    State.fingerprint = fp
-    return fp
-end
-
-local function buildFingerprintReport()
-    local fp = State.fingerprint or analyzeFingerprint()
-    local buf = {}
-    local function add(t) table.insert(buf, t) end
-
-    add("╔══════════════════════════════════════════╗")
-    add("  PHANTOM FINGERPRINT REPORT")
-    add("╚══════════════════════════════════════════╝")
-    add("Game: " .. GameName)
-    add("Place: " .. tostring(game.PlaceId))
-    add("")
-    add("CLASSIFICATION: " .. fp.tier .. " — " .. fp.tierName)
-    add("Confidence: " .. fp.confidence .. "%")
-    add("")
-    add("── SIGNALS DETECTED ──")
-    for _, s in ipairs(fp.signals) do
-        add("  • " .. s)
-    end
-    if #fp.signals == 0 then add("  (none)") end
-    add("")
-    add("── RISKS ──")
-    for _, r in ipairs(fp.risks) do
-        add("  ⚠ " .. r)
-    end
-    if #fp.risks == 0 then add("  none flagged") end
-    add("")
-    add("── RECOMMENDED APPROACH ──")
-    for _, rec in ipairs(fp.recommendations) do
-        add("  → " .. rec)
-    end
-    add("")
-    add("── EXPLOIT SURFACE SUMMARY ──")
-    add("  Scripts: " .. State.stats.total .. " total | " .. State.stats.source .. " source | " .. State.stats.needDecomp .. " need-decomp | " .. State.stats.failed .. " unreachable")
-    add("  Remotes: " .. #State.remotes.events .. " events | " .. #State.remotes.functions .. " functions")
-    add("  Values: " .. #State.objects.values .. " (game-state candidates: " .. (fp.gameStateValues or "see signals") .. ")")
-    add("  NPCs: " .. #State.objects.humanoids .. " | Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
-    local coverage = 0
-    if (State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed) > 0 then
-        coverage = math.floor((State.stats.source / (State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed)) * 100)
-    end
-    add("  Code coverage: " .. coverage .. "% of scripts readable")
-    add("")
-    add("── TRAFFIC (deep scan) ──")
-    add("  Observed calls: " .. #State.deepData.remoteCalls)
-    add("  Captured returns: " .. #State.deepData.returns)
-    if #State.deepData.remoteCalls > 0 then
-        add("  → run 'Smart Templates' to convert traffic into a script skeleton")
-    end
-
-    return table.concat(buf, "\n")
-end
-
--- ==============================================================
---  STRUCTURE MAP — remote sub-system grouping
--- ==============================================================
-
-local function buildStructureMap()
-    local buf = {}
-    local function add(t) table.insert(buf, t) end
-
-    add("════════ STRUCTURE MAP ════════")
-
-    -- group remotes by parent container
-    local systems = {}
-    for _, e in ipairs(State.remotes.events) do
-        local parent = e.path:match("^(.+)%.[^%.]+$") or "root"
-        systems[parent] = systems[parent] or {events = 0, funcs = 0}
-        systems[parent].events = systems[parent].events + 1
-    end
-    for _, f in ipairs(State.remotes.functions) do
-        local parent = f.path:match("^(.+)%.[^%.]+$") or "root"
-        systems[parent] = systems[parent] or {events = 0, funcs = 0}
-        systems[parent].funcs = systems[parent].funcs + 1
-    end
-
-    -- sort by count, show top systems
-    local sorted = {}
-    for name, data in pairs(systems) do
-        table.insert(sorted, {name = name, events = data.events, funcs = data.funcs})
-    end
-    table.sort(sorted, function(a, b)
-        return (a.events + a.funcs) > (b.events + b.funcs)
-    end)
-
-    add("REMOTE SUB-SYSTEMS (by call surface):")
-    for i, s in ipairs(sorted) do
-        if i > 40 then add("  ...+" .. (#sorted - 40) .. " more") break end
-        add(string.format("  [%dE/%dF] %s", s.events, s.funcs, s.name))
-    end
-
-    add("")
-    add("KEY FOLDERS IN REPLICATEDSTORAGE:")
-    local rs = game:GetService("ReplicatedStorage")
-    pcall(function()
-        for _, child in ipairs(rs:GetChildren()) do
-            if child:IsA("Folder") then
-                local count = 0
-                pcall(function() count = #child:GetDescendants() end)
-                add(string.format("  %s/ (%d descendants)", child.Name, count))
-            end
-        end
-    end)
-
-    add("")
-    add("WORKSPACE TOP-LEVEL:")
-    pcall(function()
-        for _, child in ipairs(workspace:GetChildren()) do
-            if child:IsA("Folder") or child:IsA("Model") then
-                add("  " .. child.Name)
-            end
-        end
-    end)
-
-    return table.concat(buf, "\n")
-end
-
--- ==============================================================
---  DEEP SCAN v2 — returns capture + cooldown analysis
--- ==============================================================
-
-local originalNamecall = nil
-local namecallHooked = false
-
-restoreHook = function()
-    if namecallHooked and originalNamecall then
-        pcall(function()
-            local mt = getrawmetatable(game)
-            setreadonly(mt, false)
-            mt.__namecall = originalNamecall
-            setreadonly(mt, true)
-        end)
-        namecallHooked = false
-    end
-end
-
-local function disconnectDeep()
-    if connections.promptAdded then
-        pcall(function() connections.promptAdded:Disconnect() end)
-        connections.promptAdded = nil
-    end
-    if connections.spawnWatch then
-        pcall(function() connections.spawnWatch:Disconnect() end)
-        connections.spawnWatch = nil
-    end
-end
-
--- serialize an arg with type info
-local function serializeArg(arg)
-    local t = typeof(arg)
-    if t == "Instance" then
-        return "Instance:" .. arg.ClassName .. "(" .. arg.Name .. ")"
-    elseif t == "CFrame" then
-        local p = arg.Position
-        return string.format("CFrame(%.1f,%.1f,%.1f)", p.X, p.Y, p.Z)
-    elseif t == "Vector3" then
-        return string.format("V3(%.1f,%.1f,%.1f)", arg.X, arg.Y, arg.Z)
-    elseif t == "Color3" then
-        return string.format("Color(%d,%d,%d)", arg.R * 255, arg.G * 255, arg.B * 255)
-    elseif t == "table" then
-        local ok, j = pcall(function() return HttpService:JSONEncode(arg) end)
-        if ok and j then
-            return "table:" .. j:sub(1, 80)
-        end
-        return "table:" .. tostring(arg):sub(1, 40)
-    elseif t == "string" then
-        return '"' .. tostring(arg):sub(1, 40) .. '"'
-    else
-        return t .. ":" .. tostring(arg):sub(1, 30)
-    end
-end
-
-local function startDeepScan(duration)
-    duration = duration or 300
-    if State.deepScanning then
-        notify("Deep Scan", "Already running", 3)
-        return
-    end
-    State.deepScanning = true
-    State.deepData = {remoteCalls = {}, promptHits = {}, spawns = {}, returns = {}}
-    notify("Deep Scan", "Monitoring " .. duration .. "s — play the game's core loop", 6)
-
-    connections.promptAdded = workspace.DescendantAdded:Connect(function(d)
-        if d:IsA("ProximityPrompt") then
-            d.Triggered:Connect(function(plr)
-                if plr == LocalPlayer then
-                    table.insert(State.deepData.promptHits, {
-                        time = os.date("%H:%M:%S"),
-                        prompt = d.Name,
-                        path = d:GetFullName()
-                    })
-                end
-            end)
-        end
-    end)
-
-    connections.spawnWatch = workspace.DescendantAdded:Connect(function(d)
-        if d:IsA("Model") and not (CFG.skipCharacters and Players:GetPlayerFromCharacter(d)) then
-            if d:FindFirstChildOfClass("Humanoid") then
-                table.insert(State.deepData.spawns, {
-                    time = os.date("%H:%M:%S"),
-                    name = d.Name,
-                    path = d:GetFullName()
-                })
-            end
-        end
-    end)
-
-    pcall(function()
-        local mt = getrawmetatable(game)
-        setreadonly(mt, false)
-        originalNamecall = mt.__namecall
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if method == "FireServer" or method == "InvokeServer" then
-                local args = {...}
-                local argStr = ""
-                for i, arg in ipairs(args) do
-                    argStr = argStr .. "[" .. i .. "] " .. serializeArg(arg) .. "  "
-                end
-
-                local call = {
-                    time = os.date("%H:%M:%S"),
-                    clock = os.clock(),
-                    method = method,
-                    remote = self.Name,
-                    path = self:GetFullName(),
-                    args = argStr,
-                    argCount = #args
-                }
-                table.insert(State.deepData.remoteCalls, call)
-
-                -- capture InvokeServer RETURN values (server data coming back)
-                if method == "InvokeServer" and CFG.captureReturns then
-                    local results = {originalNamecall(self, ...)}
-                    local retStr = ""
-                    for i, res in ipairs(results) do
-                        retStr = retStr .. "[" .. i .. "] " .. serializeArg(res) .. "  "
-                    end
-                    table.insert(State.deepData.returns, {
-                        time = call.time,
-                        remote = self.Name,
-                        path = call.path,
-                        returns = retStr
-                    })
-                    return unpack(results)
-                end
-            end
-            return originalNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
-        namecallHooked = true
-    end)
-
-    task.delay(duration, function()
-        if State.deepScanning then
-            restoreHook()
-            disconnectDeep()
-            State.deepScanning = false
-            notify("Deep Scan Done",
-                string.format("Calls: %d | Returns: %d | Prompts: %d",
-                    #State.deepData.remoteCalls, #State.deepData.returns, #State.deepData.promptHits), 7)
-        end
+        local s = game:GetService(svc)
+        if s then table.insert(containers, s) end
     end)
 end
 
-local function stopDeepScan()
-    if not State.deepScanning then return end
-    State.deepScanning = false
-    disconnectDeep()
-    restoreHook()
-    notify("Deep Scan Stopped", string.format("Calls: %d | Returns: %d",
-        #State.deepData.remoteCalls, #State.deepData.returns), 5)
-end
-
--- traffic analysis: cooldowns + call frequencies
-local function analyzeTraffic()
-    local buf = {}
-    local function add(t) table.insert(buf, t) end
-
-    add("════════ TRAFFIC ANALYSIS ════════")
-    add("Total calls: " .. #State.deepData.remoteCalls)
-    add("Captured returns: " .. #State.deepData.returns)
-    add("")
-
-    -- frequency per remote
-    local freq = {}
-    local order = {}
-    local lastCallTime = {}
-    local minGaps = {}
-    for _, c in ipairs(State.deepData.remoteCalls) do
-        if not freq[c.path] then
-            freq[c.path] = 0
-            table.insert(order, c.path)
-        end
-        freq[c.path] = freq[c.path] + 1
-        -- cooldown detection: smallest gap between calls to same remote
-        if lastCallTime[c.path] then
-            local gap = c.clock - lastCallTime[c.path]
-            if not minGaps[c.path] or gap < minGaps[c.path] then
-                minGaps[c.path] = gap
-            end
-        end
-        lastCallTime[c.path] = c.clock
+tryAdd("Workspace")
+tryAdd("ReplicatedStorage")
+tryAdd("ReplicatedFirst")
+tryAdd("StarterGui")
+tryAdd("StarterPack")
+tryAdd("StarterPlayer")
+tryAdd("Lighting")
+tryAdd("SoundService")
+tryAdd("Teams")
+tryAdd("ServerScriptService")
+tryAdd("ServerStorage")
+tryAdd("Players")
+pcall(function()
+    if LocalPlayer:FindFirstChild("PlayerScripts") then
+        table.insert(containers, LocalPlayer.PlayerScripts)
     end
-    table.sort(order, function(a, b) return freq[a] > freq[b] end)
-
-    add("── CALL FREQUENCY + DETECTED COOLDOWNS ──")
-    for i, path in ipairs(order) do
-        if i > 40 then add("  ...+" .. (#order - 40) .. " more") break end
-        local gapStr = minGaps[path] and string.format("min-gap %.2fs", minGaps[path]) or "single"
-        add(string.format("  %3dx | %s | %s", freq[path], gapStr, path))
-    end
-
-    if #State.deepData.returns > 0 then
-        add("")
-        add("── SERVER RETURN VALUES (game data coming back) ──")
-        for i, r in ipairs(State.deepData.returns) do
-            if i > 30 then add("  ...more") break end
-            add("  [" .. r.time .. "] " .. r.remote)
-            add("    → " .. r.returns)
-        end
-    end
-
-    add("")
-    add("── SAFETY NOTES ──")
-    for path, gap in pairs(minGaps) do
-        if gap < 0.1 and freq[path] > 5 then
-            add("  ⚠ " .. path .. " fires <100ms apart naturally — do NOT spam faster than this")
-        end
-    end
-
-    return table.concat(buf, "\n")
-end
-
--- ==============================================================
---  TEMPLATES + EXPORT
--- ==============================================================
-
-local function resolvePath(path)
-    local parts = {}
-    for p in path:gmatch("[^%.]+") do
-        table.insert(parts, p)
-    end
-    if #parts == 0 then return nil end
-    local cur = game
-    for i, p in ipairs(parts) do
-        if i == 1 then
-            local ok, svc = pcall(function() return game:GetService(p) end)
-            if ok and svc then
-                cur = svc
-            else
-                cur = game:FindFirstChild(p)
-            end
-        else
-            cur = cur:FindFirstChild(p)
-        end
-        if not cur then return nil end
-    end
-    return cur
-end
-
-local function pathToCode(path)
-    local parts = {}
-    for p in path:gmatch("[^%.]+") do
-        table.insert(parts, p)
-    end
-    if #parts == 0 then return "-- invalid path" end
-    local code = 'local obj = game:GetService("' .. parts[1] .. '")'
-    for i = 2, #parts do
-        code = code .. ':WaitForChild("' .. parts[i] .. '")'
-    end
-    return code
-end
-
-local function generateTemplates()
-    local buf = {"-- PHANTOM REMOTE TEMPLATES -- " .. GameName, ""}
-    for _, e in ipairs(State.remotes.events) do
-        local var = "evt" .. tostring(#buf)
-        table.insert(buf, "-- " .. e.path)
-        table.insert(buf, "local " .. var .. " = " .. pathToCode(e.path))
-        table.insert(buf, var .. ":FireServer(--[[ args ]])")
-        table.insert(buf, "")
-    end
-    for _, f in ipairs(State.remotes.functions) do
-        local var = "fn" .. tostring(#buf)
-        table.insert(buf, "-- " .. f.path)
-        table.insert(buf, "local " .. var .. " = " .. pathToCode(f.path))
-        table.insert(buf, "local result = " .. var .. ":InvokeServer(--[[ args ]])")
-        table.insert(buf, "")
-    end
-    return table.concat(buf, "\n")
-end
-
-local function generateSmartTemplates()
-    local buf = {"-- SMART TEMPLATES (from live traffic — replicate these exactly)", ""}
-    local observed, order = {}, {}
-    for _, c in ipairs(State.deepData.remoteCalls) do
-        if not observed[c.path] then
-            observed[c.path] = {calls = {}, method = c.method}
-            table.insert(order, c.path)
-        end
-        table.insert(observed[c.path].calls, c)
-    end
-    for _, path in ipairs(order) do
-        local data = observed[path]
-        table.insert(buf, "-- " .. path .. "  (observed " .. #data.calls .. "x)")
-        table.insert(buf, "local remote = " .. pathToCode(path))
-        table.insert(buf, "-- observed args: " .. data.calls[1].args)
-        if data.method == "FireServer" then
-            table.insert(buf, "remote:FireServer(--[[ replicate exact args above ]])")
-        else
-            table.insert(buf, "local result = remote:InvokeServer(--[[ replicate exact args above ]])")
-        end
-        table.insert(buf, "")
-    end
-    if #order == 0 then
-        table.insert(buf, "-- no traffic yet. run deep scan + play the game's core loop.")
-    end
-    return table.concat(buf, "\n")
-end
-
-local CHUNK_SIZE = 3000000
-local CLIPBOARD_LIMIT = 1500000
-
-local function writeSingle(content, baseName, ext)
-    local timestamp = tostring(os.time())
-    local attemptPaths = {
-        baseName .. "_" .. timestamp .. ext,
-        "PhantomScanner/" .. baseName .. "_" .. timestamp .. ext,
-        "scan_" .. timestamp .. ext
-    }
-    if writefile then
-        for _, path in ipairs(attemptPaths) do
-            local ok = pcall(function()
-                if isfolder and makefolder then
-                    local folderInPath = path:match("^(.+)/[^/]+$")
-                    if folderInPath and not isfolder(folderInPath) then
-                        makefolder(folderInPath)
-                    end
-                end
-                writefile(path, content)
-            end)
-            if ok then return path end
-        end
-    end
-    return nil
-end
-
-local function writeChunked(buf, baseName, ext)
-    local out = table.concat(buf, "\n")
-    if #out <= CHUNK_SIZE then
-        local p = writeSingle(out, baseName, ext)
-        return p, #out
-    end
-    local parts = math.ceil(#out / CHUNK_SIZE)
-    local savedAny = false
-    for i = 1, parts do
-        local s = (i - 1) * CHUNK_SIZE + 1
-        local e = math.min(i * CHUNK_SIZE, #out)
-        local p = writeSingle(out:sub(s, e), baseName .. "_part" .. i, ext)
-        if p then savedAny = true end
-        RunService.RenderStepped:Wait()
-    end
-    if savedAny then
-        return baseName .. "_part1-" .. parts .. ext, #out
-    end
-    return nil, #out
-end
-
-local function exportTXT(includeSources)
-    if includeSources == nil then includeSources = true end
-
-    -- v14 export = full report WITH intelligence sections
-    local buf = {}
-    local function add(t) table.insert(buf, t) end
-
-    add("==========================================")
-    add("  PHANTOM SCANNER v14 — FULL RECON EXPORT")
-    add("==========================================")
-    add("Game: " .. GameName)
-    add("Place ID: " .. tostring(game.PlaceId))
-    add("Date: " .. os.date("%Y-%m-%d %H:%M:%S"))
-    add("Executor: " .. executorInfo)
-    add("Scan Duration: " .. string.format("%.1fs", State.scanDuration))
-    add("Instances Walked: " .. State.stats.instancesWalked)
-    add("Containers Failed: " .. State.stats.containersFailed)
-    add("")
-
-    -- fingerprint section always first
-    if not State.fingerprint then analyzeFingerprint() end
-    for _, line in ipairs(buildFingerprintReport():split("\n")) do
-        add(line)
-    end
-    add("")
-
-    -- structure map
-    for _, line in ipairs(buildStructureMap():split("\n")) do
-        add(line)
-    end
-    add("")
-
-    -- traffic analysis
-    if #State.deepData.remoteCalls > 0 then
-        for _, line in ipairs(analyzeTraffic():split("\n")) do
-            add(line)
-        end
-        add("")
-    end
-
-    -- raw data sections
-    add("========== STATS ==========")
-    add("Total Scripts: " .. State.stats.total)
-    add("Source captured: " .. State.stats.source)
-    add("Bytecode proven: " .. State.stats.bytecode)
-    add("Needs decompile: " .. State.stats.needDecomp)
-    add("Failed/gone: " .. State.stats.failed)
-    add("Deduped: " .. State.stats.deduped)
-    add("")
-    add("========== REMOTES ==========")
-    add("--- RemoteEvents (" .. #State.remotes.events .. ") ---")
-    for _, e in ipairs(State.remotes.events) do add(e.path) end
-    add("--- RemoteFunctions (" .. #State.remotes.functions .. ") ---")
-    for _, f in ipairs(State.remotes.functions) do add(f.path) end
-    add("--- BindableEvents (" .. #State.remotes.bindables .. ") ---")
-    for _, b in ipairs(State.remotes.bindables) do add(b.path) end
-    add("--- BindableFunctions (" .. #State.remotes.bindableFuncs .. ") ---")
-    for _, b in ipairs(State.remotes.bindableFuncs) do add(b.path) end
-    add("")
-    add("========== OBJECTS ==========")
-    add("--- ProximityPrompts (" .. #State.objects.prompts .. ") ---")
-    for _, p in ipairs(State.objects.prompts) do add(p.path) end
-    add("--- ClickDetectors (" .. #State.objects.clickDetectors .. ") ---")
-    for _, c in ipairs(State.objects.clickDetectors) do add(c.path) end
-    add("--- NPCs (" .. #State.objects.humanoids .. ") ---")
-    for _, n in ipairs(State.objects.humanoids) do
-        add(n.name .. " | HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp)
-            .. " WS:" .. tostring(n.ws) .. " | " .. n.path .. " @ " .. n.pos)
-    end
-    add("--- SpawnLocations (" .. #State.objects.spawns .. ") ---")
-    for _, s in ipairs(State.objects.spawns) do add(s.path .. " @ " .. s.pos) end
-    add("--- Values (" .. #State.objects.values .. ") ---")
-    for _, v in ipairs(State.objects.values) do
-        add("[" .. v.class .. "] " .. v.path .. " = " .. tostring(v.val))
-    end
-    add("")
-    add("========== ASSETS ==========")
-    add("--- Sounds (" .. #State.assets.sounds .. ") ---")
-    for _, s in ipairs(State.assets.sounds) do add(s.path .. " | " .. s.id) end
-    add("--- Animations (" .. #State.assets.animations .. ") ---")
-    for _, a in ipairs(State.assets.animations) do add(a.path .. " | " .. a.id) end
-    add("--- Decals (" .. #State.assets.decals .. ") ---")
-    for _, d in ipairs(State.assets.decals) do add(d.path .. " | " .. d.tex) end
-    add("--- Meshes (" .. #State.assets.meshes .. ") ---")
-    for _, m in ipairs(State.assets.meshes) do add(m.path .. " | " .. m.id) end
-    add("")
-    add("========== SECURITY ==========")
-    add("--- AntiCheat (" .. #State.acDetections .. ") ---")
-    for _, d in ipairs(State.acDetections) do
-        add(d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]")
-        add("  " .. d.text)
-    end
-    add("--- Backdoors (" .. #State.bdDetections .. ") ---")
-    for _, d in ipairs(State.bdDetections) do
-        add(d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]")
-        add("  " .. d.text)
-    end
-    add("--- Webhooks (" .. #State.webhookHits .. ") ---")
-    for _, d in ipairs(State.webhookHits) do
-        add(d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]")
-        add("  " .. d.text)
-    end
-    add("--- Requires (" .. #State.requireMap .. ") ---")
-    for _, r in ipairs(State.requireMap) do add(r.script .. " -> " .. r.target) end
-    add("")
-    add("========== DEEP SCAN RAW ==========")
-    add("--- Remote Calls (" .. #State.deepData.remoteCalls .. ") ---")
-    for _, c in ipairs(State.deepData.remoteCalls) do
-        add("[" .. c.time .. "] " .. c.method .. "." .. c.remote)
-        add("  Path: " .. c.path)
-        add("  Args: " .. c.args)
-    end
-    add("--- Invoke Returns (" .. #State.deepData.returns .. ") ---")
-    for _, r in ipairs(State.deepData.returns) do
-        add("[" .. r.time .. "] " .. r.remote)
-        add("  Returns: " .. r.returns)
-    end
-    add("--- Prompt Hits (" .. #State.deepData.promptHits .. ") ---")
-    for _, c in ipairs(State.deepData.promptHits) do
-        add("[" .. c.time .. "] " .. c.prompt .. " | " .. c.path)
-    end
-    add("")
-
-    if includeSources then
-        add("========== SCRIPT SOURCES ==========")
-        add("")
-        for ri, r in ipairs(State.results) do
-            add("------ " .. r.path .. " [" .. r.className .. "] ------")
-            add("Status: " .. r.status .. " | Size: " .. r.size)
-            add("")
-            if r.source and #r.source > 0 then
-                add(r.source)
-            else
-                add("[NO SOURCE — Pass C or server-only]")
-            end
-            add("")
-            if ri % 50 == 0 then
-                RunService.RenderStepped:Wait()
-            end
-        end
-    end
-
-    local saved, size = writeChunked(buf, safeGameName, ".txt")
-    if saved then
-        State.lastExportPath = saved
-        if setclipboard and size <= CLIPBOARD_LIMIT then
-            setclipboard(table.concat(buf, "\n"))
-        end
-        local note = size > CLIPBOARD_LIMIT and " (clipboard skipped)" or " + clipboard"
-        notify("Export Saved", saved .. note, 6)
-        return true
-    else
-        notify("Export Failed", "writefile unavailable", 6)
-        return false
-    end
-end
-
-local function exportSourcesToFiles()
-    if not writefile then
-        notify("Export", "writefile unavailable", 4)
-        return
-    end
-    local folder = safeGameName .. "_sources"
-    if makefolder and not isfolder(folder) then
-        pcall(makefolder, folder)
-    end
-    local count = 0
-    for i, r in ipairs(State.results) do
-        if r.source and #r.source > 0 and r.status == "SOURCE" then
-            local fname = folder .. "/" .. sanitizeFilename(r.name) .. "_" .. i .. ".lua"
-            pcall(writefile, fname, "-- " .. r.path .. "\n-- " .. r.className .. "\n\n" .. r.source)
-            count = count + 1
-            if count % 20 == 0 then
-                RunService.RenderStepped:Wait()
-            end
-        end
-    end
-    notify("Sources", "Saved " .. count .. " files", 5)
-end
-
--- full pipeline
-local function runFullScan(progressCb)
-    State.busy = true
-    State.cancelScan = false
-    State.scanStart = os.clock()
-
-    unifiedWalk(function(walked)
-        pcall(function() progressCb("walking... " .. walked .. " instances") end)
-    end)
-
-    grabSources(function(i, total)
-        pcall(function() progressCb("sources... " .. i .. " / " .. total) end)
-    end)
-
-    scanSecurity()
-    analyzeFingerprint()
-
-    State.scanDuration = os.clock() - State.scanStart
-    State.busy = false
-    State.cancelScan = false
-
-    local fp = State.fingerprint
-    notify("Scan Complete",
-        string.format("%.1fs | %d instances | %s (%s)",
-            State.scanDuration, State.stats.instancesWalked, fp.tier, fp.tierName), 9)
-end
-
--- ==============================================================
---  TABS
--- ==============================================================
-
-local TabMain = Window:CreateTab("Main", 4483345998)
-TabMain:CreateSection("Recon Pipeline")
-
-local progressLabel = TabMain:CreateLabel("ready.")
-
-TabMain:CreateButton({
-    Name = "SCAN (walk + sources + fingerprint)",
-    Callback = function()
-        task.spawn(function()
-            runFullScan(function(text)
-                pcall(function() progressLabel:Set(text) end)
-            end)
-            local fp = State.fingerprint
-            pcall(function()
-                progressLabel:Set(string.format(
-                    "done %.1fs | %d inst | %d scripts | %s — %s",
-                    State.scanDuration, State.stats.instancesWalked,
-                    State.stats.total, fp.tier, fp.tierName))
-            end)
-            if refreshScriptDropdown then refreshScriptDropdown() end
-        end)
-    end
-}, 40)
-
-TabMain:CreateButton({
-    Name = "Pass C: Decompile All Remaining",
-    Callback = function()
-        task.spawn(function()
-            decompileAllRemaining(function(done, total, ok, fail)
-                pcall(function()
-                    progressLabel:Set(string.format("passC... %d / %d | ok:%d fail:%d", done, total, ok, fail))
-                end)
-            end)
-            if refreshScriptDropdown then refreshScriptDropdown() end
-        end)
-    end
-})
-
-TabMain:CreateButton({
-    Name = "Cancel",
-    Callback = function()
-        if State.busy or State.decompiling then
-            State.cancelScan = true
-            notify("Scan", "Cancelling...", 2)
-        end
-    end
-})
-
-TabMain:CreateSection("Intelligence")
-
-TabMain:CreateButton({
-    Name = "Generate Fingerprint Report (F9 + file)",
-    Callback = function()
-        task.spawn(function()
-            if not State.fingerprint then analyzeFingerprint() end
-            local report = buildFingerprintReport()
-            print(report)
-            if writefile then
-                writeSingle(report, safeGameName .. "_fingerprint", ".txt")
-            end
-            if setclipboard then setclipboard(report) end
-            notify("Fingerprint", State.fingerprint.tier .. " — full report in F9", 7)
-        end)
-    end
-})
-
-TabMain:CreateButton({
-    Name = "Generate Structure Map (F9)",
-    Callback = function()
-        task.spawn(function()
-            print(buildStructureMap())
-            notify("Structure", "Map printed to F9", 5)
-        end)
-    end
-})
-
-TabMain:CreateButton({
-    Name = "Analyze Traffic (F9) — cooldowns + returns",
-    Callback = function()
-        task.spawn(function()
-            if #State.deepData.remoteCalls == 0 then
-                notify("Traffic", "No traffic — run deep scan first", 4)
-                return
-            end
-            print(analyzeTraffic())
-            if writefile then
-                writeSingle(analyzeTraffic(), safeGameName .. "_traffic", ".txt")
-            end
-            notify("Traffic", "Analysis in F9 + saved", 6)
-        end)
-    end
-})
-
--- scripts tab
-local TabScr = Window:CreateTab("Scripts", 4483345998)
-TabScr:CreateSection("Search + Select")
-
-TabScr:CreateInput({
-    Name = "Search",
-    PlaceholderText = "filter by name or path...",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(text)
-        State._searchQuery = text or ""
-        if refreshScriptDropdown then refreshScriptDropdown() end
-    end
-})
-
-local filterOptions = {"All", "Combat", "Movement", "Economy", "NPC", "Remote",
-    "DataStore", "Security", "Client", "Server", "Module", "Other", "NEEDS-DECOMP"}
-local filterIndex = 1
-
-local function categorize(path, className)
-    local combined = path:lower()
-    local catKeywords = {
-        Combat = {"combat", "damage", "weapon", "gun", "kill", "sword"},
-        Movement = {"walkspeed", "fly", "noclip", "jump", "teleport"},
-        Economy = {"shop", "buy", "cash", "coin", "rebirth", "sell"},
-        NPC = {"npc", "monster", "enemy", "boss", "mob"},
-        Remote = {"remoteevent", "remotefunction", "fireserver"},
-        DataStore = {"datastore", "save", "profile"},
-        Security = {"anticheat", "detect", "flag"}
-    }
-    for cat, kws in pairs(catKeywords) do
-        for _, kw in ipairs(kws) do
-            if combined:find(kw, 1, true) then return cat end
-        end
-    end
-    if className == "LocalScript" then return "Client" end
-    if className == "Script" then return "Server" end
-    if className == "ModuleScript" then return "Module" end
-    return "Other"
-end
-
-TabScr:CreateDropdown({
-    Name = "Category Filter",
-    Options = filterOptions,
-    CurrentOption = {"All"},
-    Callback = function(opt)
-        for i, name in ipairs(filterOptions) do
-            if name == opt[1] then filterIndex = i break end
-        end
-        if refreshScriptDropdown then refreshScriptDropdown() end
-    end
-})
-
-local scriptSelectDropdown = TabScr:CreateDropdown({
-    Name = "Select Script",
-    Options = {"scan first"},
-    CurrentOption = {},
-    Callback = function(opt)
-        State.selectedScript = nil
-        if opt and opt[1] then
-            local idx = tonumber(opt[1]:match("#(%d+)$"))
-            if idx and State.filteredScripts[idx] then
-                State.selectedScript = State.filteredScripts[idx]
-            end
-        end
-    end
-})
-
-TabScr:CreateSection("Actions")
-
-TabScr:CreateButton({
-    Name = "Decompile SELECTED",
-    Callback = function()
-        local r = State.selectedScript
-        if not r then notify("Scripts", "Select first", 3) return end
-        task.spawn(function()
-            notify("Decompiling", r.name, 3)
-            local src, err = decompileOne(r)
-            if src then
-                notify("Done", r.name .. " (" .. #src .. " bytes)", 4)
-            else
-                notify("Failed", tostring(err), 4)
-            end
-        end)
-    end
-})
-
-TabScr:CreateButton({
-    Name = "Copy Selected Source",
-    Callback = function()
-        local r = State.selectedScript
-        if not r then notify("Scripts", "Select first", 3) return end
-        local content = (r.source and #r.source > 0) and r.source or ("-- no source -- path: " .. r.path)
-        if setclipboard then
-            setclipboard(content)
-            notify("Copied", r.name, 3)
-        end
-    end
-})
-
-TabScr:CreateButton({
-    Name = "Copy Selected Path",
-    Callback = function()
-        local r = State.selectedScript
-        if not r then notify("Scripts", "Select first", 3) return end
-        if setclipboard then setclipboard(r.path) notify("Copied", r.path, 3) end
-    end
-})
-
-TabScr:CreateButton({
-    Name = "Copy ALL Sources (capped 1.5MB)",
-    Callback = function()
-        task.spawn(function()
-            local all = {}
-            local total = 0
-            for _, r in ipairs(State.results) do
-                if r.status == "SOURCE" and r.source and #r.source > 0 then
-                    total = total + #r.source
-                    if total > CLIPBOARD_LIMIT then
-                        notify("Copy", "Capped — use file export", 5)
-                        break
-                    end
-                    table.insert(all, "--===== " .. r.path .. " =====")
-                    table.insert(all, r.source)
-                    table.insert(all, "")
-                end
-            end
-            local out = table.concat(all, "\n")
-            if setclipboard and #out > 0 then
-                setclipboard(out)
-                notify("Copy", tostring(#out) .. " bytes", 3)
-            end
-        end)
-    end
-})
-
-refreshScriptDropdown = function()
-    task.spawn(function()
-        local query = (State._searchQuery or ""):lower()
-        local selCat = filterOptions[filterIndex]
-        State.filteredScripts = {}
-        local options = {}
-
-        for _, r in ipairs(State.results) do
-            if r.category == nil then
-                r.category = categorize(r.path, r.className)
-            end
-            local matchesCat
-            if selCat == "All" then
-                matchesCat = true
-            elseif selCat == "NEEDS-DECOMP" then
-                matchesCat = (r.status == "NODECOMP")
-            else
-                matchesCat = (r.category == selCat)
-            end
-            local matchesQuery = (query == "")
-                or r.name:lower():find(query, 1, true)
-                or r.path:lower():find(query, 1, true)
-            if matchesCat and matchesQuery then
-                table.insert(State.filteredScripts, r)
-                local tag
-                if r.status == "SOURCE" then tag = "OK"
-                elseif r.status == "BYTECODE" then tag = "BC"
-                elseif r.status == "NODECOMP" then tag = "?"
-                else tag = "X" end
-                table.insert(options, tag .. " [" .. r.className .. "] " .. r.name .. " #" .. tostring(#State.filteredScripts))
-                if #options >= 150 then break end
-            end
-        end
-
-        if #options == 0 then options = {"no matches"} end
-        pcall(function() scriptSelectDropdown:Refresh(options) end)
-    end)
-end
-
--- remotes tab
-local TabRem = Window:CreateTab("Remotes", 4483345998)
-TabRem:CreateSection("Remote Tester")
-
-local remoteSelectDropdown = TabRem:CreateDropdown({
-    Name = "Select Remote",
-    Options = {"scan first"},
-    CurrentOption = {},
-    Callback = function(opt)
-        State.selectedRemote = nil
-        if opt and opt[1] then
-            local idx = tonumber(opt[1]:match("#(%d+)$"))
-            if idx and State.remoteList[idx] then
-                State.selectedRemote = State.remoteList[idx]
-                State.remotePath = State.remoteList[idx].path
-                notify("Loaded", State.remoteList[idx].path, 3)
-            end
-        end
-    end
-})
-
-TabRem:CreateInput({
-    Name = "Remote Path",
-    PlaceholderText = "Workspace.RemoteName",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(text) State.remotePath = text or "" end
-})
-
-TabRem:CreateInput({
-    Name = "Args (comma-separated)",
-    PlaceholderText = '5, true, "hello", nil',
-    RemoveTextAfterFocusLost = false,
-    Callback = function(text) State.remoteArgs = text or "" end
-})
-
-local function parseArgs(str)
-    local args = {}
-    if not str or str == "" then return args end
-    for chunk in string.gmatch(str, "[^,]+") do
-        local v = chunk:match("^%s*(.-)%s*$")
-        if v == "true" then
-            v = true
-        elseif v == "false" then
-            v = false
-        elseif v == "nil" then
-            v = nil
-        elseif tonumber(v) then
-            v = tonumber(v)
-        else
-            local q = v:match('^"(.*)"$') or v:match("^'(.*)'$")
-            v = q or v
-        end
-        table.insert(args, v)
-    end
-    return args
-end
-
-TabRem:CreateButton({
-    Name = "Check Path",
-    Callback = function()
-        task.spawn(function()
-            local obj = resolvePath(State.remotePath)
-            if obj then
-                notify("Resolved", obj.ClassName .. " | " .. obj:GetFullName(), 5)
-            else
-                notify("Failed", "Cannot resolve", 4)
-            end
-        end)
-    end
-})
-
-TabRem:CreateButton({
-    Name = "Fire RemoteEvent",
-    Callback = function()
-        task.spawn(function()
-            local obj = resolvePath(State.remotePath)
-            if not obj then notify("Error", "Resolve failed", 4) return end
-            if not obj:IsA("RemoteEvent") then
-                notify("Error", "Not a RemoteEvent (" .. obj.ClassName .. ")", 4)
-                return
-            end
-            local args = parseArgs(State.remoteArgs)
-            local ok, err = pcall(function() obj:FireServer(unpack(args)) end)
-            notify(ok and "Fired" or "Error",
-                ok and (tostring(#args) .. " args — watch for delayed kick") or tostring(err), 5)
-        end)
-    end
-})
-
-TabRem:CreateButton({
-    Name = "Invoke RemoteFunction",
-    Callback = function()
-        task.spawn(function()
-            local obj = resolvePath(State.remotePath)
-            if not obj then notify("Error", "Resolve failed", 4) return end
-            if not obj:IsA("RemoteFunction") then
-                notify("Error", "Not a RemoteFunction (" .. obj.ClassName .. ")", 4)
-                return
-            end
-            local args = parseArgs(State.remoteArgs)
-            local ok, res = pcall(function() return obj:InvokeServer(unpack(args)) end)
-            if ok then
-                local s
-                if type(res) == "table" then
-                    local e, j = pcall(function() return HttpService:JSONEncode(res) end)
-                    s = (e and j) or tostring(res)
-                else
-                    s = tostring(res)
-                end
-                notify("Returned", s:sub(1, 200), 7)
-                print("[Phantom invoke] " .. State.remotePath .. " → " .. s)
-            else
-                notify("Error", tostring(res), 5)
-            end
-        end)
-    end
-})
-
-TabRem:CreateSection("Templates")
-
-TabRem:CreateButton({
-    Name = "Generate + Copy Templates",
-    Callback = function()
-        task.spawn(function()
-            local t = generateTemplates()
-            if setclipboard then setclipboard(t) end
-            pcall(writefile, safeGameName .. "_templates.lua", t)
-            notify("Templates", "Copied + saved", 5)
-        end)
-    end
-})
-
-TabRem:CreateButton({
-    Name = "Smart Templates (from traffic)",
-    Callback = function()
-        task.spawn(function()
-            local t = generateSmartTemplates()
-            if setclipboard then setclipboard(t) end
-            pcall(writefile, safeGameName .. "_smart_templates.lua", t)
-            notify("Smart Templates", #State.deepData.remoteCalls .. " calls processed", 5)
-        end)
-    end
-})
-
-local function refreshRemoteDropdown()
-    task.spawn(function()
-        State.remoteList = {}
-        local options = {}
-        for _, e in ipairs(State.remotes.events) do
-            table.insert(State.remoteList, {path = e.path, name = e.name})
-            table.insert(options, "EV " .. e.name .. " #" .. tostring(#State.remoteList))
-        end
-        for _, f in ipairs(State.remotes.functions) do
-            table.insert(State.remoteList, {path = f.path, name = f.name})
-            table.insert(options, "FN " .. f.name .. " #" .. tostring(#State.remoteList))
-        end
-        if #options == 0 then options = {"scan first"} end
-        pcall(function() remoteSelectDropdown:Refresh(options) end)
-    end)
-end
-
--- objects tab
-local TabObj = Window:CreateTab("Objects", 4483345998)
-TabObj:CreateSection("NPCs")
-
-local npcDropdown = TabObj:CreateDropdown({
-    Name = "Select NPC",
-    Options = {"scan first"},
-    CurrentOption = {},
-    Callback = function(opt)
-        State.selectedNPC = nil
-        if opt and opt[1] then
-            local idx = tonumber(opt[1]:match("#(%d+)$"))
-            if idx and State.objects.humanoids[idx] then
-                State.selectedNPC = State.objects.humanoids[idx]
-            end
-        end
-    end
-})
-
-TabObj:CreateButton({
-    Name = "Refresh NPC List",
-    Callback = function()
-        task.spawn(function()
-            local options = {}
-            for i, n in ipairs(State.objects.humanoids) do
-                table.insert(options, n.name .. " #" .. tostring(i))
-            end
-            if #options == 0 then options = {"no NPCs"} end
-            pcall(function() npcDropdown:Refresh(options) end)
-            notify("NPCs", tostring(#State.objects.humanoids) .. " found", 3)
-        end)
-    end
-})
-
-TabObj:CreateButton({
-    Name = "Teleport to Selected NPC",
-    Callback = function()
-        local n = State.selectedNPC
-        if not n then notify("Objects", "Select first", 3) return end
-        local char = LocalPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hrp and n.px then
-            hrp.CFrame = CFrame.new(n.px, n.py + 2, n.pz)
-            notify("Teleported", "to " .. n.name, 3)
-        end
-    end
-})
-
--- values tab
-local TabVal = Window:CreateTab("Values", 4483345998)
-TabVal:CreateSection("Value Editor")
-
-local valueDropdown = TabVal:CreateDropdown({
-    Name = "Select Value",
-    Options = {"search below first"},
-    CurrentOption = {},
-    Callback = function(opt)
-        State.selectedValue = nil
-        if opt and opt[1] then
-            local idx = tonumber(opt[1]:match("#(%d+)$"))
-            if idx and State.filteredValues[idx] then
-                State.selectedValue = State.filteredValues[idx]
-                notify("Selected", State.filteredValues[idx].path, 4)
-            end
-        end
-    end
-})
-
-TabVal:CreateInput({
-    Name = "Search values",
-    PlaceholderText = "cash, health, enabled, doorkey...",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(text) State._valueQuery = text or "" end
-})
-
-TabVal:CreateButton({
-    Name = "Search Values",
-    Callback = function()
-        task.spawn(function()
-            local query = (State._valueQuery or ""):lower()
-            State.filteredValues = {}
-            local options = {}
-            for _, v in ipairs(State.objects.values) do
-                if query == "" or v.path:lower():find(query, 1, true) then
-                    table.insert(State.filteredValues, v)
-                    table.insert(options, "[" .. v.class:sub(1,3) .. "] " .. v.path:sub(-50)
-                        .. " = " .. tostring(v.val) .. " #" .. tostring(#State.filteredValues))
-                    if #State.filteredValues >= 100 then break end
-                end
-            end
-            if #options == 0 then options = {"no matches"} end
-            pcall(function() valueDropdown:Refresh(options) end)
-            notify("Values", tostring(#State.filteredValues) .. " matching", 3)
-        end)
-    end
-})
-
-TabVal:CreateButton({
-    Name = "Find Game-State Values (currency/health/etc) — F9",
-    Callback = function()
-        task.spawn(function()
-            local patterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory", "gold", "credit"}
-            local count = 0
-            print("=== GAME-STATE VALUE CANDIDATES ===")
-            for _, v in ipairs(State.objects.values) do
-                local low = v.path:lower()
-                for _, sp in ipairs(patterns) do
-                    if low:find(sp, 1, true) then
-                        print("[" .. v.class .. "] " .. v.path .. " = " .. tostring(v.val))
-                        count = count + 1
-                        break
-                    end
-                end
-                if count > 100 then print("...more") break end
-            end
-            notify("Values", count .. " state candidates in F9", 5)
-        end)
-    end
-})
-
-TabVal:CreateInput({
-    Name = "New Value",
-    PlaceholderText = "true / 0.5 / text",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(text) State._newValue = text or "" end
-})
-
-TabVal:CreateButton({
-    Name = "Apply to Selected",
-    Callback = function()
-        local v = State.selectedValue
-        if not v then notify("Values", "Select first", 3) return end
-        local inst = v.ref
-        if not inst or not inst.Parent then
-            notify("Values", "Instance gone", 4)
-            return
-        end
-        local ok = pcall(function()
-            local raw = State._newValue or ""
-            if inst:IsA("BoolValue") then
-                inst.Value = (raw:lower() == "true")
-            elseif inst:IsA("NumberValue") or inst:IsA("IntValue") then
-                inst.Value = tonumber(raw) or 0
-            else
-                inst.Value = raw
-            end
-        end)
-        notify(ok and "Set" or "Error", v.path, 4)
-    end
-})
-
--- deep scan tab
-local TabDeep = Window:CreateTab("Deep Scan", 4483345998)
-TabDeep:CreateSection("Live Traffic Monitor")
-
-local deepStatsLabel = TabDeep:CreateLabel("calls: 0 | returns: 0 | prompts: 0")
-
-task.spawn(function()
-    while true do
-        if State.deepScanning then
-            pcall(function()
-                deepStatsLabel:Set(string.format("calls: %d | returns: %d | prompts: %d",
-                    #State.deepData.remoteCalls, #State.deepData.returns, #State.deepData.promptHits))
-            end)
-        end
-        task.wait(1)
+end)
+pcall(function()
+    if LocalPlayer:FindFirstChild("PlayerGui") then
+        table.insert(containers, LocalPlayer.PlayerGui)
     end
 end)
 
-TabDeep:CreateButton({Name = "Start Deep Scan (300s) — play the core loop", Callback = function() startDeepScan(300) end})
-TabDeep:CreateButton({Name = "Start Deep Scan (60s)", Callback = function() startDeepScan(60) end})
-TabDeep:CreateButton({Name = "Stop Deep Scan", Callback = function() stopDeepScan() end})
+local walkStart = os.clock()
+local frameStart = os.clock()
 
-TabDeep:CreateButton({
-    Name = "Print Traffic Analysis (F9)",
-    Callback = function()
-        task.spawn(function()
-            if #State.deepData.remoteCalls == 0 then
-                notify("Traffic", "No data yet", 3)
-                return
-            end
-            print(analyzeTraffic())
-            notify("Traffic", "Analysis in F9", 4)
-        end)
+local function maybeYield()
+    if (os.clock() - frameStart) >= 0.008 then
+        RunService.RenderStepped:Wait()
+        frameStart = os.clock()
     end
-})
-
-TabDeep:CreateButton({
-    Name = "Print Raw Calls (F9)",
-    Callback = function()
-        print("=== REMOTE CALLS (" .. #State.deepData.remoteCalls .. ") ===")
-        for i, c in ipairs(State.deepData.remoteCalls) do
-            if i > 100 then print("...more") break end
-            print("[" .. c.time .. "] " .. c.method .. "." .. c.remote)
-            print("  Path: " .. c.path)
-            print("  Args: " .. c.args)
-        end
-        print("=== INVOKE RETURNS (" .. #State.deepData.returns .. ") ===")
-        for i, r in ipairs(State.deepData.returns) do
-            if i > 50 then print("...more") break end
-            print("[" .. r.time .. "] " .. r.remote .. " → " .. r.returns)
-        end
-        notify("Deep Scan", "Raw data in F9", 4)
-    end
-})
-
--- export tab
-local TabExp = Window:CreateTab("Export", 4483345998)
-TabExp:CreateSection("Export")
-
-local exportLabel = TabExp:CreateLabel("filename: " .. safeGameName .. "_<ts>.txt")
-
-TabExp:CreateButton({
-    Name = "Export FULL RECON (fingerprint + map + traffic + data + sources)",
-    Callback = function()
-        task.spawn(function()
-            exportTXT(true)
-            pcall(function()
-                exportLabel:Set("last: " .. (State.lastExportPath ~= "" and State.lastExportPath or "failed"))
-            end)
-        end)
-    end
-})
-
-TabExp:CreateButton({
-    Name = "Export Intel ONLY (no sources, instant)",
-    Callback = function()
-        task.spawn(function()
-            exportTXT(false)
-            pcall(function()
-                exportLabel:Set("last: " .. (State.lastExportPath ~= "" and State.lastExportPath or "failed"))
-            end)
-        end)
-    end
-})
-
-TabExp:CreateButton({
-    Name = "Export Sources as .lua Files",
-    Callback = function() task.spawn(exportSourcesToFiles) end
-})
-
--- settings tab
-local TabSet = Window:CreateTab("Settings", 4483345998)
-TabSet:CreateSection("Performance")
-
-TabSet:CreateSlider({
-    Name = "Frame Budget (ms per frame)",
-    Range = {2, 16},
-    Increment = 1,
-    Suffix = "ms",
-    CurrentValue = CFG.frameBudgetMS,
-    Flag = "FrameBudget",
-    Callback = function(v)
-        CFG.frameBudgetMS = v
-        saveConfig(CFG)
-    end
-})
-
-TabSet:CreateSlider({
-    Name = "Instance Cap",
-    Range = {100000, 2000000},
-    Increment = 100000,
-    Suffix = "inst",
-    CurrentValue = CFG.maxInstances,
-    Flag = "MaxInstances",
-    Callback = function(v)
-        CFG.maxInstances = v
-        saveConfig(CFG)
-    end
-})
-
-TabSet:CreateSection("Behavior")
-
-TabSet:CreateToggle({
-    Name = "Skip Player Characters (kills avatar noise)",
-    CurrentValue = CFG.skipCharacters,
-    Flag = "SkipChars",
-    Callback = function(v)
-        CFG.skipCharacters = v
-        saveConfig(CFG)
-        notify("Setting", v and "Char skip ON" or "Char skip OFF", 3)
-    end
-})
-
-TabSet:CreateToggle({
-    Name = "Capture InvokeServer Returns (server data)",
-    CurrentValue = CFG.captureReturns,
-    Flag = "CaptureRet",
-    Callback = function(v)
-        CFG.captureReturns = v
-        saveConfig(CFG)
-        notify("Setting", v and "Return capture ON" or "OFF", 3)
-    end
-})
-
-TabSet:CreateToggle({
-    Name = "Deduplicate",
-    CurrentValue = CFG.dedup,
-    Flag = "DedupToggle",
-    Callback = function(v)
-        CFG.dedup = v
-        saveConfig(CFG)
-        notify("Setting", v and "Dedup ON" or "Dedup OFF", 3)
-    end
-})
-
-TabSet:CreateToggle({
-    Name = "Scan CoreGui (noisy)",
-    CurrentValue = CFG.scanCoreGui,
-    Flag = "CoreGuiToggle",
-    Callback = function(v)
-        CFG.scanCoreGui = v
-        saveConfig(CFG)
-        notify("Setting", v and "CoreGui ON" or "CoreGui OFF", 3)
-    end
-})
-
--- wire refresh
-local origRunFullScan = runFullScan
-runFullScan = function(cb)
-    origRunFullScan(cb)
-    refreshRemoteDropdown()
 end
 
-print("=== PHANTOM SCANNER v14 loaded ===")
-print("=== Game: " .. GameName .. " ===")
-print("=== Pipeline: SCAN → Fingerprint → Deep Scan → Smart Templates → Build ===")
-notify("Phantom v14", "Full recon loaded — " .. GameName, 6)
+for _, container in ipairs(containers) do
+    local ok, err = pcall(function()
+        local stack = {container}
+        while #stack > 0 do
+            local node = table.remove(stack)
+            local gotKids, children = pcall(node.GetChildren, node)
+            if gotKids then
+                for _, inst in ipairs(children) do
+                    stats.instancesWalked = stats.instancesWalked + 1
+                    local cls = inst.ClassName
+
+                    if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
+                        table.insert(stack, inst)
+                        local okP, path = pcall(inst.GetFullName, inst)
+                        if okP and not scriptHashes[path .. "|" .. cls] then
+                            scriptHashes[path .. "|" .. cls] = true
+                            table.insert(scripts, {
+                                path = path,
+                                name = inst.Name,
+                                className = cls,
+                                inst = inst,
+                                source = "",
+                                status = "PENDING"
+                            })
+                        else
+                            stats.deduped = stats.deduped + 1
+                        end
+
+                    elseif cls == "RemoteEvent" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not remoteHashes[p] then
+                            remoteHashes[p] = true
+                            table.insert(remotes.events, {path = p, name = inst.Name})
+                        end
+                    elseif cls == "RemoteFunction" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not remoteHashes[p] then
+                            remoteHashes[p] = true
+                            table.insert(remotes.functions, {path = p, name = inst.Name})
+                        end
+                    elseif cls == "BindableEvent" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not remoteHashes[p] then
+                            remoteHashes[p] = true
+                            table.insert(remotes.bindables, {path = p, name = inst.Name})
+                        end
+                    elseif cls == "BindableFunction" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not remoteHashes[p] then
+                            remoteHashes[p] = true
+                            table.insert(remotes.bindableFuncs, {path = p, name = inst.Name})
+                        end
+
+                    elseif cls == "ProximityPrompt" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not objHashes[p] then
+                            objHashes[p] = true
+                            table.insert(objects.prompts, {path = p, name = inst.Name})
+                        end
+                    elseif cls == "ClickDetector" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not objHashes[p] then
+                            objHashes[p] = true
+                            table.insert(objects.clickDetectors, {path = p, name = inst.Name})
+                        end
+                    elseif cls == "SpawnLocation" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not objHashes[p] then
+                            objHashes[p] = true
+                            local pos = "?"
+                            pcall(function() pos = tostring(inst.Position) end)
+                            table.insert(objects.spawns, {path = p, pos = pos})
+                        end
+
+                    elseif cls == "IntValue" or cls == "NumberValue" or cls == "StringValue"
+                        or cls == "BoolValue" or cls == "ObjectValue" then
+                        if not junkValues[inst.Name] then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP and not valueHashes[p] then
+                                valueHashes[p] = true
+                                local entry = {path = p, class = cls, ref = inst}
+                                pcall(function() entry.val = tostring(inst.Value):sub(1, 60) end)
+                                table.insert(objects.values, entry)
+                            end
+                        end
+
+                    elseif cls == "Sound" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not objHashes[p] then
+                            objHashes[p] = true
+                            local id = ""
+                            pcall(function() id = tostring(inst.SoundId) end)
+                            table.insert(assets.sounds, {path = p, id = id})
+                        end
+                    elseif cls == "Animation" then
+                        local okP, p = pcall(inst.GetFullName, inst)
+                        if okP and not objHashes[p] then
+                            objHashes[p] = true
+                            local id = ""
+                            pcall(function() id = tostring(inst.AnimationId) end)
+                            table.insert(assets.animations, {path = p, id = id})
+                        end
+
+                    elseif cls == "Model" then
+                        local isChar = Players:GetPlayerFromCharacter(inst)
+                        if not isChar then
+                            local hum = inst:FindFirstChildOfClass("Humanoid")
+                            if hum and not objHashes[inst:GetFullName()] then
+                                local okP, p = pcall(inst.GetFullName, inst)
+                                if okP then
+                                    objHashes[p] = true
+                                    local root = inst:FindFirstChild("HumanoidRootPart") or inst.PrimaryPart
+                                    local px, py, pz
+                                    if root then
+                                        pcall(function()
+                                            px, py, pz = root.Position.X, root.Position.Y, root.Position.Z
+                                        end)
+                                    end
+                                    table.insert(objects.humanoids, {
+                                        path = p, name = inst.Name,
+                                        hp = hum.Health, mhp = hum.MaxHealth,
+                                        pos = px and string.format("%.1f,%.1f,%.1f", px, py, pz) or "?",
+                                        px = px, py = py, pz = pz
+                                    })
+                                end
+                            end
+                        end
+                        table.insert(stack, inst)
+                    else
+                        table.insert(stack, inst)
+                    end
+
+                    maybeYield()
+                end
+            else
+                maybeYield()
+            end
+        end
+    end)
+
+    if not ok then
+        stats.containersFailed = stats.containersFailed + 1
+        warn("[Phantom] container failed: " .. tostring(err))
+    end
+    RunService.RenderStepped:Wait()
+end
+
+local walkTime = os.clock() - walkStart
+print(string.format("[Phantom] walk done: %d instances in %.1fs", stats.instancesWalked, walkTime))
+sendNotif("Walk Done", stats.instancesWalked .. " instances | " .. #scripts .. " scripts", 4)
+
+-- ==============================================================
+--  FAST SOURCE GRAB (no decompile — instant)
+-- ==============================================================
+
+local srcStart = os.clock()
+frameStart = os.clock()
+local countSource, countBytecode, countNeed = 0, 0, 0
+
+for i, r in ipairs(scripts) do
+    local s = r.inst
+    if s and s.Parent then
+        local got = false
+        if getsrc then
+            local ok, src = pcall(getsrc, s)
+            if ok and type(src) == "string" and #src > 0 then
+                r.source = src
+                r.status = "SOURCE"
+                countSource = countSource + 1
+                got = true
+            end
+        end
+        if not got and getscriptbytecode then
+            local ok, bc = pcall(getscriptbytecode, s)
+            if ok and type(bc) == "string" and #bc > 0 then
+                r.status = "BYTECODE"
+                countBytecode = countBytecode + 1
+                got = true
+            end
+        end
+        if not got then
+            r.status = "UNREACHABLE"
+            countNeed = countNeed + 1
+        end
+    else
+        r.status = "GONE"
+        countNeed = countNeed + 1
+    end
+    if (os.clock() - frameStart) >= 0.008 then
+        RunService.RenderStepped:Wait()
+        frameStart = os.clock()
+    end
+end
+
+local srcTime = os.clock() - srcStart
+print(string.format("[Phantom] sources: %d ok | %d bytecode | %d unreachable (%.1fs)",
+    countSource, countBytecode, countNeed, srcTime))
+
+-- ==============================================================
+--  SECURITY PATTERN SCAN (on captured sources)
+-- ==============================================================
+
+local acHits, bdHits, webhookHits, requireHits = {}, {}, {}, {}
+
+local acPatterns = {"anticheat", "anti-cheat", "exploit", "detect", "flag", "tamper", "noclip", "speedhack", "kick", "crash", "rejoin", "ban"}
+local bdPatterns = {"loadstring(game:httpget", "require(", "backdoor", "getfenv(", "setfenv(", "getgenv("}
+local webhookPatterns = {"discord.com/api/webhooks", "discordapp.com/api/webhooks", "webhook"}
+
+frameStart = os.clock()
+for si, r in ipairs(scripts) do
+    if r.status == "SOURCE" and #r.source > 0 then
+        local lines = {}
+        for line in (r.source .. "\n"):gmatch("(.-)\n") do
+            table.insert(lines, line)
+        end
+        for li, line in ipairs(lines) do
+            local ll = line:lower()
+            for _, pat in ipairs(acPatterns) do
+                if ll:find(pat, 1, true) then
+                    table.insert(acHits, r.path .. ":L" .. li .. " [" .. pat .. "] " .. line:gsub("^%s+", ""):sub(1, 80))
+                    break
+                end
+            end
+            for _, pat in ipairs(bdPatterns) do
+                if ll:find(pat, 1, true) then
+                    table.insert(bdHits, r.path .. ":L" .. li .. " [" .. pat .. "]")
+                    break
+                end
+            end
+            for _, pat in ipairs(webhookPatterns) do
+                if ll:find(pat, 1, true) then
+                    table.insert(webhookHits, r.path .. ":L" .. li .. " | " .. line:gsub("^%s+", ""):sub(1, 100))
+                    break
+                end
+            end
+        end
+    end
+    if si % 40 == 0 then RunService.RenderStepped:Wait() end
+end
+
+-- ==============================================================
+--  FINGERPRINT CLASSIFICATION
+-- ==============================================================
+
+local fp = {
+    serverScore = 0,
+    clientScore = 0,
+    signals = {},
+    risks = {},
+    verdict = "?",
+    advice = {}
+}
+
+-- validation bindables = big red flag
+local validationNames = {"dataverification", "validate", "anticheat", "securitycheck", "verifyaction", "integritycheck"}
+for _, b in ipairs(remotes.bindables) do
+    local low = b.path:lower()
+    for _, vn in ipairs(validationNames) do
+        if low:find(vn, 1, true) then
+            fp.serverScore = fp.serverScore + 3
+            table.insert(fp.signals, "VALIDATION BINDABLE: " .. b.path)
+            break
+        end
+    end
+end
+
+-- obfuscated remote naming = pro codebase
+local totalLen, totalRemotes, shortNames = 0, 0, 0
+for _, e in ipairs(remotes.events) do
+    totalLen = totalLen + #e.name
+    totalRemotes = totalRemotes + 1
+    if #e.name <= 3 then shortNames = shortNames + 1 end
+end
+if totalRemotes > 0 then
+    local avgLen = totalLen / totalRemotes
+    if avgLen < 4 or (shortNames / totalRemotes) > 0.3 then
+        fp.serverScore = fp.serverScore + 2
+        table.insert(fp.signals, string.format("obfuscated remotes (avg name %.1f chars)", avgLen))
+    else
+        fp.clientScore = fp.clientScore + 1
+        table.insert(fp.signals, string.format("descriptive remotes (avg name %.1f chars)", avgLen))
+    end
+end
+
+-- source visibility
+local totalScripts = countSource + countBytecode + countNeed
+local srcRatio = totalScripts > 0 and (countSource / totalScripts) or 0
+if srcRatio > 0.7 then
+    fp.clientScore = fp.clientScore + 2
+    table.insert(fp.signals, string.format("high source visibility (%.0f%% readable)", srcRatio * 100))
+elseif srcRatio < 0.3 and totalScripts > 0 then
+    fp.serverScore = fp.serverScore + 2
+    table.insert(fp.signals, string.format("low source visibility (%.0f%% readable)", srcRatio * 100))
+end
+
+-- game-state values
+local statePatterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "gold", "credit"}
+local stateCount = 0
+for _, v in ipairs(objects.values) do
+    local low = v.path:lower()
+    for _, sp in ipairs(statePatterns) do
+        if low:find(sp, 1, true) then
+            stateCount = stateCount + 1
+            break
+        end
+    end
+end
+if stateCount > 20 then
+    fp.clientScore = fp.clientScore + 2
+    table.insert(fp.signals, stateCount .. " game-state values replicated client-side")
+end
+
+-- webhooks = snitching
+if #webhookHits > 0 then
+    fp.serverScore = fp.serverScore + 1
+    table.insert(fp.risks, "GAME LOGS TO DISCORD WEBHOOKS — actions may be reported live")
+end
+
+-- classify
+local score = fp.serverScore - fp.clientScore
+if score >= 4 then
+    fp.verdict = "TIER 3 — HARDENED (server-auth + likely obfuscated/validated)"
+    fp.advice = {
+        "SAFE: teleport menu (from spawn coords), ESP, fullbright, data browsers",
+        "AVOID: firing economy/damage remotes — validation active, ban risk real",
+        "RECON: remote map + traffic capture is your only real intel here",
+        "client code likely VM-packed — decompile output will be garbage"
+    }
+elseif score >= 1 then
+    fp.verdict = "TIER 2 — HYBRID (client visuals free, actions validated)"
+    fp.advice = {
+        "SAFE: movement mods, ESP, TPs, prompt automation, client visuals",
+        "TEST-ON-ALT: any remote that spends/moves/creates resources",
+        "capture live traffic while playing — replicate exact observed args only",
+        "never invent arguments on validated remotes"
+    }
+else
+    fp.verdict = "TIER 1 — CLIENT-AUTHORITATIVE (full surface)"
+    fp.advice = {
+        "value edits, remote firing, auto-farm loops all viable",
+        "start with game-state values — often directly writable",
+        "remotes likely accept simple args — test freely"
+    }
+end
+
+if srcRatio < 0.3 and score < 1 then
+    table.insert(fp.risks, "client sources mostly unreadable — logic is elsewhere")
+end
+
+-- ==============================================================
+--  BUILD THE BRIEFING
+-- ==============================================================
+
+local buf = {}
+local function add(t) table.insert(buf, t) end
+local function line(t) print(t) table.insert(buf, t) end
+
+add("╔══════════════════════════════════════════════════╗")
+add("  PHANTOM RECON BRIEFING")
+add("╚══════════════════════════════════════════════════╝")
+add("Game: " .. GameName)
+add("Place: " .. tostring(game.PlaceId))
+add("Executor: " .. executorInfo)
+add("Scanned: " .. os.date("%Y-%m-%d %H:%M:%S"))
+add("Walk: " .. stats.instancesWalked .. " instances in " .. string.format("%.1fs", walkTime))
+if stats.containersFailed > 0 then
+    add("⚠ " .. stats.containersFailed .. " containers failed to walk (results may be partial)")
+end
+
+add("")
+add("═══════════ VERDICT ═══════════")
+add(fp.verdict)
+add("")
+add("SIGNALS:")
+for _, s in ipairs(fp.signals) do
+    add("  • " .. s)
+end
+add("")
+if #fp.risks > 0 then
+    add("RISKS:")
+    for _, r in ipairs(fp.risks) do
+        add("  ⚠ " .. r)
+    end
+    add("")
+end
+add("APPROACH:")
+for _, a in ipairs(fp.advice) do
+    add("  → " .. a)
+end
+
+add("")
+add("═══════════ CODE COVERAGE ═══════════")
+add(string.format("Scripts found: %d (deduped %d)", #scripts, stats.deduped))
+add(string.format("Source readable: %d (%.0f%%)", countSource, srcRatio * 100))
+add("Bytecode only: " .. countBytecode)
+add("Unreachable (server-only/VM): " .. countNeed)
+if countSource > 0 then
+    add("")
+    add("KEY CAPTURED SCRIPTS (largest client-readable):")
+    local sized = {}
+    for _, r in ipairs(scripts) do
+        if r.status == "SOURCE" and #r.source > 0 then
+            table.insert(sized, r)
+        end
+    end
+    table.sort(sized, function(a, b) return #a.source > #b.source end)
+    for i = 1, math.min(15, #sized) do
+        add(string.format("  [%6d bytes] %s", #sized[i].source, sized[i].path))
+    end
+end
+
+add("")
+add("═══════════ REMOTE MAP (" .. (#remotes.events + #remotes.functions) .. " total) ═══════════")
+add("RemoteEvents: " .. #remotes.events)
+add("RemoteFunctions: " .. #remotes.functions)
+add("Bindables: " .. (#remotes.bindables + #remotes.bindableFuncs))
+add("")
+if #remotes.events > 0 then
+    add("ALL REMOTE EVENTS:")
+    for _, e in ipairs(remotes.events) do
+        add("  " .. e.path)
+    end
+    add("")
+end
+if #remotes.functions > 0 then
+    add("ALL REMOTE FUNCTIONS:")
+    for _, f in ipairs(remotes.functions) do
+        add("  " .. f.path)
+    end
+    add("")
+end
+if #remotes.bindables > 0 then
+    add("BINDABLE EVENTS (server-internal signals — read these for validation warnings):")
+    for _, b in ipairs(remotes.bindables) do
+        add("  " .. b.path)
+    end
+    add("")
+end
+
+add("═══════════ INTERACTABLES ═══════════")
+add("ProximityPrompts: " .. #objects.prompts)
+add("ClickDetectors: " .. #objects.clickDetectors)
+add("NPCs: " .. #objects.humanoids)
+for _, n in ipairs(objects.humanoids) do
+    add("  " .. n.name .. " | HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp) .. " | " .. n.path .. " @ " .. n.pos)
+end
+add("SpawnLocations: " .. #objects.spawns .. " (teleport targets)")
+for _, s in ipairs(objects.spawns) do
+    add("  " .. s.path .. " @ " .. s.pos)
+end
+
+add("")
+add("═══════════ GAME-STATE VALUES (" .. stateCount .. " candidates) ═══════════")
+for _, v in ipairs(objects.values) do
+    local low = v.path:lower()
+    for _, sp in ipairs(statePatterns) do
+        if low:find(sp, 1, true) then
+            add("  [" .. v.class .. "] " .. v.path .. " = " .. tostring(v.val))
+            break
+        end
+    end
+end
+add("")
+add("ALL VALUES (" .. #objects.values .. " total, first 200):")
+for i, v in ipairs(objects.values) do
+    if i > 200 then add("  ...+" .. (#objects.values - 200) .. " more in full dump") break end
+    add("  [" .. v.class .. "] " .. v.path .. " = " .. tostring(v.val))
+end
+
+add("")
+add("═══════════ SECURITY FINDINGS ═══════════")
+add("Anti-cheat mentions: " .. #acHits)
+for i, h in ipairs(acHits) do
+    if i > 15 then add("  ...more") break end
+    add("  " .. h)
+end
+add("Backdoor patterns: " .. #bdHits)
+for i, h in ipairs(bdHits) do
+    if i > 10 then add("  ...more") break end
+    add("  " .. h)
+end
+add("Webhook logging: " .. #webhookHits)
+for i, h in ipairs(webhookHits) do
+    if i > 10 then add("  ...more") break end
+    add("  " .. h)
+end
+
+add("")
+add("═══════════ ASSETS ═══════════")
+add("Sounds: " .. #assets.sounds .. " | Animations: " .. #assets.animations)
+add("(full lists in saved file)")
+
+add("")
+add("═══════════ NEXT STEP ═══════════")
+add("Run traffic capture while playing normally to map")
+add("real argument patterns. That file + this briefing =")
+add("everything needed to build a script for this game.")
+add("")
+add("=== END BRIEFING ===")
+
+-- ==============================================================
+--  OUTPUT
+-- ==============================================================
+
+local report = table.concat(buf, "\n")
+print(report)
+
+-- full dump with sources appended
+local fullDump = {report}
+table.insert(fullDump, "")
+table.insert(fullDump, "═══════════ SCRIPT SOURCES ═══════════")
+table.insert(fullDump, "")
+for ri, r in ipairs(scripts) do
+    table.insert(fullDump, "------ " .. r.path .. " [" .. r.className .. "] ------")
+    table.insert(fullDump, "Status: " .. r.status)
+    table.insert(fullDump, "")
+    if #r.source > 0 then
+        table.insert(fullDump, r.source)
+    else
+        table.insert(fullDump, "[NO SOURCE — " .. r.status .. "]")
+    end
+    table.insert(fullDump, "")
+    if ri % 50 == 0 then RunService.RenderStepped:Wait() end
+end
+local fullOut = table.concat(fullDump, "\n")
+
+-- chunked save (no freeze on big games)
+if writefile then
+    local CHUNK = 3000000
+    local ts = tostring(os.time())
+    if #fullOut <= CHUNK then
+        local fname = "PhantomRecon_" .. safeGameName .. "_" .. ts .. ".txt"
+        pcall(writefile, fname, fullOut)
+        print("[Phantom] saved: " .. fname)
+        sendNotif("Recon Saved", fname, 6)
+    else
+        local parts = math.ceil(#fullOut / CHUNK)
+        for i = 1, parts do
+            local s = (i - 1) * CHUNK + 1
+            local e = math.min(i * CHUNK, #fullOut)
+            local fname = "PhantomRecon_" .. safeGameName .. "_" .. ts .. "_part" .. i .. ".txt"
+            pcall(writefile, fname, fullOut:sub(s, e))
+            RunService.RenderStepped:Wait()
+        end
+        print("[Phantom] saved: " .. parts .. " parts (report too big for one file)")
+        sendNotif("Recon Saved", parts .. " part files", 6)
+    end
+else
+    sendNotif("Recon Done", "no writefile — report in F9 only", 6)
+end
+
+-- clipboard: briefing only (small), never the sources
+if setclipboard then
+    pcall(setclipboard, report)
+    print("[Phantom] briefing copied to clipboard")
+end
+
+sendNotif("Phantom Recon", fp.verdict:sub(1, 40), 8)
+print("[Phantom] RECON DROP COMPLETE")
