@@ -1,24 +1,28 @@
 --!nocheck
 -- ==============================================================
---  UNIVERSAL GAME SCANNER v9.9 ADVANCED
---  Auto game-name filenames | Multi-path export | Diagnostics
+--  PHANTOM SCANNER v10.1
+--  Custom UI | Click-to-copy | Remote tester | Config persist
+--  Repo: github.com/snowy-dot/Advance-scanner-game-
 -- ==============================================================
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
-local StarterGui = game:GetService("StarterGui")
-local MarketplaceService = game:GetService("MarketplaceService")
+local Players              = game:GetService("Players")
+local RunService           = game:GetService("RunService")
+local HttpService          = game:GetService("HttpService")
+local ReplicatedStorage    = game:GetService("ReplicatedStorage")
+local Workspace            = game:GetService("Workspace")
+local StarterGui           = game:GetService("StarterGui")
+local StarterPlayer        = game:GetService("StarterPlayer")
+local ServerScriptService  = game:GetService("ServerScriptService")
+local UserInputService     = game:GetService("UserInputService")
+local TweenService         = game:GetService("TweenService")
+local MarketplaceService   = game:GetService("MarketplaceService")
 
 local LocalPlayer = Players.LocalPlayer
+local unpack = table.unpack or unpack
 
 -- executor function resolver
 local function getExecFunc(name)
-    local ok, fn = pcall(function()
-        return getgenv()[name]
-    end)
+    local ok, fn = pcall(function() return getgenv()[name] end)
     if ok and type(fn) == "function" then return fn end
     return _G[name]
 end
@@ -30,6 +34,7 @@ local writefile         = getExecFunc("writefile")
 local readfile          = getExecFunc("readfile")
 local isfolder          = getExecFunc("isfolder")
 local makefolder        = getExecFunc("makefolder")
+local isfile            = getExecFunc("isfile")
 local setclipboard      = getExecFunc("setclipboard")
 local newcclosure       = getExecFunc("newcclosure")
 local getrawmetatable   = getExecFunc("getrawmetatable")
@@ -39,54 +44,80 @@ local identifyexecutor  = getExecFunc("identifyexecutor")
 
 -- game name detection
 local GameName = "UnknownGame"
-
 pcall(function()
     local info = MarketplaceService:GetProductInfo(game.PlaceId)
-    if info and info.Name and info.Name ~= "" then
-        GameName = info.Name
-    end
+    if info and info.Name and info.Name ~= "" then GameName = info.Name end
 end)
-
 if GameName == "UnknownGame" then
-    pcall(function()
-        if game.Name and game.Name ~= "" then
-            GameName = game.Name
-        end
-    end)
+    pcall(function() if game.Name ~= "" then GameName = game.Name end end)
 end
 
 local function sanitizeFilename(str)
-    local cleaned = tostring(str):gsub("[^%w%-_]", "_")
-    return cleaned
+    return tostring(str):gsub("[^%w%-_]", "_"):sub(1, 60)
 end
-
 local safeGameName = sanitizeFilename(GameName)
 
 local executorInfo = "Unknown"
 pcall(function()
-    if identifyexecutor then
-        local n, v = identifyexecutor()
-        executorInfo = tostring(n)
-        if v then executorInfo = executorInfo .. " v" .. tostring(v) end
-    end
+    local n, v = identifyexecutor()
+    executorInfo = tostring(n) .. (v and (" v" .. tostring(v)) or "")
 end)
 
-print("[Scanner] Game detected: " .. GameName)
-print("[Scanner] Filename base: " .. safeGameName)
-print("[Scanner] Executor: " .. executorInfo)
+-- ==============================================================
+--  THEME
+-- ==============================================================
 
--- rayfield
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+local Theme = {
+    bg       = Color3.fromRGB(16, 16, 22),
+    bg2      = Color3.fromRGB(24, 24, 32),
+    bg3      = Color3.fromRGB(32, 32, 42),
+    accent   = Color3.fromRGB(138, 99, 255),
+    text     = Color3.fromRGB(235, 235, 245),
+    textDim  = Color3.fromRGB(130, 130, 148),
+    success  = Color3.fromRGB(80, 220, 130),
+    danger   = Color3.fromRGB(255, 90, 90),
+    warning  = Color3.fromRGB(255, 190, 70),
+    border   = Color3.fromRGB(48, 48, 62)
+}
 
-local Window = Rayfield:CreateWindow({
-    Name = "Game Scanner",
-    LoadingTitle = GameName,
-    LoadingSubtitle = "v9.9 Advanced",
-    ConfigurationSaving = {Enabled = false},
-    KeySystem = false
-})
+local accentElements = {}
+local function registerAccent(inst, prop)
+    table.insert(accentElements, {inst = inst, prop = prop})
+end
 
--- state
+-- ==============================================================
+--  CONFIG (persist between sessions)
+-- ==============================================================
+
+local CONFIG_FILE = "PhantomScanner/config.json"
+
+local function saveConfig(cfg)
+    if writefile then
+        pcall(function()
+            if isfolder and makefolder and not isfolder("PhantomScanner") then
+                makefolder("PhantomScanner")
+            end
+            writefile(CONFIG_FILE, HttpService:JSONEncode(cfg))
+        end)
+    end
+end
+
+local function loadConfig()
+    if readfile and isfile and isfile(CONFIG_FILE) then
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(readfile(CONFIG_FILE))
+        end)
+        if ok and type(data) == "table" then return data end
+    end
+    return {}
+end
+
+local CFG = loadConfig()
+
+-- ==============================================================
+--  STATE
+-- ==============================================================
+
 local State = {
     results          = {},
     hashes           = {},
@@ -95,20 +126,53 @@ local State = {
     assets           = {sounds = {}, animations = {}, decals = {}, meshes = {}},
     acDetections     = {},
     bdDetections     = {},
+    webhookHits      = {},
     requireMap       = {},
     deepData         = {remoteCalls = {}, promptHits = {}, spawns = {}},
     stats            = {total = 0, success = 0, failed = 0, deduped = 0, skipped = 0},
-    excludeBuildings = true,
-    maxDepth         = 0,
+    excludeBuildings = CFG.excludeBuildings ~= false,
+    maxDepth         = CFG.maxDepth or 0,
     deepScanning     = false,
-    lastExportPath   = ""
+    busy             = false,
+    cancelScan       = false,
+    lastExportPath   = "",
+    scanStart        = 0,
+    scanDuration     = 0
 }
 
 local connections = {}
+local restoreHook -- forward declaration (needed by close button)
+local refreshScriptList -- forward declaration
+local populateRemotes -- forward declaration
+
+local function persistConfig()
+    pcall(function()
+        saveConfig({
+            excludeBuildings = State.excludeBuildings,
+            maxDepth = State.maxDepth,
+            accent = {
+                math.floor(Theme.accent.R * 255 + 0.5),
+                math.floor(Theme.accent.G * 255 + 0.5),
+                math.floor(Theme.accent.B * 255 + 0.5)
+            }
+        })
+    end)
+end
+
+local function setAccent(color)
+    Theme.accent = color
+    for _, e in ipairs(accentElements) do
+        pcall(function() e.inst[e.prop] = color end)
+    end
+    for _, p in ipairs(pillRegistry) do
+        pcall(function()
+            p.pill.BackgroundColor3 = p.get() and color or Theme.bg
+        end)
+    end
+end
 
 local excludedClasses = {
-    "Part", "WedgePart", "TrussPart",
-    "SpawnLocation", "Seat", "VehicleSeat"
+    "Part", "WedgePart", "TrussPart", "Seat", "VehicleSeat"
 }
 
 local excludedKeywords = {
@@ -117,16 +181,711 @@ local excludedKeywords = {
     "terrain", "baseplate", "ground"
 }
 
--- utilities
-local function notify(title, content, dur)
+-- ==============================================================
+--  UI HELPERS
+-- ==============================================================
+
+local function create(class, props, children)
+    local inst = Instance.new(class)
+    for k, v in pairs(props) do
+        if k ~= "Parent" then inst[k] = v end
+    end
+    if children then
+        for _, c in ipairs(children) do c.Parent = inst end
+    end
+    inst.Parent = props.Parent
+    return inst
+end
+
+local function corner(inst, radius)
+    return create("UICorner", {CornerRadius = UDim.new(0, radius or 6), Parent = inst})
+end
+
+local function stroke(inst, color, thickness)
+    return create("UIStroke", {
+        Color = color or Theme.border,
+        Thickness = thickness or 1,
+        Parent = inst
+    })
+end
+
+local function tween(inst, props, dur)
+    local t = TweenService:Create(inst, TweenInfo.new(dur or 0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), props)
+    t:Play()
+    return t
+end
+
+-- ==============================================================
+--  GUI ROOT
+-- ==============================================================
+
+pcall(function()
+    local root = gethui and gethui() or game:GetService("CoreGui")
+    for _, g in ipairs(root:GetChildren()) do
+        if g.Name == "PhantomScannerUI" then g:Destroy() end
+    end
+end)
+
+local parentGui = game:GetService("CoreGui")
+local protected = false
+pcall(function()
+    if gethui then
+        parentGui = gethui()
+        protected = true
+    end
+end)
+
+local ScreenGui = create("ScreenGui", {
+    Name = "PhantomScannerUI",
+    ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    Parent = parentGui
+})
+if not protected then
     pcall(function()
-        Rayfield:Notify({
-            Title = title,
-            Content = content,
-            Duration = dur or 4
-        })
+        if syn and syn.protect_gui then syn.protect_gui(ScreenGui) end
     end)
 end
+
+local Main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.new(0, 760, 0, 480),
+    Position = UDim2.new(0.5, -380, 0.5, -240),
+    BackgroundColor3 = Theme.bg,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    Parent = ScreenGui
+})
+corner(Main, 10)
+stroke(Main, Theme.border, 1)
+
+-- topbar
+local TopBar = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 38),
+    BackgroundColor3 = Theme.bg2,
+    BorderSizePixel = 0,
+    Parent = Main
+})
+corner(TopBar, 10)
+create("Frame", {
+    Size = UDim2.new(1, 0, 0, 10),
+    Position = UDim2.new(0, 0, 1, -10),
+    BackgroundColor3 = Theme.bg2,
+    BorderSizePixel = 0,
+    Parent = TopBar
+})
+
+local TitleIcon = create("TextLabel", {
+    Size = UDim2.new(0, 24, 1, 0),
+    Position = UDim2.new(0, 12, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "◈",
+    TextColor3 = Theme.accent,
+    TextSize = 18,
+    Font = Enum.Font.GothamBold,
+    Parent = TopBar
+})
+registerAccent(TitleIcon, "TextColor3")
+
+create("TextLabel", {
+    Size = UDim2.new(0, 300, 1, 0),
+    Position = UDim2.new(0, 40, 0, 0),
+    BackgroundTransparency = 1,
+    Text = "PHANTOM // Game Scanner v10.1",
+    TextColor3 = Theme.text,
+    TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = TopBar
+})
+
+local gameLabel = create("TextLabel", {
+    Size = UDim2.new(0, 280, 1, 0),
+    Position = UDim2.new(1, -330, 0, 0),
+    BackgroundTransparency = 1,
+    Text = GameName,
+    TextColor3 = Theme.textDim,
+    TextSize = 12,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    TextTruncate = Enum.TextTruncate.AtEnd,
+    Parent = TopBar
+})
+
+local MinBtn = create("TextButton", {
+    Size = UDim2.new(0, 30, 0, 30),
+    Position = UDim2.new(1, -70, 0, 4),
+    BackgroundColor3 = Theme.bg3,
+    Text = "—",
+    TextColor3 = Theme.textDim,
+    TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+    Parent = TopBar
+})
+corner(MinBtn, 6)
+
+local CloseBtn = create("TextButton", {
+    Size = UDim2.new(0, 30, 0, 30),
+    Position = UDim2.new(1, -36, 0, 4),
+    BackgroundColor3 = Theme.bg3,
+    Text = "✕",
+    TextColor3 = Theme.danger,
+    TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+    Parent = TopBar
+})
+corner(CloseBtn, 6)
+
+-- sidebar
+local Sidebar = create("Frame", {
+    Size = UDim2.new(0, 158, 1, -38),
+    Position = UDim2.new(0, 0, 0, 38),
+    BackgroundColor3 = Theme.bg2,
+    BorderSizePixel = 0,
+    Parent = Main
+})
+corner(Sidebar, 10)
+create("Frame", {
+    Size = UDim2.new(1, 0, 0, 10),
+    BackgroundColor3 = Theme.bg2,
+    BorderSizePixel = 0,
+    Parent = Sidebar
+})
+
+create("UIListLayout", {
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Parent = Sidebar
+})
+create("UIPadding", {
+    PaddingTop = UDim.new(0, 8),
+    PaddingLeft = UDim.new(0, 6),
+    PaddingRight = UDim.new(0, 6),
+    Parent = Sidebar
+})
+
+-- content area
+local Content = create("Frame", {
+    Size = UDim2.new(1, -158, 1, -38),
+    Position = UDim2.new(0, 158, 0, 38),
+    BackgroundTransparency = 1,
+    Parent = Main
+})
+
+-- status bar
+local StatusBar = create("TextLabel", {
+    Size = UDim2.new(1, -158, 0, 24),
+    Position = UDim2.new(0, 158, 1, -24),
+    BackgroundColor3 = Theme.bg2,
+    Text = "  idle | " .. executorInfo,
+    TextColor3 = Theme.textDim,
+    TextSize = 11,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BorderSizePixel = 0,
+    Parent = Main
+})
+corner(StatusBar, 10)
+create("Frame", {
+    Size = UDim2.new(0, 12, 1, 0),
+    BackgroundColor3 = Theme.bg2,
+    BorderSizePixel = 0,
+    Parent = StatusBar
+})
+
+local function setStatus(text, color)
+    StatusBar.Text = "  " .. text
+    StatusBar.TextColor3 = color or Theme.textDim
+end
+
+-- drag
+do
+    local dragging = false
+    local dragStart, startPos
+    TopBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = Main.Position
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            Main.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+-- RightCtrl hide/show keybind
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        Main.Visible = not Main.Visible
+    end
+end)
+
+-- minimize / close
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    if minimized then
+        tween(Main, {Size = UDim2.new(0, 760, 0, 38)})
+        MinBtn.Text = "+"
+    else
+        tween(Main, {Size = UDim2.new(0, 760, 0, 480)})
+        MinBtn.Text = "—"
+    end
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    if restoreHook then pcall(restoreHook) end
+    for _, c in pairs(connections) do
+        pcall(function() c:Disconnect() end)
+    end
+    tween(Main, {Size = UDim2.new(0, 760, 0, 0)}, 0.15)
+    task.delay(0.2, function() ScreenGui:Destroy() end)
+end)
+
+-- ==============================================================
+--  NOTIFICATIONS
+-- ==============================================================
+
+local notifHolder = create("Frame", {
+    Size = UDim2.new(0, 280, 1, -20),
+    Position = UDim2.new(1, -290, 0, 10),
+    BackgroundTransparency = 1,
+    Parent = ScreenGui
+})
+create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    VerticalAlignment = Enum.VerticalAlignment.Bottom,
+    Parent = notifHolder
+})
+
+local function notify(title, msg, dur, nColor)
+    task.spawn(function()
+        local n = create("Frame", {
+            Size = UDim2.new(1, 0, 0, 64),
+            BackgroundColor3 = Theme.bg2,
+            BorderSizePixel = 0,
+            Parent = notifHolder
+        })
+        corner(n, 8)
+        stroke(n, nColor or Theme.border, 1)
+
+        create("TextLabel", {
+            Size = UDim2.new(1, -16, 0, 20),
+            Position = UDim2.new(0, 8, 0, 6),
+            BackgroundTransparency = 1,
+            Text = title,
+            TextColor3 = nColor or Theme.accent,
+            TextSize = 13,
+            Font = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            Parent = n
+        })
+        create("TextLabel", {
+            Size = UDim2.new(1, -16, 0, 34),
+            Position = UDim2.new(0, 8, 0, 27),
+            BackgroundTransparency = 1,
+            Text = msg,
+            TextColor3 = Theme.text,
+            TextSize = 11,
+            Font = Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+            TextWrapped = true,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            Parent = n
+        })
+
+        n.Position = UDim2.new(1, 300, 0, 0)
+        tween(n, {Position = UDim2.new(0, 0, 0, 0)}, 0.25)
+        task.wait(dur or 4)
+        tween(n, {Position = UDim2.new(1, 300, 0, 0)}, 0.25)
+        task.wait(0.3)
+        n:Destroy()
+    end)
+end
+
+-- ==============================================================
+--  TAB SYSTEM + WIDGET BUILDERS
+-- ==============================================================
+
+local tabs = {}
+local activeTab = nil
+local orderCounter = 0
+local function nextOrder()
+    orderCounter = orderCounter + 1
+    return orderCounter
+end
+
+local function makeTab(name, icon)
+    local btn = create("TextButton", {
+        Size = UDim2.new(1, 0, 0, 34),
+        BackgroundColor3 = Theme.bg2,
+        Text = "",
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        LayoutOrder = #tabs + 1,
+        Parent = Sidebar
+    })
+    corner(btn, 6)
+
+    create("TextLabel", {
+        Size = UDim2.new(0, 22, 1, 0),
+        Position = UDim2.new(0, 8, 0, 0),
+        BackgroundTransparency = 1,
+        Text = icon,
+        TextColor3 = Theme.textDim,
+        TextSize = 15,
+        Font = Enum.Font.GothamBold,
+        Parent = btn
+    })
+    local lbl = create("TextLabel", {
+        Size = UDim2.new(1, -34, 1, 0),
+        Position = UDim2.new(0, 32, 0, 0),
+        BackgroundTransparency = 1,
+        Text = name,
+        TextColor3 = Theme.textDim,
+        TextSize = 13,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = btn
+    })
+
+    local page = create("ScrollingFrame", {
+        Size = UDim2.new(1, -16, 1, -32),
+        Position = UDim2.new(0, 8, 0, 8),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Visible = false,
+        ScrollBarThickness = 4,
+        ScrollBarImageColor3 = Theme.accent,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = Content
+    })
+    create("UIListLayout", {
+        Padding = UDim.new(0, 6),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = page
+    })
+
+    local tab = {name = name, btn = btn, page = page, lbl = lbl}
+    tabs[name] = tab
+
+    btn.MouseEnter:Connect(function()
+        if activeTab ~= name then tween(btn, {BackgroundColor3 = Theme.bg3}) end
+    end)
+    btn.MouseLeave:Connect(function()
+        if activeTab ~= name then tween(btn, {BackgroundColor3 = Theme.bg2}) end
+    end)
+    btn.MouseButton1Click:Connect(function()
+        for _, t in pairs(tabs) do
+            t.page.Visible = false
+            t.btn.BackgroundColor3 = Theme.bg2
+            t.lbl.TextColor3 = Theme.textDim
+        end
+        page.Visible = true
+        btn.BackgroundColor3 = Theme.bg3
+        lbl.TextColor3 = Theme.accent
+        activeTab = name
+    end)
+
+    return page
+end
+
+local function sec(page, title)
+    local s = create("TextLabel", {
+        Size = UDim2.new(1, -8, 0, 24),
+        BackgroundTransparency = 1,
+        Text = "▸ " .. title,
+        TextColor3 = Theme.accent,
+        TextSize = 13,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        LayoutOrder = nextOrder(),
+        Parent = page
+    })
+    registerAccent(s, "TextColor3")
+    return s
+end
+
+local function button(page, text, callback, height)
+    local b = create("TextButton", {
+        Size = UDim2.new(1, -8, 0, height or 34),
+        BackgroundColor3 = Theme.bg3,
+        Text = text,
+        TextColor3 = Theme.text,
+        TextSize = 13,
+        Font = Enum.Font.Gotham,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        LayoutOrder = nextOrder(),
+        Parent = page
+    })
+    corner(b, 6)
+    stroke(b, Theme.border, 1)
+    b.MouseEnter:Connect(function()
+        tween(b, {BackgroundColor3 = Theme.accent, BackgroundTransparency = 0.7})
+    end)
+    b.MouseLeave:Connect(function()
+        tween(b, {BackgroundColor3 = Theme.bg3, BackgroundTransparency = 0})
+    end)
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+
+local function label(page, text, height)
+    return create("TextLabel", {
+        Size = UDim2.new(1, -8, 0, height or 20),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = Theme.textDim,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        LayoutOrder = nextOrder(),
+        Parent = page
+    })
+end
+
+-- clickable row: click = copy | optional side button = custom action
+local function row(page, mainText, subText, copyText, accentColor, sideText, sideCb)
+    local hasSide = sideText ~= nil
+    local r = create("TextButton", {
+        Size = UDim2.new(1, -8, 0, subText and 40 or 26),
+        BackgroundColor3 = Theme.bg2,
+        Text = "",
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        LayoutOrder = nextOrder(),
+        Parent = page
+    })
+    corner(r, 5)
+    stroke(r, Theme.border, 1)
+
+    local w = hasSide and -74 or -16
+    create("TextLabel", {
+        Size = UDim2.new(1, w, 0, 16),
+        Position = UDim2.new(0, 8, 0, 3),
+        BackgroundTransparency = 1,
+        Text = mainText,
+        TextColor3 = accentColor or Theme.text,
+        TextSize = 12,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Parent = r
+    })
+    if subText then
+        create("TextLabel", {
+            Size = UDim2.new(1, w, 0, 14),
+            Position = UDim2.new(0, 8, 0, 21),
+            BackgroundTransparency = 1,
+            Text = subText,
+            TextColor3 = Theme.textDim,
+            TextSize = 10,
+            Font = Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            Parent = r
+        })
+    end
+
+    if hasSide then
+        local sb = create("TextButton", {
+            Size = UDim2.new(0, 54, 0, subText and 26 or 18),
+            Position = UDim2.new(1, -62, 0.5, subText and -13 or -9),
+            BackgroundColor3 = Theme.bg3,
+            Text = sideText,
+            TextColor3 = Theme.accent,
+            TextSize = 11,
+            Font = Enum.Font.GothamBold,
+            BorderSizePixel = 0,
+            Parent = r
+        })
+        corner(sb, 5)
+        sb.MouseButton1Click:Connect(function()
+            if sideCb then sideCb() end
+        end)
+    end
+
+    r.MouseEnter:Connect(function() tween(r, {BackgroundColor3 = Theme.bg3}) end)
+    r.MouseLeave:Connect(function() tween(r, {BackgroundColor3 = Theme.bg2}) end)
+    r.MouseButton1Click:Connect(function()
+        if copyText and setclipboard then
+            setclipboard(copyText)
+            setStatus("copied: " .. mainText:sub(1, 55), Theme.success)
+        end
+    end)
+    return r
+end
+
+local pillRegistry = {}
+
+local function toggle(page, name, default, callback)
+    local t = create("TextButton", {
+        Size = UDim2.new(1, -8, 0, 32),
+        BackgroundColor3 = Theme.bg3,
+        Text = "",
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        LayoutOrder = nextOrder(),
+        Parent = page
+    })
+    corner(t, 6)
+
+    create("TextLabel", {
+        Size = UDim2.new(1, -60, 1, 0),
+        Position = UDim2.new(0, 10, 0, 0),
+        BackgroundTransparency = 1,
+        Text = name,
+        TextColor3 = Theme.text,
+        TextSize = 13,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = t
+    })
+
+    local pill = create("Frame", {
+        Size = UDim2.new(0, 40, 0, 18),
+        Position = UDim2.new(1, -50, 0.5, -9),
+        BackgroundColor3 = default and Theme.accent or Theme.bg,
+        BorderSizePixel = 0,
+        Parent = t
+    })
+    corner(pill, 9)
+
+    local knob = create("Frame", {
+        Size = UDim2.new(0, 14, 0, 14),
+        Position = default and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7),
+        BackgroundColor3 = Theme.text,
+        BorderSizePixel = 0,
+        Parent = pill
+    })
+    corner(knob, 7)
+
+    local value = default
+    table.insert(pillRegistry, {
+        pill = pill,
+        get = function() return value end
+    })
+
+    t.MouseButton1Click:Connect(function()
+        value = not value
+        tween(pill, {BackgroundColor3 = value and Theme.accent or Theme.bg})
+        tween(knob, {Position = value and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)})
+        callback(value)
+    end)
+    return t
+end
+
+local function slider(page, name, min, max, default, callback)
+    local holder = create("Frame", {
+        Size = UDim2.new(1, -8, 0, 44),
+        BackgroundColor3 = Theme.bg3,
+        BorderSizePixel = 0,
+        LayoutOrder = nextOrder(),
+        Parent = page
+    })
+    corner(holder, 6)
+
+    local valLbl = create("TextLabel", {
+        Size = UDim2.new(0, 60, 0, 18),
+        Position = UDim2.new(1, -66, 0, 4),
+        BackgroundTransparency = 1,
+        Text = tostring(default),
+        TextColor3 = Theme.accent,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        Parent = holder
+    })
+    registerAccent(valLbl, "TextColor3")
+
+    create("TextLabel", {
+        Size = UDim2.new(1, -80, 0, 18),
+        Position = UDim2.new(0, 10, 0, 4),
+        BackgroundTransparency = 1,
+        Text = name,
+        TextColor3 = Theme.text,
+        TextSize = 12,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = holder
+    })
+
+    local bar = create("Frame", {
+        Size = UDim2.new(1, -20, 0, 6),
+        Position = UDim2.new(0, 10, 0, 30),
+        BackgroundColor3 = Theme.bg,
+        BorderSizePixel = 0,
+        Parent = holder
+    })
+    corner(bar, 3)
+
+    local fill = create("Frame", {
+        Size = UDim2.new((default - min) / (max - min), 0, 1, 0),
+        BackgroundColor3 = Theme.accent,
+        BorderSizePixel = 0,
+        Parent = bar
+    })
+    corner(fill, 3)
+    registerAccent(fill, "BackgroundColor3")
+
+    local sliding = false
+    local function update(input)
+        local rel = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+        local val = math.floor(min + (max - min) * rel + 0.5)
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        valLbl.Text = tostring(val)
+        callback(val)
+    end
+    bar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = true
+            update(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then sliding = false end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input)
+        end
+    end)
+    return holder
+end
+
+local function clearList(frame)
+    for _, c in ipairs(frame:GetChildren()) do
+        if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
+    end
+end
+
+-- ==============================================================
+--  SCANNER CORE
+-- ==============================================================
 
 local function quickHash(str)
     if not str then return "nil" end
@@ -155,14 +914,12 @@ end
 
 local function shouldScan(inst)
     if not State.excludeBuildings then return true end
-
     for _, cls in ipairs(excludedClasses) do
         if inst:IsA(cls) then
             State.stats.skipped = State.stats.skipped + 1
             return false
         end
     end
-
     local ln = inst.Name:lower()
     for _, kw in ipairs(excludedKeywords) do
         if ln:find(kw, 1, true) then
@@ -170,7 +927,6 @@ local function shouldScan(inst)
             return false
         end
     end
-
     local cur = inst.Parent
     while cur and cur ~= game do
         local pl = cur.Name:lower()
@@ -182,7 +938,6 @@ local function shouldScan(inst)
         end
         cur = cur.Parent
     end
-
     return true
 end
 
@@ -190,9 +945,9 @@ local function getContainers()
     local list = {
         {Workspace, "Workspace"},
         {ReplicatedStorage, "ReplicatedStorage"},
-        {game:GetService("ServerScriptService"), "ServerScriptService"},
+        {ServerScriptService, "ServerScriptService"},
         {StarterGui, "StarterGui"},
-        {game:GetService("StarterPlayer"), "StarterPlayer"}
+        {StarterPlayer, "StarterPlayer"}
     }
     pcall(function()
         if LocalPlayer:FindFirstChild("PlayerScripts") then
@@ -211,6 +966,7 @@ local function getAllDescendants(container, maxDepth)
     local results = {}
     local stack = {{obj = container, depth = 0}}
     while #stack > 0 do
+        if State.cancelScan then break end
         local node = table.remove(stack)
         if node and node.obj then
             for _, child in ipairs(node.obj:GetChildren()) do
@@ -237,6 +993,14 @@ local catKeywords = {
     Audio     = {"sound", "music", "sfx"}
 }
 
+local function splitLines(source)
+    local lines = {}
+    for line in (source .. "\n"):gmatch("(.-)\n") do
+        table.insert(lines, line)
+    end
+    return lines
+end
+
 local function categorize(path, className, source)
     local combined = path:lower()
     if source and #source > 0 then
@@ -253,8 +1017,7 @@ local function categorize(path, className, source)
     return "Other"
 end
 
--- scanners
-local function scanScripts()
+local function scanScripts(progressCb)
     State.results = {}
     State.hashes = {}
     State.stats.total = 0
@@ -272,12 +1035,14 @@ local function scanScripts()
                 end
             end
         end)
+        if State.cancelScan then break end
     end
 
     State.stats.total = #allScripts
-    notify("Scanner", "Found " .. #allScripts .. " scripts", 3)
+    notify("Scripts", "Found " .. #allScripts .. " scripts", 3)
 
     for i, entry in ipairs(allScripts) do
+        if State.cancelScan then break end
         local s = entry.inst
         if s.Parent and shouldScan(s) then
             local path = s:GetFullName()
@@ -304,11 +1069,11 @@ local function scanScripts()
                 State.stats.deduped = State.stats.deduped + 1
             end
         end
-        if i % 20 == 0 then RunService.RenderStepped:Wait() end
+        if i % 15 == 0 then
+            if progressCb then progressCb(i, #allScripts) end
+            RunService.RenderStepped:Wait()
+        end
     end
-
-    notify("Scan Complete", string.format("OK:%d Fail:%d Dup:%d Skip:%d",
-        State.stats.success, State.stats.failed, State.stats.deduped, State.stats.skipped), 5)
 end
 
 local function scanRemotes()
@@ -328,7 +1093,7 @@ local function scanRemotes()
             end
         end)
     end
-    notify("Remotes", string.format("Events:%d Functions:%d",
+    notify("Remotes", string.format("Events: %d | Functions: %d",
         #State.remotes.events, #State.remotes.functions), 4)
 end
 
@@ -345,29 +1110,34 @@ local function scanObjects()
                     local hum = d:FindFirstChildOfClass("Humanoid")
                     if hum and not Players:GetPlayerFromCharacter(d) then
                         local root = d:FindFirstChild("HumanoidRootPart") or d.PrimaryPart
+                        local p = root and root.Position
                         table.insert(State.objects.humanoids, {
                             path = d:GetFullName(),
                             name = d.Name,
                             hp = hum.Health,
                             mhp = hum.MaxHealth,
                             ws = hum.WalkSpeed,
-                            pos = root and tostring(root.Position) or "?"
+                            pos = p and string.format("%.1f, %.1f, %.1f", p.X, p.Y, p.Z) or "?",
+                            px = p and p.X,
+                            py = p and p.Y,
+                            pz = p and p.Z
                         })
                     end
                 elseif d:IsA("SpawnLocation") then
                     table.insert(State.objects.spawns, {path = d:GetFullName(), pos = tostring(d.Position)})
                 end
-                if d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("StringValue") or d:IsA("BoolValue") then
+                if d:IsA("ValueBase") then
+                    local ok, val = pcall(function() return tostring(d.Value):sub(1, 60) end)
                     table.insert(State.objects.values, {
                         path = d:GetFullName(),
                         class = d.ClassName,
-                        val = tostring(d.Value):sub(1, 60)
+                        val = ok and val or "?"
                     })
                 end
             end
         end
     end)
-    notify("Objects", string.format("NPC:%d Prompts:%d Values:%d",
+    notify("Objects", string.format("NPCs: %d | Prompts: %d | Values: %d",
         #State.objects.humanoids, #State.objects.prompts, #State.objects.values), 4)
 end
 
@@ -388,35 +1158,37 @@ local function scanAssets()
             end
         end)
     end
-    notify("Assets", string.format("Sounds:%d Anims:%d Meshes:%d",
+    notify("Assets", string.format("Sounds: %d | Anims: %d | Meshes: %d",
         #State.assets.sounds, #State.assets.animations, #State.assets.meshes), 4)
 end
 
 local function scanSecurity()
     State.acDetections = {}
     State.bdDetections = {}
+    State.webhookHits = {}
     State.requireMap = {}
 
     local acPatterns = {
         "anticheat", "anti-cheat", "exploit", "detect",
-        "flag", "tamper", "noclip", "speedhack", "kick", "crash"
+        "flag", "tamper", "noclip", "speedhack", "kick", "crash", "rejoin", "ban"
     }
     local bdPatterns = {
         "loadstring(game:httpget", "require(", "backdoor",
-        "getfenv(", "setfenv(", "admin%."
+        "getfenv(", "setfenv(", "getgenv("
+    }
+    local webhookPatterns = {
+        "discord.com/api/webhooks", "discordapp.com/api/webhooks", "webhook"
     }
 
     for _, r in ipairs(State.results) do
         if r.source and #r.source > 0 and r.status == "OK" then
-            local lines = r.source:split("\n")
+            local lines = splitLines(r.source)
             for li, line in ipairs(lines) do
                 local ll = line:lower()
                 for _, pat in ipairs(acPatterns) do
                     if ll:find(pat, 1, true) then
                         table.insert(State.acDetections, {
-                            script = r.path,
-                            line = li,
-                            pattern = pat,
+                            script = r.path, line = li, pattern = pat,
                             text = line:gsub("^%s+", ""):sub(1, 100)
                         })
                         break
@@ -425,10 +1197,17 @@ local function scanSecurity()
                 for _, pat in ipairs(bdPatterns) do
                     if ll:find(pat, 1, true) then
                         table.insert(State.bdDetections, {
-                            script = r.path,
-                            line = li,
-                            pattern = pat,
+                            script = r.path, line = li, pattern = pat,
                             text = line:gsub("^%s+", ""):sub(1, 100)
+                        })
+                        break
+                    end
+                end
+                for _, pat in ipairs(webhookPatterns) do
+                    if ll:find(pat, 1, true) then
+                        table.insert(State.webhookHits, {
+                            script = r.path, line = li, pattern = pat,
+                            text = line:gsub("^%s+", ""):sub(1, 120)
                         })
                         break
                     end
@@ -444,149 +1223,125 @@ local function scanSecurity()
             end
         end
     end
-    notify("Security", string.format("AC:%d BD:%d Req:%d",
-        #State.acDetections, #State.bdDetections, #State.requireMap), 5)
+    notify("Security", string.format("AC: %d | BD: %d | Webhooks: %d",
+        #State.acDetections, #State.bdDetections, #State.webhookHits), 5,
+        (#State.bdDetections > 0) and Theme.warning or nil)
 end
 
--- export: builds txt, tries multiple write paths with game-name filename
-local function exportTXT()
-    local out = ""
+-- ==============================================================
+--  PATH RESOLVER + TEMPLATE GENERATION
+-- ==============================================================
 
-    out = out .. "==========================================\n"
-    out = out .. "  UNIVERSAL GAME SCANNER EXPORT v9.9\n"
-    out = out .. "==========================================\n"
-    out = out .. "Game: " .. GameName .. "\n"
-    out = out .. "Place ID: " .. tostring(game.PlaceId) .. "\n"
-    out = out .. "Date: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
-    out = out .. "Executor: " .. executorInfo .. "\n"
-    out = out .. "\n"
+local function resolvePath(path)
+    local parts = {}
+    for p in path:gmatch("[^%.]+") do
+        table.insert(parts, p)
+    end
+    if #parts == 0 then return nil end
 
-    out = out .. "========== STATS ==========\n"
-    out = out .. "Total Scripts: " .. State.stats.total .. "\n"
-    out = out .. "Successful: " .. State.stats.success .. "\n"
-    out = out .. "Failed: " .. State.stats.failed .. "\n"
-    out = out .. "Deduped: " .. State.stats.deduped .. "\n"
-    out = out .. "Skipped (Buildings): " .. State.stats.skipped .. "\n\n"
-
-    out = out .. "========== REMOTES ==========\n"
-    out = out .. "--- RemoteEvents (" .. #State.remotes.events .. ") ---\n"
-    for _, e in ipairs(State.remotes.events) do
-        out = out .. e.path .. "\n"
-    end
-    out = out .. "\n--- RemoteFunctions (" .. #State.remotes.functions .. ") ---\n"
-    for _, f in ipairs(State.remotes.functions) do
-        out = out .. f.path .. "\n"
-    end
-    out = out .. "\n--- BindableEvents (" .. #State.remotes.bindables .. ") ---\n"
-    for _, b in ipairs(State.remotes.bindables) do
-        out = out .. b.path .. "\n"
-    end
-    out = out .. "\n--- BindableFunctions (" .. #State.remotes.bindableFuncs .. ") ---\n"
-    for _, b in ipairs(State.remotes.bindableFuncs) do
-        out = out .. b.path .. "\n"
-    end
-    out = out .. "\n\n"
-
-    out = out .. "========== OBJECTS ==========\n"
-    out = out .. "--- ProximityPrompts (" .. #State.objects.prompts .. ") ---\n"
-    for _, p in ipairs(State.objects.prompts) do
-        out = out .. p.path .. "\n"
-    end
-    out = out .. "\n--- ClickDetectors (" .. #State.objects.clickDetectors .. ") ---\n"
-    for _, c in ipairs(State.objects.clickDetectors) do
-        out = out .. c.path .. "\n"
-    end
-    out = out .. "\n--- NPCs (" .. #State.objects.humanoids .. ") ---\n"
-    for _, n in ipairs(State.objects.humanoids) do
-        out = out .. n.name .. " | HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp) .. " WS:" .. tostring(n.ws) .. " | " .. n.path .. "\n"
-    end
-    out = out .. "\n--- SpawnLocations (" .. #State.objects.spawns .. ") ---\n"
-    for _, s in ipairs(State.objects.spawns) do
-        out = out .. s.path .. " @ " .. s.pos .. "\n"
-    end
-    out = out .. "\n--- Values (" .. #State.objects.values .. ") ---\n"
-    for _, v in ipairs(State.objects.values) do
-        out = out .. "[" .. v.class .. "] " .. v.path .. " = " .. v.val .. "\n"
-    end
-    out = out .. "\n\n"
-
-    out = out .. "========== ASSETS ==========\n"
-    out = out .. "--- Sounds (" .. #State.assets.sounds .. ") ---\n"
-    for _, s in ipairs(State.assets.sounds) do
-        out = out .. s.path .. " | " .. s.id .. "\n"
-    end
-    out = out .. "\n--- Animations (" .. #State.assets.animations .. ") ---\n"
-    for _, a in ipairs(State.assets.animations) do
-        out = out .. a.path .. " | " .. a.id .. "\n"
-    end
-    out = out .. "\n--- Decals (" .. #State.assets.decals .. ") ---\n"
-    for _, d in ipairs(State.assets.decals) do
-        out = out .. d.path .. " | " .. d.tex .. "\n"
-    end
-    out = out .. "\n--- Meshes (" .. #State.assets.meshes .. ") ---\n"
-    for _, m in ipairs(State.assets.meshes) do
-        out = out .. m.path .. " | " .. m.id .. "\n"
-    end
-    out = out .. "\n\n"
-
-    out = out .. "========== SECURITY ==========\n"
-    out = out .. "--- AntiCheat Detections (" .. #State.acDetections .. ") ---\n"
-    for _, d in ipairs(State.acDetections) do
-        out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n"
-        out = out .. "  " .. d.text .. "\n"
-    end
-    out = out .. "\n--- Backdoor Detections (" .. #State.bdDetections .. ") ---\n"
-    for _, d in ipairs(State.bdDetections) do
-        out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n"
-        out = out .. "  " .. d.text .. "\n"
-    end
-    out = out .. "\n--- Require Map (" .. #State.requireMap .. ") ---\n"
-    for _, r in ipairs(State.requireMap) do
-        out = out .. r.script .. " -> " .. r.target .. "\n"
-    end
-    out = out .. "\n\n"
-
-    out = out .. "========== DEEP SCAN DATA ==========\n"
-    out = out .. "--- Remote Calls (" .. #State.deepData.remoteCalls .. ") ---\n"
-    for _, c in ipairs(State.deepData.remoteCalls) do
-        out = out .. "[" .. c.time .. "] " .. c.method .. "." .. c.remote .. "\n"
-        out = out .. "  Path: " .. c.path .. "\n"
-        out = out .. "  Args: " .. c.args .. "\n"
-    end
-    out = out .. "\n--- Prompt Hits (" .. #State.deepData.promptHits .. ") ---\n"
-    for _, c in ipairs(State.deepData.promptHits) do
-        out = out .. "[" .. c.time .. "] " .. c.prompt .. " | " .. c.path .. "\n"
-    end
-    out = out .. "\n--- Spawns (" .. #State.deepData.spawns .. ") ---\n"
-    for _, c in ipairs(State.deepData.spawns) do
-        out = out .. "[" .. c.time .. "] " .. c.name .. " | " .. c.path .. "\n"
-    end
-    out = out .. "\n\n"
-
-    out = out .. "==========================================\n"
-    out = out .. "  SCRIPT SOURCES\n"
-    out = out .. "==========================================\n\n"
-
-    for _, r in ipairs(State.results) do
-        out = out .. "------ " .. r.path .. " [" .. r.className .. "] ------\n"
-        out = out .. "Category: " .. r.category .. " | Size: " .. r.size .. " | Status: " .. r.status .. "\n\n"
-        if r.source and #r.source > 0 then
-            out = out .. r.source .. "\n\n"
+    local cur = game
+    for i, p in ipairs(parts) do
+        if i == 1 then
+            local ok, svc = pcall(function() return game:GetService(p) end)
+            if ok and svc then
+                cur = svc
+            else
+                cur = cur:FindFirstChild(p) or cur:WaitForChild(p, 3)
+            end
         else
-            out = out .. "[NO SOURCE AVAILABLE]\n\n"
+            cur = cur:FindFirstChild(p) or cur:WaitForChild(p, 3)
         end
+        if not cur then return nil end
     end
+    return cur
+end
 
-    -- multi-path write attempt with game-name filename
-    local timestamp = tostring(os.time())
-    local attemptPaths = {
-        safeGameName .. "_" .. timestamp .. ".txt",
-        "ScannerResults/" .. safeGameName .. "_" .. timestamp .. ".txt",
-        "scan_" .. timestamp .. ".txt"
+local function pathToCode(path)
+    local parts = {}
+    for p in path:gmatch("[^%.]+") do
+        table.insert(parts, p)
+    end
+    if #parts == 0 then return "-- invalid path" end
+
+    local code = 'local obj = game:GetService("' .. parts[1] .. '")'
+    for i = 2, #parts do
+        code = code .. ':WaitForChild("' .. parts[i] .. '")'
+    end
+    return code
+end
+
+local function generateTemplates()
+    local buf = {
+        "-- PHANTOM REMOTE TEMPLATES -- " .. GameName,
+        "-- paste into executor, edit args",
+        "-- note: if the first part of a path isn't a service, replace GetService with game:WaitForChild",
+        ""
     }
 
-    local savedPath = nil
+    for _, e in ipairs(State.remotes.events) do
+        local var = "evt" .. tostring(#buf)
+        table.insert(buf, "-- " .. e.path)
+        table.insert(buf, "local " .. var .. " = " .. pathToCode(e.path))
+        table.insert(buf, var .. ":FireServer(--[[ args ]])")
+        table.insert(buf, "")
+    end
 
+    for _, f in ipairs(State.remotes.functions) do
+        local var = "fn" .. tostring(#buf)
+        table.insert(buf, "-- " .. f.path)
+        table.insert(buf, "local " .. var .. " = " .. pathToCode(f.path))
+        table.insert(buf, "local result = " .. var .. ":InvokeServer(--[[ args ]])")
+        table.insert(buf, "")
+    end
+
+    return table.concat(buf, "\n")
+end
+
+local function generateSmartTemplates()
+    local buf = {"-- SMART TEMPLATES (from observed deep-scan calls)", ""}
+
+    local observed = {}
+    local order = {}
+    for _, c in ipairs(State.deepData.remoteCalls) do
+        if not observed[c.path] then
+            observed[c.path] = {calls = {}, method = c.method}
+            table.insert(order, c.path)
+        end
+        table.insert(observed[c.path].calls, c)
+    end
+
+    for _, path in ipairs(order) do
+        local data = observed[path]
+        table.insert(buf, "-- " .. path .. "  (observed " .. #data.calls .. "x)")
+        table.insert(buf, "local remote = " .. pathToCode(path))
+        table.insert(buf, "-- example args from live capture:")
+        table.insert(buf, "--   " .. data.calls[1].args)
+        if data.method == "FireServer" then
+            table.insert(buf, "remote:FireServer(--[[ replicate args ]])")
+        else
+            table.insert(buf, "local result = remote:InvokeServer(--[[ replicate args ]])")
+        end
+        table.insert(buf, "")
+    end
+
+    if #order == 0 then
+        table.insert(buf, "-- no observed calls yet. run a deep scan while playing normally.")
+    end
+
+    return table.concat(buf, "\n")
+end
+
+-- ==============================================================
+--  EXPORT
+-- ==============================================================
+
+local function writeMultiPath(content, baseName, ext)
+    local timestamp = tostring(os.time())
+    local attemptPaths = {
+        baseName .. "_" .. timestamp .. ext,
+        "PhantomScanner/" .. baseName .. "_" .. timestamp .. ext,
+        "scan_" .. timestamp .. ext
+    }
     if writefile then
         for _, path in ipairs(attemptPaths) do
             local ok, err = pcall(function()
@@ -596,80 +1351,183 @@ local function exportTXT()
                         makefolder(folderInPath)
                     end
                 end
-                writefile(path, out)
+                writefile(path, content)
             end)
-            if ok then
-                savedPath = path
-                break
-            else
-                print("[Scanner] write failed [" .. path .. "]: " .. tostring(err))
-            end
+            if ok then return path end
         end
     end
+    return nil
+end
 
-    if savedPath then
-        State.lastExportPath = savedPath
-        print("[Scanner] EXPORT SAVED: " .. savedPath)
-        notify("Export Saved", savedPath, 7)
-        if setclipboard then
-            setclipboard(out)
+local function exportTXT()
+    local buf = {}
+
+    table.insert(buf, "==========================================")
+    table.insert(buf, "  PHANTOM SCANNER v10.1 EXPORT")
+    table.insert(buf, "==========================================")
+    table.insert(buf, "Game: " .. GameName)
+    table.insert(buf, "Place ID: " .. tostring(game.PlaceId))
+    table.insert(buf, "Date: " .. os.date("%Y-%m-%d %H:%M:%S"))
+    table.insert(buf, "Executor: " .. executorInfo)
+    table.insert(buf, "Scan Duration: " .. string.format("%.1fs", State.scanDuration))
+    table.insert(buf, "")
+
+    table.insert(buf, "========== STATS ==========")
+    table.insert(buf, "Total Scripts: " .. State.stats.total)
+    table.insert(buf, "Successful: " .. State.stats.success)
+    table.insert(buf, "Failed: " .. State.stats.failed)
+    table.insert(buf, "Deduped: " .. State.stats.deduped)
+    table.insert(buf, "Skipped (Buildings): " .. State.stats.skipped)
+    table.insert(buf, "")
+
+    table.insert(buf, "========== REMOTES ==========")
+    table.insert(buf, "--- RemoteEvents (" .. #State.remotes.events .. ") ---")
+    for _, e in ipairs(State.remotes.events) do table.insert(buf, e.path) end
+    table.insert(buf, "--- RemoteFunctions (" .. #State.remotes.functions .. ") ---")
+    for _, f in ipairs(State.remotes.functions) do table.insert(buf, f.path) end
+    table.insert(buf, "--- BindableEvents (" .. #State.remotes.bindables .. ") ---")
+    for _, b in ipairs(State.remotes.bindables) do table.insert(buf, b.path) end
+    table.insert(buf, "--- BindableFunctions (" .. #State.remotes.bindableFuncs .. ") ---")
+    for _, b in ipairs(State.remotes.bindableFuncs) do table.insert(buf, b.path) end
+    table.insert(buf, "")
+
+    table.insert(buf, "========== OBJECTS ==========")
+    table.insert(buf, "--- ProximityPrompts (" .. #State.objects.prompts .. ") ---")
+    for _, p in ipairs(State.objects.prompts) do table.insert(buf, p.path) end
+    table.insert(buf, "--- ClickDetectors (" .. #State.objects.clickDetectors .. ") ---")
+    for _, c in ipairs(State.objects.clickDetectors) do table.insert(buf, c.path) end
+    table.insert(buf, "--- NPCs (" .. #State.objects.humanoids .. ") ---")
+    for _, n in ipairs(State.objects.humanoids) do
+        table.insert(buf, n.name .. " | HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp)
+            .. " WS:" .. tostring(n.ws) .. " | " .. n.path .. " @ " .. n.pos)
+    end
+    table.insert(buf, "--- SpawnLocations (" .. #State.objects.spawns .. ") ---")
+    for _, s in ipairs(State.objects.spawns) do
+        table.insert(buf, s.path .. " @ " .. s.pos)
+    end
+    table.insert(buf, "--- Values (" .. #State.objects.values .. ") ---")
+    for _, v in ipairs(State.objects.values) do
+        table.insert(buf, "[" .. v.class .. "] " .. v.path .. " = " .. v.val)
+    end
+    table.insert(buf, "")
+
+    table.insert(buf, "========== ASSETS ==========")
+    table.insert(buf, "--- Sounds (" .. #State.assets.sounds .. ") ---")
+    for _, s in ipairs(State.assets.sounds) do table.insert(buf, s.path .. " | " .. s.id) end
+    table.insert(buf, "--- Animations (" .. #State.assets.animations .. ") ---")
+    for _, a in ipairs(State.assets.animations) do table.insert(buf, a.path .. " | " .. a.id) end
+    table.insert(buf, "--- Decals (" .. #State.assets.decals .. ") ---")
+    for _, d in ipairs(State.assets.decals) do table.insert(buf, d.path .. " | " .. d.tex) end
+    table.insert(buf, "--- Meshes (" .. #State.assets.meshes .. ") ---")
+    for _, m in ipairs(State.assets.meshes) do table.insert(buf, m.path .. " | " .. m.id) end
+    table.insert(buf, "")
+
+    table.insert(buf, "========== SECURITY ==========")
+    table.insert(buf, "--- AntiCheat Detections (" .. #State.acDetections .. ") ---")
+    for _, d in ipairs(State.acDetections) do
+        table.insert(buf, d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]")
+        table.insert(buf, "  " .. d.text)
+    end
+    table.insert(buf, "--- Backdoor Detections (" .. #State.bdDetections .. ") ---")
+    for _, d in ipairs(State.bdDetections) do
+        table.insert(buf, d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]")
+        table.insert(buf, "  " .. d.text)
+    end
+    table.insert(buf, "--- Webhook / Logging (" .. #State.webhookHits .. ") ---")
+    for _, d in ipairs(State.webhookHits) do
+        table.insert(buf, d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]")
+        table.insert(buf, "  " .. d.text)
+    end
+    table.insert(buf, "--- Require Map (" .. #State.requireMap .. ") ---")
+    for _, r in ipairs(State.requireMap) do
+        table.insert(buf, r.script .. " -> " .. r.target)
+    end
+    table.insert(buf, "")
+
+    table.insert(buf, "========== DEEP SCAN DATA ==========")
+    table.insert(buf, "--- Remote Calls (" .. #State.deepData.remoteCalls .. ") ---")
+    for _, c in ipairs(State.deepData.remoteCalls) do
+        table.insert(buf, "[" .. c.time .. "] " .. c.method .. "." .. c.remote)
+        table.insert(buf, "  Path: " .. c.path)
+        table.insert(buf, "  Args: " .. c.args)
+    end
+    table.insert(buf, "--- Prompt Hits (" .. #State.deepData.promptHits .. ") ---")
+    for _, c in ipairs(State.deepData.promptHits) do
+        table.insert(buf, "[" .. c.time .. "] " .. c.prompt .. " | " .. c.path)
+    end
+    table.insert(buf, "--- Spawns (" .. #State.deepData.spawns .. ") ---")
+    for _, c in ipairs(State.deepData.spawns) do
+        table.insert(buf, "[" .. c.time .. "] " .. c.name .. " | " .. c.path)
+    end
+    table.insert(buf, "")
+
+    table.insert(buf, "==========================================")
+    table.insert(buf, "  SCRIPT SOURCES")
+    table.insert(buf, "==========================================")
+    table.insert(buf, "")
+
+    for _, r in ipairs(State.results) do
+        table.insert(buf, "------ " .. r.path .. " [" .. r.className .. "] ------")
+        table.insert(buf, "Category: " .. r.category .. " | Size: " .. r.size .. " | Status: " .. r.status)
+        table.insert(buf, "")
+        if r.source and #r.source > 0 then
+            table.insert(buf, r.source)
+        else
+            table.insert(buf, "[NO SOURCE AVAILABLE]")
         end
+        table.insert(buf, "")
+    end
+
+    local out = table.concat(buf, "\n")
+    local saved = writeMultiPath(out, safeGameName, ".txt")
+
+    if saved then
+        State.lastExportPath = saved
+        if setclipboard then setclipboard(out) end
+        notify("Export Saved", saved, 6, Theme.success)
+        setStatus("exported: " .. saved, Theme.success)
         return true
     else
-        print("[Scanner] ALL WRITE PATHS FAILED")
         if setclipboard then
             setclipboard(out)
-            notify("Export Failed", "writefile failed. Full report copied to clipboard.", 8)
+            notify("Export Failed", "writefile unavailable. Report copied to clipboard.", 6, Theme.danger)
         else
-            notify("Export Failed", "writefile and clipboard unavailable", 8)
+            notify("Export Failed", "writefile and clipboard unavailable", 6, Theme.danger)
         end
         return false
     end
 end
 
--- diagnostics: prints file system status to f9
-local function runDiagnostics()
-    print("========== SCANNER DIAGNOSTICS ==========")
-    print("Executor: " .. executorInfo)
-    print("writefile: " .. tostring(type(writefile)))
-    print("isfolder: " .. tostring(type(isfolder)))
-    print("makefolder: " .. tostring(type(makefolder)))
-    print("readfile: " .. tostring(type(readfile)))
-    print("GameName: " .. GameName)
-    print("safeGameName: " .. safeGameName)
-
-    if writefile then
-        local ok, err = pcall(function()
-            writefile("kovak_diag_test.txt", "test content")
-        end)
-        print("Test write (root): " .. tostring(ok) .. (err and (" err:" .. tostring(err)) or ""))
-
-        if ok and readfile then
-            local ok2, content = pcall(function()
-                return readfile("kovak_diag_test.txt")
-            end)
-            print("Test read: " .. tostring(ok2) .. " content=" .. tostring(content))
+local function exportSourcesToFiles()
+    if not writefile then
+        notify("Export", "writefile unavailable", 4, Theme.danger)
+        return
+    end
+    local folder = safeGameName .. "_sources"
+    if makefolder and not isfolder(folder) then
+        pcall(makefolder, folder)
+    end
+    local count = 0
+    for i, r in ipairs(State.results) do
+        if r.source and #r.source > 0 and r.status == "OK" then
+            local fname = folder .. "/" .. sanitizeFilename(r.name) .. "_" .. i .. ".lua"
+            pcall(writefile, fname, "-- " .. r.path .. "\n-- " .. r.className .. " | " .. r.category .. "\n\n" .. r.source)
+            count = count + 1
+            if count % 20 == 0 then RunService.RenderStepped:Wait() end
         end
     end
-
-    if makefolder and isfolder then
-        pcall(function()
-            if not isfolder("ScannerResults") then
-                makefolder("ScannerResults")
-            end
-        end)
-        print("Folder ScannerResults exists: " .. tostring(isfolder("ScannerResults")))
-    end
-
-    print("=========================================")
-    notify("Diagnostics", "Check F9 console for details", 5)
+    notify("Sources", "Saved " .. count .. " files to " .. folder, 5, Theme.success)
+    setStatus("sources exported: " .. count .. " files", Theme.success)
 end
 
--- deep scan
+-- ==============================================================
+--  DEEP SCAN
+-- ==============================================================
+
 local originalNamecall = nil
 local namecallHooked = false
 
-local function restoreHook()
+restoreHook = function()
     if namecallHooked and originalNamecall then
         pcall(function()
             local mt = getrawmetatable(game)
@@ -681,6 +1539,17 @@ local function restoreHook()
     end
 end
 
+local function disconnectDeep()
+    if connections.promptAdded then
+        pcall(function() connections.promptAdded:Disconnect() end)
+        connections.promptAdded = nil
+    end
+    if connections.spawnWatch then
+        pcall(function() connections.spawnWatch:Disconnect() end)
+        connections.spawnWatch = nil
+    end
+end
+
 local function startDeepScan(duration)
     duration = duration or 300
     if State.deepScanning then
@@ -689,7 +1558,8 @@ local function startDeepScan(duration)
     end
     State.deepScanning = true
     State.deepData = {remoteCalls = {}, promptHits = {}, spawns = {}}
-    notify("Deep Scan", "Monitoring " .. duration .. "s", 4)
+    notify("Deep Scan", "Monitoring " .. duration .. "s — play normally", 5)
+    setStatus("deep scan running (" .. duration .. "s)", Theme.warning)
 
     pcall(function()
         for _, d in ipairs(Workspace:GetDescendants()) do
@@ -704,6 +1574,20 @@ local function startDeepScan(duration)
                     end
                 end)
             end
+        end
+    end)
+
+    connections.promptAdded = Workspace.DescendantAdded:Connect(function(d)
+        if d:IsA("ProximityPrompt") then
+            d.Triggered:Connect(function(plr)
+                if plr == LocalPlayer then
+                    table.insert(State.deepData.promptHits, {
+                        time = os.date("%H:%M:%S"),
+                        prompt = d.Name,
+                        path = d:GetFullName()
+                    })
+                end
+            end)
         end
     end)
 
@@ -744,14 +1628,14 @@ local function startDeepScan(duration)
         namecallHooked = true
     end)
 
-    delay(duration, function()
+    task.delay(duration, function()
         if State.deepScanning then
             restoreHook()
+            disconnectDeep()
             State.deepScanning = false
-            notify("Deep Scan Done", string.format("Calls:%d Prompts:%d Spawns:%d",
-                #State.deepData.remoteCalls,
-                #State.deepData.promptHits,
-                #State.deepData.spawns), 6)
+            notify("Deep Scan Done", string.format("Calls: %d | Prompts: %d | Spawns: %d",
+                #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns), 6, Theme.success)
+            setStatus("deep scan complete", Theme.success)
         end
     end)
 end
@@ -759,358 +1643,718 @@ end
 local function stopDeepScan()
     if not State.deepScanning then return end
     State.deepScanning = false
-    if connections.spawnWatch then connections.spawnWatch:Disconnect() end
+    disconnectDeep()
     restoreHook()
-    notify("Deep Scan Stopped", string.format("Calls:%d Prompts:%d Spawns:%d",
-        #State.deepData.remoteCalls,
-        #State.deepData.promptHits,
-        #State.deepData.spawns), 5)
+    notify("Deep Scan Stopped", string.format("Calls: %d | Prompts: %d | Spawns: %d",
+        #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns), 5)
+    setStatus("deep scan stopped", Theme.textDim)
 end
 
--- UI MAIN
-local TabMain = Window:CreateTab("Main", 4483345998)
-TabMain:CreateSection("Scanner Control")
+-- ==============================================================
+--  DIAGNOSTICS
+-- ==============================================================
 
-TabMain:CreateButton({
-    Name = "FULL SCAN + AUTO EXPORT",
-    Callback = function()
-        task.spawn(function()
-            scanScripts()
-            scanRemotes()
-            scanObjects()
-            scanAssets()
-            scanSecurity()
-            exportTXT()
-            notify("All Done", GameName .. " fully scanned and exported", 5)
+local function runDiagnostics()
+    local lines = {}
+    local function log(t) table.insert(lines, t) end
+
+    log("=== PHANTOM DIAGNOSTICS ===")
+    log("Executor: " .. executorInfo)
+    log("writefile: " .. tostring(type(writefile)))
+    log("readfile: " .. tostring(type(readfile)))
+    log("isfolder: " .. tostring(type(isfolder)))
+    log("makefolder: " .. tostring(type(makefolder)))
+    log("setclipboard: " .. tostring(type(setclipboard)))
+    log("getsrc: " .. tostring(type(getsrc)))
+    log("decompile: " .. tostring(type(decompile)))
+    log("getscriptbytecode: " .. tostring(type(getscriptbytecode)))
+    log("newcclosure: " .. tostring(type(newcclosure)))
+    log("getrawmetatable: " .. tostring(type(getrawmetatable)))
+    log("GameName: " .. GameName)
+    log("PlaceId: " .. tostring(game.PlaceId))
+
+    if writefile then
+        local ok, err = pcall(function() writefile("phantom_diag_test.txt", "test") end)
+        log("Test write: " .. tostring(ok) .. (err and (" err:" .. tostring(err)) or ""))
+        if ok and readfile then
+            local ok2, content = pcall(function() return readfile("phantom_diag_test.txt") end)
+            log("Test read: " .. tostring(ok2) .. " content=" .. tostring(content))
+        end
+    end
+
+    if makefolder and isfolder then
+        pcall(function()
+            if not isfolder("PhantomScanner") then makefolder("PhantomScanner") end
         end)
+        log("Folder PhantomScanner: " .. tostring(isfolder("PhantomScanner")))
     end
-})
 
-TabMain:CreateButton({
-    Name = "Scan Scripts Only + Export",
-    Callback = function()
-        task.spawn(function()
-            scanScripts()
-            exportTXT()
+    local report = table.concat(lines, "\n")
+    print(report)
+    return report
+end
+
+-- ==============================================================
+--  SCAN PIPELINE
+-- ==============================================================
+
+local function runScanPipeline(progressCb)
+    State.busy = true
+    State.cancelScan = false
+    State.scanStart = os.clock()
+
+    scanScripts(progressCb)
+    if not State.cancelScan then scanRemotes() end
+    if not State.cancelScan then scanObjects() end
+    if not State.cancelScan then scanAssets() end
+    if not State.cancelScan then scanSecurity() end
+
+    State.scanDuration = os.clock() - State.scanStart
+    local wasCancelled = State.cancelScan
+    State.busy = false
+    State.cancelScan = false
+
+    if wasCancelled then
+        setStatus("scan cancelled", Theme.warning)
+    else
+        setStatus(string.format("scan done in %.1fs | %d scripts | %d remotes",
+            State.scanDuration, State.stats.total,
+            #State.remotes.events + #State.remotes.functions), Theme.success)
+    end
+end
+
+-- ==============================================================
+--  BUILD TABS
+-- ==============================================================
+
+-- ===== MAIN =====
+local TabMain = makeTab("Main", "◈")
+
+sec(TabMain, "Scanner Control")
+
+local progressLabel = label(TabMain, "ready.", 20)
+
+button(TabMain, "⬤  FULL SCAN", function()
+    if State.busy then return end
+    task.spawn(function()
+        runScanPipeline(function(done, total)
+            progressLabel.Text = string.format("scanning scripts... %d / %d (%d%%)",
+                done, total, math.floor(done / total * 100))
         end)
-    end
-})
+        progressLabel.Text = string.format("done in %.1fs — %d scripts found",
+            State.scanDuration, State.stats.total)
+        if refreshScriptList then refreshScriptList() end
+    end)
+end, 40)
 
-TabMain:CreateButton({
-    Name = "Scan Remotes Only",
-    Callback = function() task.spawn(scanRemotes) end
-})
-
-TabMain:CreateButton({
-    Name = "Scan Objects + Assets",
-    Callback = function()
-        task.spawn(function()
-            scanObjects()
-            scanAssets()
+button(TabMain, "Scripts Only", function()
+    if State.busy then return end
+    task.spawn(function()
+        State.busy = true
+        State.cancelScan = false
+        State.scanStart = os.clock()
+        scanScripts(function(done, total)
+            progressLabel.Text = string.format("scanning... %d / %d", done, total)
         end)
+        State.scanDuration = os.clock() - State.scanStart
+        State.busy = false
+        progressLabel.Text = string.format("scripts done in %.1fs", State.scanDuration)
+        if refreshScriptList then refreshScriptList() end
+    end)
+end)
+
+button(TabMain, "Cancel Current Scan", function()
+    if State.busy then
+        State.cancelScan = true
+        setStatus("cancelling...", Theme.warning)
     end
+end)
+
+sec(TabMain, "Individual Scans")
+
+button(TabMain, "Remotes Only", function() task.spawn(scanRemotes) end)
+button(TabMain, "Objects + Assets", function()
+    task.spawn(function() scanObjects() scanAssets() end)
+end)
+button(TabMain, "Security Scan (uses script results)", function() task.spawn(scanSecurity) end)
+
+sec(TabMain, "Diagnostics")
+
+local diagLabel = label(TabMain, "not run yet.", 120)
+button(TabMain, "Run Diagnostics", function()
+    task.spawn(function()
+        local report = runDiagnostics()
+        diagLabel.Text = report:sub(1, 600)
+        notify("Diagnostics", "Full report in F9 console", 4)
+    end)
+end)
+
+-- ===== SCRIPTS =====
+local TabScr = makeTab("Scripts", "≡")
+
+sec(TabScr, "Search + Filter")
+
+local searchBox = create("TextBox", {
+    Size = UDim2.new(1, -8, 0, 32),
+    BackgroundColor3 = Theme.bg3,
+    Text = "",
+    PlaceholderText = "search scripts by name or path...",
+    PlaceholderColor3 = Theme.textDim,
+    TextColor3 = Theme.text,
+    TextSize = 13,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ClearTextOnFocus = false,
+    LayoutOrder = nextOrder(),
+    Parent = TabScr
 })
+corner(searchBox, 6)
+create("UIPadding", {PaddingLeft = UDim.new(0, 10), Parent = searchBox})
 
-TabMain:CreateSection("Diagnostics")
+local filterOptions = {"All", "Combat", "Movement", "Economy", "NPC", "Remote",
+    "DataStore", "Security", "Animation", "Audio", "Client", "Server", "Module", "Other"}
+local filterIndex = 1
 
-TabMain:CreateButton({
-    Name = "Run File System Diagnostics",
-    Callback = function()
-        runDiagnostics()
-    end
+local filterBtn = button(TabScr, "Filter: All (click to cycle)", function()
+    filterIndex = (filterIndex % #filterOptions) + 1
+    filterBtn.Text = "Filter: " .. filterOptions[filterIndex] .. " (click to cycle)"
+    if refreshScriptList then refreshScriptList() end
+end)
+
+sec(TabScr, "Script List (click row = copy source)")
+
+local scriptCountLabel = label(TabScr, "no scripts scanned yet.", 18)
+local scriptListFrame = create("Frame", {
+    Size = UDim2.new(1, -8, 0, 0),
+    BackgroundTransparency = 1,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    LayoutOrder = nextOrder(),
+    Parent = TabScr
 })
+create("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scriptListFrame})
 
-TabMain:CreateSection("Stats")
+refreshScriptList = function()
+    clearList(scriptListFrame)
 
-local StatsLabel = TabMain:CreateLabel("Run a scan first.")
+    local query = searchBox.Text:lower()
+    local selCat = filterOptions[filterIndex]
+    local count = 0
 
-TabMain:CreateButton({
-    Name = "Refresh Stats",
-    Callback = function()
-        StatsLabel:Set(string.format(
-            "Total:%d | OK:%d | Fail:%d | Dup:%d | Skipped:%d",
-            State.stats.total, State.stats.success,
-            State.stats.failed, State.stats.deduped, State.stats.skipped))
-    end
-})
+    for _, r in ipairs(State.results) do
+        local matchesCat = (selCat == "All") or (r.category == selCat)
+        local matchesQuery = (query == "")
+            or r.name:lower():find(query, 1, true)
+            or r.path:lower():find(query, 1, true)
 
--- UI SCRIPTS
-local TabScr = Window:CreateTab("Scripts", 4483345998)
-TabScr:CreateSection("Browse Scripts")
-
-local ScriptOutput = TabScr:CreateLabel("Run scan first.")
-
-TabScr:CreateDropdown({
-    Name = "Category Filter",
-    Options = {
-        "All", "Combat", "Movement", "Economy", "NPC",
-        "Remote", "DataStore", "Security", "Animation",
-        "Audio", "Client", "Server", "Module", "Other"
-    },
-    CurrentOption = {"All"},
-    Callback = function(opt)
-        local selCat = opt[1]
-        local out = ""
-        local count = 0
-        for _, r in ipairs(State.results) do
-            if selCat == "All" or r.category == selCat then
-                count = count + 1
-                if count <= 40 then
-                    local icon = r.status == "OK" and "[OK] " or "[X] "
-                    out = out .. icon .. "[" .. r.className .. "] " .. r.name .. "\n   " .. r.path .. "\n\n"
-                end
+        if matchesCat and matchesQuery then
+            count = count + 1
+            if count <= 150 then
+                local statusColor = (r.status == "OK") and Theme.success or Theme.danger
+                local statusTag = (r.status == "OK") and "[OK]" or ("[" .. r.status .. "]")
+                row(scriptListFrame,
+                    statusTag .. " [" .. r.className .. "] " .. r.name .. "  •  " .. r.category,
+                    r.path .. "  •  " .. tostring(r.size) .. " bytes",
+                    (r.source and #r.source > 0) and r.source or ("-- no source -- path: " .. r.path),
+                    statusColor)
             end
         end
-        if count == 0 then out = "No results." end
-        if count > 40 then out = out .. "...+" .. (count - 40) .. " more\n" end
-        ScriptOutput:Set(out)
     end
-})
 
-TabScr:CreateButton({
-    Name = "Copy All Sources",
-    Callback = function()
-        local all = ""
+    scriptCountLabel.Text = count .. " scripts shown" .. (count > 150 and " (first 150)" or "")
+end
+
+-- debounced search (token-based, no lag on every keystroke)
+local searchToken = 0
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    searchToken = searchToken + 1
+    local myToken = searchToken
+    task.delay(0.12, function()
+        if myToken == searchToken then refreshScriptList() end
+    end)
+end)
+
+button(TabScr, "Copy ALL Sources (concatenated)", function()
+    task.spawn(function()
+        local all = {}
         for _, r in ipairs(State.results) do
             if r.status == "OK" and r.source and #r.source > 0 then
-                all = all .. "--===== " .. r.path .. " [" .. r.className .. "] =====\n" .. r.source .. "\n\n"
+                table.insert(all, "--===== " .. r.path .. " [" .. r.className .. "] =====")
+                table.insert(all, r.source)
+                table.insert(all, "")
             end
         end
-        if setclipboard then setclipboard(all) end
-        notify("Copy", "Copied " .. #all .. " bytes", 3)
-    end
-})
-
--- UI SECURITY
-local TabSec = Window:CreateTab("Security", 4483345998)
-TabSec:CreateSection("Detections")
-
-local SecLabel = TabSec:CreateLabel("Run security scan first.")
-
-TabSec:CreateButton({
-    Name = "Show Anti-Cheat Hits",
-    Callback = function()
-        local out = ""
-        for i, d in ipairs(State.acDetections) do
-            if i > 30 then break end
-            out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n  " .. d.text .. "\n\n"
+        local out = table.concat(all, "\n")
+        if setclipboard then
+            setclipboard(out)
+            notify("Copy", tostring(#out) .. " bytes copied", 3, Theme.success)
         end
-        if out == "" then out = "Clean." end
-        SecLabel:Set(out)
-    end
+    end)
+end)
+
+-- ===== REMOTES =====
+local TabRem = makeTab("Remotes", "⚡")
+
+sec(TabRem, "Remote List (click = copy path | [use] = load into tester)")
+
+local remListFrame = create("Frame", {
+    Size = UDim2.new(1, -8, 0, 0),
+    BackgroundTransparency = 1,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    LayoutOrder = nextOrder(),
+    Parent = TabRem
 })
+create("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = remListFrame})
 
-TabSec:CreateButton({
-    Name = "Show Backdoor Hits",
-    Callback = function()
-        local out = ""
-        for i, d in ipairs(State.bdDetections) do
-            if i > 30 then break end
-            out = out .. d.script .. ":L" .. d.line .. " [" .. d.pattern .. "]\n  " .. d.text .. "\n\n"
-        end
-        if out == "" then out = "Clean." end
-        SecLabel:Set(out)
-    end
+button(TabRem, "Refresh Remote List", function() task.spawn(populateRemotes) end)
+
+sec(TabRem, "Remote Tester")
+
+local pathBox = create("TextBox", {
+    Size = UDim2.new(1, -8, 0, 30),
+    BackgroundColor3 = Theme.bg3,
+    Text = "",
+    PlaceholderText = "remote path (click [use] on a row or paste)...",
+    PlaceholderColor3 = Theme.textDim,
+    TextColor3 = Theme.text,
+    TextSize = 12,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ClearTextOnFocus = false,
+    LayoutOrder = nextOrder(),
+    Parent = TabRem
 })
+corner(pathBox, 6)
+create("UIPadding", {PaddingLeft = UDim.new(0, 10), Parent = pathBox})
 
-TabSec:CreateButton({
-    Name = "Show Require Map",
-    Callback = function()
-        local out = ""
-        for i, d in ipairs(State.requireMap) do
-            if i > 30 then break end
-            out = out .. d.script .. " -> " .. d.target .. "\n  " .. d.text .. "\n\n"
-        end
-        if out == "" then out = "None." end
-        SecLabel:Set(out)
-    end
+local argsBox = create("TextBox", {
+    Size = UDim2.new(1, -8, 0, 30),
+    BackgroundColor3 = Theme.bg3,
+    Text = "",
+    PlaceholderText = 'args comma-separated: 5, true, "hello", nil',
+    PlaceholderColor3 = Theme.textDim,
+    TextColor3 = Theme.text,
+    TextSize = 12,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ClearTextOnFocus = false,
+    LayoutOrder = nextOrder(),
+    Parent = TabRem
 })
+corner(argsBox, 6)
+create("UIPadding", {PaddingLeft = UDim.new(0, 10), Parent = argsBox})
 
--- UI REMOTES
-local TabRem = Window:CreateTab("Remotes", 4483345998)
-TabRem:CreateSection("Found Remotes")
+local testResult = label(TabRem, "no action yet.", 34)
 
-local RemLabel = TabRem:CreateLabel("Scan first.")
-
-TabRem:CreateButton({
-    Name = "Refresh Remote List",
-    Callback = function()
-        local out = ""
-        out = out .. "=== Events (" .. #State.remotes.events .. ") ===\n"
-        for i, e in ipairs(State.remotes.events) do
-            if i > 25 then
-                out = out .. "...more\n"
-                break
-            end
-            out = out .. "* " .. e.path .. "\n"
-        end
-        out = out .. "\n=== Functions (" .. #State.remotes.functions .. ") ===\n"
-        for i, f in ipairs(State.remotes.functions) do
-            if i > 25 then
-                out = out .. "...more\n"
-                break
-            end
-            out = out .. "* " .. f.path .. "\n"
-        end
-        if out == "" then out = "Nothing found." end
-        RemLabel:Set(out)
-    end
-})
-
--- UI OBJECTS
-local TabObj = Window:CreateTab("Objects", 4483345998)
-TabObj:CreateSection("NPCs and Interactables")
-
-local ObjLabel = TabObj:CreateLabel("Scan first.")
-
-TabObj:CreateButton({
-    Name = "Show NPC List",
-    Callback = function()
-        local out = ""
-        for i, n in ipairs(State.objects.humanoids) do
-            if i > 25 then break end
-            out = out .. n.name .. "\n  HP:" .. tostring(n.hp) .. "/" .. tostring(n.mhp) .. " WS:" .. tostring(n.ws) .. "\n  " .. n.path .. "\n\n"
-        end
-        if out == "" then out = "No NPCs." end
-        ObjLabel:Set(out)
-    end
-})
-
-TabObj:CreateButton({
-    Name = "Show Prompts and Values",
-    Callback = function()
-        local out = ""
-        out = out .. "=== Prompts (" .. #State.objects.prompts .. ") ===\n"
-        for i, p in ipairs(State.objects.prompts) do
-            if i > 15 then break end
-            out = out .. "* " .. p.path .. "\n"
-        end
-        out = out .. "\n=== Values (" .. #State.objects.values .. ") ===\n"
-        for i, v in ipairs(State.objects.values) do
-            if i > 15 then break end
-            out = out .. "* [" .. v.class .. "] " .. v.path .. " = " .. v.val .. "\n"
-        end
-        if out == "" then out = "Nothing found." end
-        ObjLabel:Set(out)
-    end
-})
-
--- UI DEEP SCAN
-local TabDeep = Window:CreateTab("Deep Scan", 4483345998)
-TabDeep:CreateSection("Live Monitor")
-
-TabDeep:CreateButton({
-    Name = "Start Deep Scan (300s)",
-    Callback = function() startDeepScan(300) end
-})
-
-TabDeep:CreateButton({
-    Name = "Stop Deep Scan",
-    Callback = function() stopDeepScan() end
-})
-
-local DeepLabel = TabDeep:CreateLabel("No captures yet.")
-
-TabDeep:CreateButton({
-    Name = "View Remote Calls",
-    Callback = function()
-        local out = ""
-        for i, c in ipairs(State.deepData.remoteCalls) do
-            if i > 30 then break end
-            out = out .. "[" .. c.time .. "] " .. c.method .. "." .. c.remote .. "\n  Path: " .. c.path .. "\n  Args: " .. c.args .. "\n\n"
-        end
-        if out == "" then out = "No calls captured." end
-        DeepLabel:Set(out)
-    end
-})
-
-TabDeep:CreateButton({
-    Name = "View Prompt Hits",
-    Callback = function()
-        local out = ""
-        for i, c in ipairs(State.deepData.promptHits) do
-            if i > 30 then break end
-            out = out .. "[" .. c.time .. "] " .. c.prompt .. "\n  " .. c.path .. "\n\n"
-        end
-        if out == "" then out = "No prompt hits." end
-        DeepLabel:Set(out)
-    end
-})
-
-TabDeep:CreateButton({
-    Name = "View Spawns",
-    Callback = function()
-        local out = ""
-        for i, c in ipairs(State.deepData.spawns) do
-            if i > 30 then break end
-            out = out .. "[" .. c.time .. "] " .. c.name .. "\n  " .. c.path .. "\n\n"
-        end
-        if out == "" then out = "No spawns captured." end
-        DeepLabel:Set(out)
-    end
-})
-
--- UI EXPORT
-local TabExp = Window:CreateTab("Export", 4483345998)
-TabExp:CreateSection("TXT Export")
-
-local ExportLabel = TabExp:CreateLabel("No export yet. Filename will be: " .. safeGameName .. "_<timestamp>.txt")
-
-TabExp:CreateButton({
-    Name = "Export Everything to TXT",
-    Callback = function()
-        task.spawn(function()
-            local ok = exportTXT()
-            if ok then
-                ExportLabel:Set("Saved: " .. State.lastExportPath)
-            end
-        end)
-    end
-})
-
-TabExp:CreateButton({
-    Name = "Copy Full Report to Clipboard",
-    Callback = function()
-        task.spawn(function()
-            exportTXT()
-        end)
-    end
-})
-
--- UI SETTINGS
-local TabSet = Window:CreateTab("Settings", 4483345998)
-TabSet:CreateSection("Filter Config")
-
-TabSet:CreateToggle({
-    Name = "Exclude Buildings",
-    CurrentValue = true,
-    Flag = "ExcludeBuildings",
-    Callback = function(v)
-        State.excludeBuildings = v
-        if v then
-            notify("Setting", "Buildings excluded", 3)
+local function parseArgs(str)
+    local args = {}
+    if not str or str == "" then return args end
+    for chunk in string.gmatch(str, "[^,]+") do
+        local v = chunk:match("^%s*(.-)%s*$")
+        if v == "true" then
+            v = true
+        elseif v == "false" then
+            v = false
+        elseif v == "nil" then
+            v = nil
+        elseif tonumber(v) then
+            v = tonumber(v)
         else
-            notify("Setting", "Buildings included", 3)
+            local q = v:match('^"(.*)"$') or v:match("^'(.*)'$")
+            v = q or v
+        end
+        table.insert(args, v)
+    end
+    return args
+end
+
+button(TabRem, "Check Path (resolve + show class)", function()
+    task.spawn(function()
+        local obj = resolvePath(pathBox.Text)
+        if obj then
+            testResult.Text = "✓ " .. obj.ClassName .. " | " .. obj:GetFullName()
+            setStatus("resolved: " .. obj.ClassName, Theme.success)
+        else
+            testResult.Text = "✗ resolve failed: " .. pathBox.Text
+            setStatus("resolve failed", Theme.danger)
+        end
+    end)
+end)
+
+button(TabRem, "Fire RemoteEvent", function()
+    task.spawn(function()
+        local obj = resolvePath(pathBox.Text)
+        if not obj then
+            testResult.Text = "✗ resolve failed: " .. pathBox.Text
+            return
+        end
+        if not obj:IsA("RemoteEvent") then
+            testResult.Text = "✗ not a RemoteEvent (got " .. obj.ClassName .. ")"
+            return
+        end
+        local args = parseArgs(argsBox.Text)
+        local ok, err = pcall(function() obj:FireServer(unpack(args)) end)
+        testResult.Text = ok and ("✓ fired with " .. #args .. " args") or ("✗ error: " .. tostring(err))
+        setStatus(ok and "remote fired" or "fire error", ok and Theme.success or Theme.danger)
+    end)
+end)
+
+button(TabRem, "Invoke RemoteFunction", function()
+    task.spawn(function()
+        local obj = resolvePath(pathBox.Text)
+        if not obj then
+            testResult.Text = "✗ resolve failed: " .. pathBox.Text
+            return
+        end
+        if not obj:IsA("RemoteFunction") then
+            testResult.Text = "✗ not a RemoteFunction (got " .. obj.ClassName .. ")"
+            return
+        end
+        local args = parseArgs(argsBox.Text)
+        local ok, res = pcall(function() return obj:InvokeServer(unpack(args)) end)
+        if ok then
+            local s
+            if type(res) == "table" then
+                local e, j = pcall(function() return HttpService:JSONEncode(res) end)
+                s = (e and j) or tostring(res)
+            else
+                s = tostring(res)
+            end
+            testResult.Text = "✓ returned: " .. s:sub(1, 250)
+        else
+            testResult.Text = "✗ error: " .. tostring(res)
+        end
+        setStatus(ok and "invoke done" or "invoke error", ok and Theme.success or Theme.danger)
+    end)
+end)
+
+populateRemotes = function()
+    clearList(remListFrame)
+
+    for i, e in ipairs(State.remotes.events) do
+        if i > 100 then break end
+        row(remListFrame, "⚡ " .. e.name, e.path, e.path, nil, "use", function()
+            pathBox.Text = e.path
+            setStatus("loaded into tester: " .. e.name, Theme.success)
+        end)
+    end
+    for i, f in ipairs(State.remotes.functions) do
+        if i > 100 then break end
+        row(remListFrame, "⚡ " .. f.name .. " (function)", f.path, f.path, Theme.warning, "use", function()
+            pathBox.Text = f.path
+            setStatus("loaded into tester: " .. f.name, Theme.success)
+        end)
+    end
+
+    if #State.remotes.events == 0 and #State.remotes.functions == 0 then
+        label(remListFrame, "no remotes found. run a scan first.", 20)
+    end
+end
+
+sec(TabRem, "Templates")
+
+button(TabRem, "Generate + Copy Remote Templates", function()
+    task.spawn(function()
+        local t = generateTemplates()
+        if setclipboard then setclipboard(t) end
+        pcall(writefile, safeGameName .. "_templates.lua", t)
+        notify("Templates", "Copied to clipboard + saved to file", 5, Theme.success)
+    end)
+end)
+
+button(TabRem, "Generate Smart Templates (from deep scan)", function()
+    task.spawn(function()
+        local t = generateSmartTemplates()
+        if setclipboard then setclipboard(t) end
+        pcall(writefile, safeGameName .. "_smart_templates.lua", t)
+        notify("Smart Templates", tostring(#State.deepData.remoteCalls) .. " observed calls processed", 5, Theme.success)
+    end)
+end)
+
+-- ===== OBJECTS =====
+local TabObj = makeTab("Objects", "◎")
+
+sec(TabObj, "NPCs (click = copy path | [TP] = teleport)")
+
+local objListFrame = create("Frame", {
+    Size = UDim2.new(1, -8, 0, 0),
+    BackgroundTransparency = 1,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    LayoutOrder = nextOrder(),
+    Parent = TabObj
+})
+create("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = objListFrame})
+
+button(TabObj, "Show NPCs", function()
+    clearList(objListFrame)
+    for _, n in ipairs(State.objects.humanoids) do
+        row(objListFrame,
+            "◎ " .. n.name .. "  |  HP " .. tostring(n.hp) .. "/" .. tostring(n.mhp) .. "  WS " .. tostring(n.ws),
+            n.pos, n.path, nil, "TP", function()
+                local char = LocalPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp and n.px then
+                    hrp.CFrame = CFrame.new(n.px, n.py, n.pz)
+                    setStatus("teleported to " .. n.name, Theme.success)
+                end
+            end)
+    end
+    if #State.objects.humanoids == 0 then
+        label(objListFrame, "no NPCs. scan first.", 20)
+    end
+end)
+
+button(TabObj, "Show Prompts + Values", function()
+    clearList(objListFrame)
+    for i, p in ipairs(State.objects.prompts) do
+        if i > 40 then break end
+        row(objListFrame, "▣ " .. p.name, p.path, p.path)
+    end
+    for i, v in ipairs(State.objects.values) do
+        if i > 40 then break end
+        row(objListFrame, "[" .. v.class .. "] " .. v.path, "= " .. v.val, v.path .. " = " .. v.val)
+    end
+    if #State.objects.prompts == 0 and #State.objects.values == 0 then
+        label(objListFrame, "nothing found. scan first.", 20)
+    end
+end)
+
+-- ===== SECURITY =====
+local TabSec = makeTab("Security", "⛨")
+
+sec(TabSec, "Detections (click row = copy line)")
+
+local secListFrame = create("Frame", {
+    Size = UDim2.new(1, -8, 0, 0),
+    BackgroundTransparency = 1,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    LayoutOrder = nextOrder(),
+    Parent = TabSec
+})
+create("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = secListFrame})
+
+local function populateSec()
+    clearList(secListFrame)
+
+    if #State.acDetections > 0 then
+        label(secListFrame, "⛨ " .. #State.acDetections .. " anti-cheat related lines:", 18)
+    end
+    for i, d in ipairs(State.acDetections) do
+        if i > 40 then break end
+        local shortName = d.script:match("[^%.]+$") or d.script
+        row(secListFrame, "⛨ " .. shortName .. ":L" .. d.line .. " [" .. d.pattern .. "]",
+            d.text, d.text, Theme.danger)
+    end
+
+    if #State.bdDetections > 0 then
+        label(secListFrame, "⚑ " .. #State.bdDetections .. " potential backdoor lines:", 18)
+    end
+    for i, d in ipairs(State.bdDetections) do
+        if i > 40 then break end
+        local shortName = d.script:match("[^%.]+$") or d.script
+        row(secListFrame, "⚑ " .. shortName .. ":L" .. d.line .. " [" .. d.pattern .. "]",
+            d.text, d.text, Theme.warning)
+    end
+
+    if #State.webhookHits > 0 then
+        label(secListFrame, "📡 " .. #State.webhookHits .. " webhook/logging refs (game may report exploiters):", 18)
+    end
+    for i, d in ipairs(State.webhookHits) do
+        if i > 20 then break end
+        local shortName = d.script:match("[^%.]+$") or d.script
+        row(secListFrame, "📡 " .. shortName .. ":L" .. d.line, d.text, d.text, Theme.warning)
+    end
+
+    if #State.requireMap > 0 then
+        label(secListFrame, "Require map (" .. #State.requireMap .. "):", 18)
+    end
+    for i, d in ipairs(State.requireMap) do
+        if i > 30 then break end
+        local shortName = d.script:match("[^%.]+$") or d.script
+        row(secListFrame, "→ " .. shortName .. " requires: " .. d.target, d.text, d.text)
+    end
+
+    if #State.acDetections == 0 and #State.bdDetections == 0 and #State.webhookHits == 0 then
+        label(secListFrame, "clean. run full scan first to populate.", 20)
+    end
+end
+
+button(TabSec, "Refresh Security View", populateSec)
+
+-- ===== DEEP SCAN =====
+local TabDeep = makeTab("Deep Scan", "◉")
+
+sec(TabDeep, "Live Monitor")
+
+button(TabDeep, "▶ Start Deep Scan (300s)", function() startDeepScan(300) end)
+button(TabDeep, "▶ Start Deep Scan (60s)", function() startDeepScan(60) end)
+button(TabDeep, "■ Stop Deep Scan", stopDeepScan)
+
+local deepStatsLabel = label(TabDeep, "calls: 0 | prompts: 0 | spawns: 0", 18)
+
+task.spawn(function()
+    while ScreenGui.Parent do
+        if State.deepScanning then
+            deepStatsLabel.Text = string.format("calls: %d | prompts: %d | spawns: %d",
+                #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns)
+        end
+        task.wait(1)
+    end
+end)
+
+sec(TabDeep, "Captured Data (click = copy)")
+
+local deepListFrame = create("Frame", {
+    Size = UDim2.new(1, -8, 0, 0),
+    BackgroundTransparency = 1,
+    AutomaticSize = Enum.AutomaticSize.Y,
+    LayoutOrder = nextOrder(),
+    Parent = TabDeep
+})
+create("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = deepListFrame})
+
+local function showDeep(kind)
+    clearList(deepListFrame)
+
+    if kind == "calls" then
+        for i, c in ipairs(State.deepData.remoteCalls) do
+            if i > 60 then break end
+            row(deepListFrame, "[" .. c.time .. "] " .. c.method .. "." .. c.remote,
+                c.args, c.path .. " -- args: " .. c.args)
+        end
+        if #State.deepData.remoteCalls == 0 then
+            label(deepListFrame, "no calls captured yet.", 20)
+        end
+    elseif kind == "prompts" then
+        for i, c in ipairs(State.deepData.promptHits) do
+            if i > 60 then break end
+            row(deepListFrame, "[" .. c.time .. "] " .. c.prompt, c.path, c.path)
+        end
+        if #State.deepData.promptHits == 0 then
+            label(deepListFrame, "no prompt hits.", 20)
+        end
+    elseif kind == "spawns" then
+        for i, c in ipairs(State.deepData.spawns) do
+            if i > 60 then break end
+            row(deepListFrame, "[" .. c.time .. "] " .. c.name, c.path, c.path)
+        end
+        if #State.deepData.spawns == 0 then
+            label(deepListFrame, "no spawns captured.", 20)
         end
     end
-})
+end
 
-TabSet:CreateSlider({
-    Name = "Max Depth (0 = unlimited)",
-    Range = {0, 15},
-    Increment = 1,
-    Suffix = "lvl",
-    CurrentValue = 0,
-    Flag = "MaxDepth",
-    Callback = function(v)
-        State.maxDepth = v
-    end
-})
+button(TabDeep, "View Remote Calls", function() showDeep("calls") end)
+button(TabDeep, "View Prompt Hits", function() showDeep("prompts") end)
+button(TabDeep, "View Spawns", function() showDeep("spawns") end)
 
--- final
-runDiagnostics()
+-- ===== EXPORT =====
+local TabExp = makeTab("Export", "⬇")
 
-notify("Scanner Ready", GameName .. " | v9.9 loaded", 6)
-print("=== Universal Game Scanner v9.9 loaded ===")
+sec(TabExp, "Export Options")
+
+local exportLabel = label(TabExp, "filename format: " .. safeGameName .. "_<timestamp>.txt", 18)
+
+button(TabExp, "⬇ Export Full Report (TXT)", function()
+    task.spawn(function()
+        exportTXT()
+        exportLabel.Text = "last saved: " .. (State.lastExportPath ~= "" and State.lastExportPath or "clipboard only")
+    end)
+end)
+
+button(TabExp, "⬇ Export Sources as Individual .lua Files", function()
+    task.spawn(exportSourcesToFiles)
+end)
+
+button(TabExp, "⬇ Export Remote Templates (.lua)", function()
+    task.spawn(function()
+        local t = generateTemplates()
+        local saved = writeMultiPath(t, safeGameName .. "_templates", ".lua")
+        if setclipboard then setclipboard(t) end
+        notify("Templates", saved or "clipboard only", 5, Theme.success)
+    end)
+end)
+
+button(TabExp, "⬇ Export Smart Templates (deep scan data)", function()
+    task.spawn(function()
+        local t = generateSmartTemplates()
+        local saved = writeMultiPath(t, safeGameName .. "_smart", ".lua")
+        if setclipboard then setclipboard(t) end
+        notify("Smart Templates", saved or "clipboard only", 5, Theme.success)
+    end)
+end)
+
+button(TabExp, "📋 Copy Full Report to Clipboard", function()
+    task.spawn(exportTXT)
+end)
+
+-- ===== SETTINGS =====
+local TabSet = makeTab("Settings", "⚙")
+
+sec(TabSet, "Scan Config (auto-saved)")
+
+toggle(TabSet, "Exclude Buildings", State.excludeBuildings, function(v)
+    State.excludeBuildings = v
+    persistConfig()
+    notify("Setting", v and "Buildings excluded" or "Buildings included", 3)
+end)
+
+slider(TabSet, "Max Depth (0 = unlimited)", 0, 15, State.maxDepth, function(v)
+    State.maxDepth = v
+    persistConfig()
+end)
+
+sec(TabSet, "Accent Color")
+
+local accentColors = {
+    {name = "Purple", c = Color3.fromRGB(138, 99, 255)},
+    {name = "Cyan",   c = Color3.fromRGB(0, 190, 255)},
+    {name = "Green",  c = Color3.fromRGB(60, 220, 130)},
+    {name = "Orange", c = Color3.fromRGB(255, 150, 50)},
+    {name = "Red",    c = Color3.fromRGB(255, 80, 80)},
+    {name = "Pink",   c = Color3.fromRGB(255, 100, 180)}
+}
+
+for _, ac in ipairs(accentColors) do
+    button(TabSet, "●  " .. ac.name, function()
+        setAccent(ac.c)
+        persistConfig()
+        notify("Theme", "Accent set to " .. ac.name, 2)
+    end, 28)
+end
+
+-- ==============================================================
+--  INIT
+-- ==============================================================
+
+gameLabel.Text = GameName:sub(1, 40)
+
+-- restore saved accent
+if CFG.accent and type(CFG.accent) == "table" and #CFG.accent == 3 then
+    pcall(function()
+        setAccent(Color3.fromRGB(CFG.accent[1], CFG.accent[2], CFG.accent[3]))
+    end)
+end
+
+-- activate main tab
+for _, t in pairs(tabs) do
+    t.page.Visible = false
+    t.btn.BackgroundColor3 = Theme.bg2
+    t.lbl.TextColor3 = Theme.textDim
+end
+tabs["Main"].page.Visible = true
+tabs["Main"].btn.BackgroundColor3 = Theme.bg3
+tabs["Main"].lbl.TextColor3 = Theme.accent
+activeTab = "Main"
+
+-- open animation
+Main.Size = UDim2.new(0, 760, 0, 0)
+Main.Position = UDim2.new(0.5, -380, 0.5, 0)
+tween(Main, {Size = UDim2.new(0, 760, 0, 480), Position = UDim2.new(0.5, -380, 0.5, -240)}, 0.35)
+
+print("=== PHANTOM SCANNER v10.1 loaded ===")
 print("=== Game: " .. GameName .. " ===")
-print("=== Export filename: " .. safeGameName .. "_<timestamp>.txt ===")
+print("=== Executor: " .. executorInfo .. " ===")
+print("=== Keybind: RightCtrl = hide/show ===")
+
+notify("Phantom Ready", GameName .. " | v10.1 loaded", 5, Theme.success)
+setStatus("ready | RightCtrl hides | " .. executorInfo, Theme.success)
