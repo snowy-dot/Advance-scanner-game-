@@ -1,20 +1,12 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v15 — MULTIVERSE EDITION
---  Works on any game. Knows what kind of game it's in.
---  Remembers every game it has ever scanned.
---
---  NEW IN v15:
---    - GENRE ENGINE: auto-detects game type + tailored exploit advice
---    - PROFILE MEMORY: per-PlaceId history, revisit greetings
---    - All v14 intel: fingerprint, traffic+returns, coverage, map
---    - All v13 engine guarantees: unfreezable, unified walk
+--  PHANTOM SCANNER v15.1 — MULTIVERSE EDITION
+--  Complete build. Verify: last line prints BUILD OK.
 -- ==============================================================
 
 local Players              = game:GetService("Players")
 local RunService           = game:GetService("RunService")
 local HttpService          = game:GetService("HttpService")
-local ReplicatedStorage    = game:GetService("ReplicatedStorage")
 local MarketplaceService   = game:GetService("MarketplaceService")
 
 local LocalPlayer = Players.LocalPlayer
@@ -59,12 +51,10 @@ pcall(function()
     executorInfo = tostring(n) .. (v and (" v" .. tostring(v)) or "")
 end)
 
-print("[Phantom v15] Game: " .. GameName)
-print("[Phantom v15] Place: " .. tostring(PlaceId))
+print("[Phantom v15.1] Game: " .. GameName)
+print("[Phantom v15.1] Place: " .. tostring(PlaceId))
 
--- ==============================================================
---  CONFIG + PROFILE MEMORY
--- ==============================================================
+-- ============== CONFIG + PROFILE MEMORY ==============
 
 local CONFIG_FILE = "PhantomScanner/config.json"
 local PROFILES_FILE = "PhantomScanner/profiles.json"
@@ -102,7 +92,6 @@ if CFG.maxInstances == nil then CFG.maxInstances = 1000000 end
 if CFG.captureReturns == nil then CFG.captureReturns = true end
 if CFG.skipCharacters == nil then CFG.skipCharacters = true end
 
--- profiles: history of every game ever scanned
 local PROFILES = loadJson(PROFILES_FILE) or {}
 local thisProfile = PROFILES[tostring(PlaceId)]
 
@@ -115,9 +104,7 @@ local function persistConfig()
     saveJson(CONFIG_FILE, CFG)
 end
 
--- ==============================================================
---  STATE
--- ==============================================================
+-- ============== STATE ==============
 
 local State = {
     results          = {},
@@ -161,7 +148,8 @@ local connections = {}
 local restoreHook
 local refreshScriptDropdown
 
--- rayfield
+-- ============== RAYFIELD ==============
+
 local Rayfield, Window
 do
     local ok, result = pcall(function()
@@ -170,7 +158,7 @@ do
     if ok and type(result) == "table" then
         Rayfield = result
         Window = Rayfield:CreateWindow({
-            Name = "Phantom Scanner v15 MULTIVERSE",
+            Name = "Phantom Scanner v15.1 MULTIVERSE",
             LoadingTitle = GameName,
             LoadingSubtitle = "universal recon | genre-aware",
             ConfigurationSaving = {Enabled = false},
@@ -192,14 +180,13 @@ local function notify(title, content, dur)
     end)
 end
 
--- revisit greeting from profile memory
 task.spawn(function()
     task.wait(1.5)
     if thisProfile then
         notify("Welcome Back",
-            "last scan: " .. tostring(thisProfile.date) ..
-            " | " .. tostring(thisProfile.tier) ..
-            " | " .. tostring(thisProfile.genre), 8)
+            "last scan: " .. tostring(thisProfile.date)
+            .. " | " .. tostring(thisProfile.tier)
+            .. " | " .. tostring(thisProfile.genre), 8)
         print("[Phantom] PROFILE MEMORY — scanned before:")
         print("  date: " .. tostring(thisProfile.date))
         print("  tier: " .. tostring(thisProfile.tier))
@@ -207,13 +194,11 @@ task.spawn(function()
         print("  scripts: " .. tostring(thisProfile.scripts))
         print("  instances: " .. tostring(thisProfile.instances))
     else
-        print("[Phantom] first visit to this game — profile will be saved")
+        print("[Phantom] first visit — profile will be saved after scan")
     end
 end)
 
--- ==============================================================
---  UNIFIED WALK ENGINE
--- ==============================================================
+-- ============== UNIFIED WALK ENGINE ==============
 
 local junkValueNames = {
     OriginalSize = true,
@@ -456,9 +441,7 @@ local function unifiedWalk(progressCb)
     State.stats.total = #State.results
 end
 
--- ==============================================================
---  CODE COVERAGE
--- ==============================================================
+-- ============== CODE COVERAGE ==============
 
 local function grabSources(progressCb)
     State.stats.source = 0
@@ -565,9 +548,7 @@ local function decompileAllRemaining(progressCb)
     notify("Pass C done", "OK: " .. ok .. " | failed: " .. fail, 6)
 end
 
--- ==============================================================
---  SECURITY SCAN
--- ==============================================================
+-- ============== SECURITY SCAN ==============
 
 local function splitLines(source)
     local lines = {}
@@ -622,9 +603,7 @@ local function scanSecurity()
     end
 end
 
--- ==============================================================
---  GENRE ENGINE — what kind of game is this?
--- ==============================================================
+-- ============== GENRE ENGINE ==============
 
 local function detectGenre()
     local g = {
@@ -634,7 +613,6 @@ local function detectGenre()
         advice = {}
     }
 
-    -- build searchable corpus from paths + remotes + values
     local corpus = ""
     for _, e in ipairs(State.remotes.events) do
         corpus = corpus .. e.path:lower() .. " "
@@ -658,7 +636,6 @@ local function detectGenre()
         return total
     end
 
-    -- genre profiles: signature keyword sets
     local genres = {
         {
             name = "Tycoon / Simulator",
@@ -675,7 +652,7 @@ local function detectGenre()
             advice = {
                 "checkpoint remotes = the whole exploit surface — skip-to-stage is the classic",
                 "killbricks are client-editable visually — walk through them locally",
-                "leaderstage values replicated = check Values tab for stage number"
+                "stage values replicated = check Values tab for stage number"
             }
         },
         {
@@ -693,7 +670,7 @@ local function detectGenre()
             advice = {
                 "hit/damage remotes are ALWAYS validated in shooters — never forge",
                 "weapon data (fire rate, spread) often client-side = visual mods work",
-                "ESP + aimbot-adjacent features (name tags) are the safe surface"
+                "ESP + name tags are the safe surface"
             }
         },
         {
@@ -734,7 +711,6 @@ local function detectGenre()
         }
     }
 
-    -- pick best match
     local best, bestScore = nil, 0
     for _, genre in ipairs(genres) do
         if genre.sig > bestScore then
@@ -761,9 +737,7 @@ local function detectGenre()
     return g
 end
 
--- ==============================================================
---  FINGERPRINT ENGINE (with Pizza Place lesson baked in)
--- ==============================================================
+-- ============== FINGERPRINT ENGINE ==============
 
 local function analyzeFingerprint()
     local fp = {
@@ -775,10 +749,10 @@ local function analyzeFingerprint()
         recommendations = {},
         clientAuthSignals = 0,
         serverAuthSignals = 0,
-        obfuscationScore = 0
+        obfuscationScore = 0,
+        stateCount = 0
     }
 
-    -- game-state value count (needed by the contradiction check)
     local statePatterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory", "gold", "credit"}
     local stateCount = 0
     for _, v in ipairs(State.objects.values) do
@@ -792,7 +766,6 @@ local function analyzeFingerprint()
     end
     fp.stateCount = stateCount
 
-    -- validation bindables
     local validationNames = {"dataverification", "validate", "anticheat", "securitycheck", "verifyaction", "integritycheck"}
     local foundValidation = false
     for _, b in ipairs(State.remotes.bindables) do
@@ -810,7 +783,6 @@ local function analyzeFingerprint()
         table.insert(fp.risks, "SERVER-SIDE ACTION VALIDATION DETECTED — economy remotes are fingerprinted")
     end
 
-    -- remote naming entropy
     local totalLen, totalRemotes, shortNames = 0, 0, 0
     for _, e in ipairs(State.remotes.events) do
         totalLen = totalLen + #e.name
@@ -829,9 +801,9 @@ local function analyzeFingerprint()
         end
     end
 
-    -- source visibility WITH the legacy-server-auth contradiction check
     local total = State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed
     local srcRatio = total > 0 and (State.stats.source / total) or 0
+
     if srcRatio > 0.7 then
         fp.clientAuthSignals = fp.clientAuthSignals + 2
         table.insert(fp.signals, string.format("high source visibility (%.0f%% readable)", srcRatio * 100))
@@ -839,33 +811,28 @@ local function analyzeFingerprint()
         fp.serverAuthSignals = fp.serverAuthSignals + 3
         table.insert(fp.signals, string.format("low source visibility (%.0f%% readable)", srcRatio * 100))
 
-        -- the Pizza Place lesson: display-only state values in low-vis games
         if stateCount > 20 then
             table.insert(fp.risks, "game-state values are DISPLAY-ONLY (server ledger) — client edits won't persist")
             fp.clientAuthSignals = fp.clientAuthSignals - 2
         end
     end
 
-    -- game-state values (in high-visibility games only = real surface)
     if stateCount > 20 and srcRatio >= 0.3 then
         fp.clientAuthSignals = fp.clientAuthSignals + 2
         table.insert(fp.signals, stateCount .. " game-state values client-visible — likely writable")
         table.insert(fp.recommendations, "check Values tab for currency/inventory — try editing")
     end
 
-    -- webhooks
     if #State.webhookHits > 0 then
         table.insert(fp.risks, "GAME LOGS TO DISCORD WEBHOOKS — actions may be reported live")
         fp.serverAuthSignals = fp.serverAuthSignals + 1
     end
 
-    -- anti-cheat density
     if #State.acDetections > 10 then
         fp.serverAuthSignals = fp.serverAuthSignals + 1
         table.insert(fp.signals, #State.acDetections .. " anti-cheat lines in source")
     end
 
-    -- classify
     local score = fp.serverAuthSignals - fp.clientAuthSignals
     if score >= 4 then
         fp.tier = "TIER 3"
@@ -880,7 +847,7 @@ local function analyzeFingerprint()
         fp.confidence = 70
         table.insert(fp.recommendations, "SAFE: movement, ESP, TPs, prompt automation")
         table.insert(fp.recommendations, "TEST-ON-ALT: any remote that spends/moves/creates")
-        table.insert(fp.recommendations, "USE: deep scan → replicate exact observed args")
+        table.insert(fp.recommendations, "USE: deep scan, then replicate exact observed args")
     else
         fp.tier = "TIER 1"
         fp.tierName = "client-authoritative"
@@ -899,9 +866,7 @@ local function analyzeFingerprint()
     return fp
 end
 
--- ==============================================================
---  REPORTS
--- ==============================================================
+-- ============== REPORTS ==============
 
 local function buildFingerprintReport()
     local fp = State.fingerprint or analyzeFingerprint()
@@ -909,43 +874,38 @@ local function buildFingerprintReport()
     local buf = {}
     local function add(t) table.insert(buf, t) end
 
-    add("╔══════════════════════════════════════════╗")
-    add("  PHANTOM v15 — MULTIVERSE BRIEFING")
-    add("╚══════════════════════════════════════════╝")
+    add("==================================================")
+    add("  PHANTOM v15.1 — MULTIVERSE BRIEFING")
+    add("==================================================")
     add("Game: " .. GameName)
     add("Place: " .. tostring(PlaceId))
     add("")
     add("TIER: " .. fp.tier .. " — " .. fp.tierName .. " (" .. fp.confidence .. "% confidence)")
     add("GENRE: " .. g.name .. " (" .. g.confidence .. "% confidence)")
     add("")
-    add("── TIER SIGNALS ──")
+    add("-- TIER SIGNALS --")
     for _, s in ipairs(fp.signals) do
-        add("  • " .. s)
+        add("  * " .. s)
     end
     if #fp.signals == 0 then add("  (none)") end
     add("")
-    add("── GENRE EVIDENCE ──")
-    for _, m in ipairs(g.matched) do
-        add("  • " .. m)
-    end
-    add("")
-    add("── RISKS ──")
+    add("-- RISKS --")
     for _, r in ipairs(fp.risks) do
-        add("  ⚠ " .. r)
+        add("  ! " .. r)
     end
     if #fp.risks == 0 then add("  none flagged") end
     add("")
-    add("── TIER APPROACH ──")
+    add("-- TIER APPROACH --")
     for _, rec in ipairs(fp.recommendations) do
-        add("  → " .. rec)
+        add("  > " .. rec)
     end
     add("")
-    add("── GENRE-SPECIFIC PLAYS ──")
+    add("-- GENRE-SPECIFIC PLAYS --")
     for _, a in ipairs(g.advice) do
-        add("  ★ " .. a)
+        add("  + " .. a)
     end
     add("")
-    add("── NUMBERS ──")
+    add("-- NUMBERS --")
     add("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " bc:" .. State.stats.bytecode .. " need:" .. State.stats.needDecomp .. " fail:" .. State.stats.failed)
     add("  Remotes: " .. #State.remotes.events .. "E / " .. #State.remotes.functions .. "F")
     add("  Values: " .. #State.objects.values .. " (game-state: " .. fp.stateCount .. ")")
@@ -959,7 +919,7 @@ local function buildStructureMap()
     local buf = {}
     local function add(t) table.insert(buf, t) end
 
-    add("════════ STRUCTURE MAP ════════")
+    add("========= STRUCTURE MAP =========")
 
     local systems = {}
     for _, e in ipairs(State.remotes.events) do
@@ -990,9 +950,7 @@ local function buildStructureMap()
     return table.concat(buf, "\n")
 end
 
--- ==============================================================
---  DEEP SCAN v2 (returns + cooldowns)
--- ==============================================================
+-- ============== DEEP SCAN v2 ==============
 
 local originalNamecall = nil
 local namecallHooked = false
@@ -1030,7 +988,7 @@ local function serializeArg(arg)
     elseif t == "Vector3" then
         return string.format("V3(%.1f,%.1f,%.1f)", arg.X, arg.Y, arg.Z)
     elseif t == "Color3" then
-        return string.format("Color(%d,%d,%d)", arg.R * 255, arg.G * 255, arg.B * 255)
+        return string.format("Color(%d,%d,%d)", math.floor(arg.R * 255), math.floor(arg.G * 255), math.floor(arg.B * 255))
     elseif t == "table" then
         local ok, j = pcall(function() return HttpService:JSONEncode(arg) end)
         if ok and j then
@@ -1150,7 +1108,7 @@ local function analyzeTraffic()
     local buf = {}
     local function add(t) table.insert(buf, t) end
 
-    add("════════ TRAFFIC ANALYSIS ════════")
+    add("========= TRAFFIC ANALYSIS =========")
     add("Total calls: " .. #State.deepData.remoteCalls)
     add("Captured returns: " .. #State.deepData.returns)
     add("")
@@ -1175,7 +1133,7 @@ local function analyzeTraffic()
     end
     table.sort(order, function(a, b) return freq[a] > freq[b] end)
 
-    add("── FREQUENCY + DETECTED COOLDOWNS ──")
+    add("-- FREQUENCY + DETECTED COOLDOWNS --")
     for i, path in ipairs(order) do
         if i > 40 then add("  ...+" .. (#order - 40) .. " more") break end
         local gapStr = minGaps[path] and string.format("min-gap %.2fs", minGaps[path]) or "single"
@@ -1184,28 +1142,26 @@ local function analyzeTraffic()
 
     if #State.deepData.returns > 0 then
         add("")
-        add("── SERVER RETURN VALUES ──")
+        add("-- SERVER RETURN VALUES --")
         for i, r in ipairs(State.deepData.returns) do
             if i > 30 then add("  ...more") break end
             add("  [" .. r.time .. "] " .. r.remote)
-            add("    → " .. r.returns)
+            add("    > " .. r.returns)
         end
     end
 
     add("")
-    add("── SAFETY NOTES ──")
+    add("-- SAFETY NOTES --")
     for path, gap in pairs(minGaps) do
         if gap < 0.1 and freq[path] > 5 then
-            add("  ⚠ " .. path .. " fires <100ms apart naturally — don't spam faster")
+            add("  ! " .. path .. " fires <100ms apart naturally — don't spam faster")
         end
     end
 
     return table.concat(buf, "\n")
 end
 
--- ==============================================================
---  TEMPLATES + EXPORT
--- ==============================================================
+-- ============== TEMPLATES + EXPORT ==============
 
 local function resolvePath(path)
     local parts = {}
@@ -1345,7 +1301,7 @@ local function exportTXT(includeSources)
     local function add(t) table.insert(buf, t) end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v15 MULTIVERSE EXPORT")
+    add("  PHANTOM SCANNER v15.1 MULTIVERSE EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(PlaceId))
@@ -1509,7 +1465,8 @@ local function exportSourcesToFiles()
     notify("Sources", "Saved " .. count .. " files", 5)
 end
 
--- full pipeline with profile save
+-- ============== FULL PIPELINE ==============
+
 local function runFullScan(progressCb)
     State.busy = true
     State.cancelScan = false
@@ -1531,7 +1488,6 @@ local function runFullScan(progressCb)
     State.busy = false
     State.cancelScan = false
 
-    -- save profile for multiverse memory
     local fp = State.fingerprint
     saveProfile({
         date = os.date("%Y-%m-%d %H:%M"),
@@ -1549,9 +1505,7 @@ local function runFullScan(progressCb)
             fp.tier, fp.tierName, State.genre.name), 9)
 end
 
--- ==============================================================
---  TABS
--- ==============================================================
+-- ============== TABS ==============
 
 local TabMain = Window:CreateTab("Main", 4483345998)
 TabMain:CreateSection("Multiverse Recon")
@@ -1640,12 +1594,12 @@ TabMain:CreateButton({
                 writeSingle(analyzeTraffic(), safeGameName .. "_traffic", ".txt")
             end
             notify("Traffic", "Analysis in F9 + saved", 6)
-        end
+        end)
     end
 })
 
 TabMain:CreateButton({
-    Name = "Scan History (all games remembered) — F9",
+    Name = "Scan History (all games) — F9",
     Callback = function()
         task.spawn(function()
             print("=== PHANTOM MULTIVERSE HISTORY ===")
@@ -1945,7 +1899,7 @@ TabRem:CreateButton({
                     s = tostring(res)
                 end
                 notify("Returned", s:sub(1, 200), 7)
-                print("[Phantom invoke] " .. State.remotePath .. " → " .. s)
+                print("[Phantom invoke] " .. State.remotePath .. " -> " .. s)
             else
                 notify("Error", tostring(res), 5)
             end
@@ -2190,7 +2144,7 @@ TabExp:CreateSection("Export")
 local exportLabel = TabExp:CreateLabel("filename: " .. safeGameName .. "_<ts>.txt")
 
 TabExp:CreateButton({
-    Name = "Export FULL RECON (briefing + map + traffic + data + sources)",
+    Name = "Export FULL RECON (everything)",
     Callback = function()
         task.spawn(function()
             exportTXT(true)
@@ -2323,7 +2277,7 @@ runFullScan = function(cb)
     refreshRemoteDropdown()
 end
 
-print("=== PHANTOM SCANNER v15 MULTIVERSE loaded ===")
+-- ============== BUILD VERIFICATION ==============
+print("=== PHANTOM SCANNER v15.1 MULTIVERSE — BUILD OK ===")
 print("=== Game: " .. GameName .. " ===")
-print("=== Pipeline: SCAN → Tier+Genre → Deep Scan → Smart Templates ===")
-notify("Phantom v15", "Multiverse loaded — " .. GameName, 6)
+notify("Phantom v15.1", "Multiverse loaded — " .. GameName, 6)
