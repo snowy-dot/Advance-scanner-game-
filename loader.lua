@@ -1,24 +1,16 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v12 — TWO-PASS ENGINE
---  Pass 1: instant enumerate + source/bytecode (no decompile)
---  Pass 2: on-demand decompile per script
---  No freezes at any game size.
+--  PHANTOM SCANNER v13 — UNIFIED SINGLE-WALK ENGINE
+--  One tree walk captures everything | Time-sliced | Unfreezable
+--  Pass A: unified walk (scripts+remotes+objects+values+assets)
+--  Pass B: fast source grab (getsrc/bytecode only)
+--  Pass C: optional on-demand decompile
 -- ==============================================================
 
 local Players              = game:GetService("Players")
 local RunService           = game:GetService("RunService")
 local HttpService          = game:GetService("HttpService")
 local ReplicatedStorage    = game:GetService("ReplicatedStorage")
-local ReplicatedFirst      = game:GetService("ReplicatedFirst")
-local Workspace            = game:GetService("Workspace")
-local StarterGui           = game:GetService("StarterGui")
-local StarterPack          = game:GetService("StarterPack")
-local StarterPlayer        = game:GetService("StarterPlayer")
-local ServerScriptService  = game:GetService("ServerScriptService")
-local Lighting             = game:GetService("Lighting")
-local SoundService         = game:GetService("SoundService")
-local Teams                = game:GetService("Teams")
 local MarketplaceService   = game:GetService("MarketplaceService")
 
 local LocalPlayer = Players.LocalPlayer
@@ -95,6 +87,9 @@ end
 local CFG = loadConfig()
 if CFG.dedup == nil then CFG.dedup = true end
 if CFG.scanCoreGui == nil then CFG.scanCoreGui = false end
+if CFG.frameBudgetMS == nil then CFG.frameBudgetMS = 8 end
+if CFG.valueFilterJunk == nil then CFG.valueFilterJunk = true end
+if CFG.maxInstances == nil then CFG.maxInstances = 1000000 end
 
 -- state
 local State = {
@@ -108,7 +103,10 @@ local State = {
     webhookHits      = {},
     requireMap       = {},
     deepData         = {remoteCalls = {}, promptHits = {}, spawns = {}},
-    stats            = {total = 0, source = 0, bytecode = 0, needDecomp = 0, failed = 0, deduped = 0},
+    stats            = {
+        total = 0, source = 0, bytecode = 0, needDecomp = 0, failed = 0, deduped = 0,
+        instancesWalked = 0, containersFailed = 0
+    },
     deepScanning     = false,
     busy             = false,
     cancelScan       = false,
@@ -143,9 +141,9 @@ do
     if ok and type(result) == "table" then
         Rayfield = result
         Window = Rayfield:CreateWindow({
-            Name = "Phantom Scanner v12",
+            Name = "Phantom Scanner v13",
             LoadingTitle = GameName,
-            LoadingSubtitle = "by snowy-dot | v12 two-pass",
+            LoadingSubtitle = "unified engine | unfreezable",
             ConfigurationSaving = {Enabled = false},
             KeySystem = false
         })
@@ -165,37 +163,51 @@ local function notify(title, content, dur)
     end)
 end
 
--- ============== CORE ==============
+-- ==============================================================
+--  UNIFIED WALK ENGINE
+--  one pass, everything classified, time-sliced per frame
+-- ==============================================================
 
+local junkValueNames = {
+    OriginalSize = true,
+    OriginalPosition = true,
+    AvatarPartScaleType = true
+}
+
+-- containers to walk, resolved at scan time
 local function getContainers()
-    local list = {
-        {Workspace, "Workspace"},
-        {ReplicatedStorage, "ReplicatedStorage"},
-        {ReplicatedFirst, "ReplicatedFirst"},
-        {StarterGui, "StarterGui"},
-        {StarterPack, "StarterPack"},
-        {StarterPlayer, "StarterPlayer"},
-        {Lighting, "Lighting"},
-        {SoundService, "SoundService"},
-        {Teams, "Teams"},
-        {Players, "Players"}
-    }
-    pcall(function() list[#list+1] = {game:GetService("ServerScriptService"), "ServerScriptService"} end)
-    pcall(function() list[#list+1] = {game:GetService("ServerStorage"), "ServerStorage"} end)
+    local list = {}
+    local function tryAdd(svc, name)
+        pcall(function()
+            local s = game:GetService(svc)
+            if s then list[#list + 1] = {s, name} end
+        end)
+    end
+    tryAdd("Workspace", "Workspace")
+    tryAdd("ReplicatedStorage", "ReplicatedStorage")
+    tryAdd("ReplicatedFirst", "ReplicatedFirst")
+    tryAdd("StarterGui", "StarterGui")
+    tryAdd("StarterPack", "StarterPack")
+    tryAdd("StarterPlayer", "StarterPlayer")
+    tryAdd("Lighting", "Lighting")
+    tryAdd("SoundService", "SoundService")
+    tryAdd("Teams", "Teams")
+    tryAdd("ServerScriptService", "ServerScriptService")
+    tryAdd("ServerStorage", "ServerStorage")
     pcall(function()
         if LocalPlayer:FindFirstChild("PlayerScripts") then
-            list[#list+1] = {LocalPlayer.PlayerScripts, "PlayerScripts"}
+            list[#list + 1] = {LocalPlayer.PlayerScripts, "PlayerScripts"}
         end
     end)
     pcall(function()
         if LocalPlayer:FindFirstChild("PlayerGui") then
-            list[#list+1] = {LocalPlayer.PlayerGui, "PlayerGui"}
+            list[#list + 1] = {LocalPlayer.PlayerGui, "PlayerGui"}
         end
     end)
     if CFG.scanCoreGui then
         pcall(function()
             local cg = gethui and gethui() or game:GetService("CoreGui")
-            if cg then list[#list+1] = {cg, "CoreGui"} end
+            if cg then list[#list + 1] = {cg, "CoreGui"} end
         end)
     end
     return list
@@ -210,52 +222,272 @@ local function quickHash(str)
     return string.format("%08x", h)
 end
 
-local function getAllDescendants(container)
-    local results = {}
-    local stack = {container}
-    while #stack > 0 do
-        if State.cancelScan then break end
-        local node = table.remove(stack)
-        local ok, children = pcall(function() return node:GetChildren() end)
-        if ok and children then
-            for _, child in ipairs(children) do
-                table.insert(results, child)
-                table.insert(stack, child)
+-- THE unified walk. classifies every instance in one traversal.
+-- time-budgeted: yields whenever this frame's ms budget is spent.
+local function unifiedWalk(progressCb)
+    -- reset all collections
+    State.results = {}
+    State.hashes = {}
+    State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
+    State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}}
+    State.assets = {sounds = {}, animations = {}, decals = {}, meshes = {}}
+    State.stats.instancesWalked = 0
+    State.stats.containersFailed = 0
+
+    local budget = CFG.frameBudgetMS / 1000
+    local frameStart = os.clock()
+    local yielded = false
+
+    local function maybeYield(force)
+        if force or (os.clock() - frameStart) >= budget then
+            if progressCb then
+                progressCb(State.stats.instancesWalked)
             end
-        end
-        if #results % 250 == 0 then
             RunService.RenderStepped:Wait()
+            frameStart = os.clock()
+            yielded = true
         end
     end
-    return results
+
+    for _, cd in ipairs(getContainers()) do
+        if State.cancelScan then break end
+
+        -- per-container: pcall'd so one broken container never kills the scan
+        local ok, err = pcall(function()
+            local stack = {cd[1]}
+            while #stack > 0 do
+                if State.cancelScan then return end
+                if State.stats.instancesWalked >= CFG.maxInstances then
+                    notify("Walk", "Instance cap reached (" .. CFG.maxInstances .. ") — results still valid", 5)
+                    return
+                end
+
+                local node = table.remove(stack)
+                local gotKids, children = pcall(node.GetChildren, node)
+                if not gotKids then
+                    -- instance died or is protected — skip quietly
+                    maybeYield(true)
+                else
+                    for _, inst in ipairs(children) do
+                        State.stats.instancesWalked = State.stats.instancesWalked + 1
+
+                        -- class check via ClassName string (cheaper than IsA chain)
+                        local cls = inst.ClassName
+
+                        -- scripts
+                        if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
+                            table.insert(stack, inst)
+                            local okPath, path = pcall(inst.GetFullName, inst)
+                            if okPath then
+                                local hash = quickHash(path .. "|" .. cls)
+                                if CFG.dedup and State.hashes[hash] then
+                                    State.stats.deduped = State.stats.deduped + 1
+                                else
+                                    State.hashes[hash] = true
+                                    table.insert(State.results, {
+                                        path = path,
+                                        name = inst.Name,
+                                        className = cls,
+                                        inst = inst,
+                                        source = "",
+                                        size = 0,
+                                        status = "PENDING"
+                                    })
+                                end
+                            end
+
+                        -- remotes
+                        elseif cls == "RemoteEvent" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                table.insert(State.remotes.events, {path = p, name = inst.Name})
+                            end
+                        elseif cls == "RemoteFunction" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                table.insert(State.remotes.functions, {path = p, name = inst.Name})
+                            end
+                        elseif cls == "BindableEvent" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                table.insert(State.remotes.bindables, {path = p, name = inst.Name})
+                            end
+                        elseif cls == "BindableFunction" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                table.insert(State.remotes.bindableFuncs, {path = p, name = inst.Name})
+                            end
+
+                        -- interactables
+                        elseif cls == "ProximityPrompt" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                table.insert(State.objects.prompts, {path = p, name = inst.Name})
+                            end
+                        elseif cls == "ClickDetector" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                table.insert(State.objects.clickDetectors, {path = p, name = inst.Name})
+                            end
+                        elseif cls == "SpawnLocation" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                local okPos, pos = pcall(function() return tostring(inst.Position) end)
+                                table.insert(State.objects.spawns, {path = p, pos = okPos and pos or "?"})
+                            end
+
+                        -- values (with junk filter)
+                        elseif cls == "IntValue" or cls == "NumberValue" or cls == "StringValue"
+                            or cls == "BoolValue" or cls == "ObjectValue" then
+                            if not (CFG.valueFilterJunk and junkValueNames[inst.Name]) then
+                                local okP, p = pcall(inst.GetFullName, inst)
+                                if okP then
+                                    local entry = {path = p, class = cls, ref = inst}
+                                    pcall(function() entry.val = tostring(inst.Value):sub(1, 80) end)
+                                    table.insert(State.objects.values, entry)
+                                end
+                            end
+
+                        -- assets
+                        elseif cls == "Sound" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                local id = ""
+                                pcall(function() id = tostring(inst.SoundId) end)
+                                table.insert(State.assets.sounds, {path = p, id = id})
+                            end
+                        elseif cls == "Animation" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                local id = ""
+                                pcall(function() id = tostring(inst.AnimationId) end)
+                                table.insert(State.assets.animations, {path = p, id = id})
+                            end
+                        elseif cls == "SpecialMesh" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                local id = ""
+                                pcall(function() id = tostring(inst.MeshId) end)
+                                table.insert(State.assets.meshes, {path = p, id = id})
+                            end
+                        end
+
+                        -- models with humanoids = NPCs (check via FindFirstChildOfClass on Model cls only)
+                        if cls == "Model" then
+                            local hum = inst:FindFirstChildOfClass("Humanoid")
+                            if hum and not Players:GetPlayerFromCharacter(inst) then
+                                local okP, p = pcall(inst.GetFullName, inst)
+                                if okP then
+                                    local root = inst:FindFirstChild("HumanoidRootPart") or inst.PrimaryPart
+                                    local px, py, pz
+                                    if root then
+                                        pcall(function()
+                                            px, py, pz = root.Position.X, root.Position.Y, root.Position.Z
+                                        end)
+                                    end
+                                    table.insert(State.objects.humanoids, {
+                                        path = p,
+                                        name = inst.Name,
+                                        hp = hum.Health,
+                                        mhp = hum.MaxHealth,
+                                        ws = hum.WalkSpeed,
+                                        pos = px and string.format("%.1f, %.1f, %.1f", px, py, pz) or "?",
+                                        px = px, py = py, pz = pz
+                                    })
+                                end
+                            end
+                            table.insert(stack, inst)
+                        elseif cls == "MeshPart" or cls == "Decal" then
+                            -- decal texture / meshpart meshid
+                            if cls == "Decal" then
+                                local okP, p = pcall(inst.GetFullName, inst)
+                                if okP then
+                                    local tex = ""
+                                    pcall(function() tex = tostring(inst.Texture) end)
+                                    table.insert(State.assets.decals, {path = p, tex = tex})
+                                end
+                            end
+                            table.insert(stack, inst)
+                        else
+                            table.insert(stack, inst)
+                        end
+
+                        maybeYield(false)
+                    end
+                end
+            end
+        end)
+
+        if not ok then
+            State.stats.containersFailed = State.stats.containersFailed + 1
+            warn("[Phantom] container walk failed: " .. tostring(err))
+        end
+        -- yield between containers regardless
+        RunService.RenderStepped:Wait()
+    end
+
+    State.stats.total = #State.results
+    return yielded
 end
 
--- FAST source grab: getsrc + bytecode only. NEVER decompile here.
-local function fastSource(script)
-    if type(getsrc) == "function" then
-        local ok, r = pcall(getsrc, script)
-        if ok and type(r) == "string" and #r > 0 then
-            return r, "SOURCE"
+-- PASS B: fast source grab (getsrc + bytecode only, never decompile)
+local function grabSources(progressCb)
+    State.stats.source = 0
+    State.stats.bytecode = 0
+    State.stats.needDecomp = 0
+    State.stats.failed = 0
+
+    local budget = CFG.frameBudgetMS / 1000
+    local frameStart = os.clock()
+
+    for i, r in ipairs(State.results) do
+        if State.cancelScan then break end
+        local s = r.inst
+        if s and s.Parent then
+            local got = false
+            if getsrc then
+                local ok, src = pcall(getsrc, s)
+                if ok and type(src) == "string" and #src > 0 then
+                    r.source = src
+                    r.size = #src
+                    r.status = "SOURCE"
+                    State.stats.source = State.stats.source + 1
+                    got = true
+                end
+            end
+            if not got and getscriptbytecode then
+                local ok, bc = pcall(getscriptbytecode, s)
+                if ok and type(bc) == "string" and #bc > 0 then
+                    r.status = "BYTECODE"
+                    State.stats.bytecode = State.stats.bytecode + 1
+                    got = true
+                end
+            end
+            if not got then
+                r.status = "NODECOMP"
+                State.stats.needDecomp = State.stats.needDecomp + 1
+            end
+        else
+            r.status = "GONE"
+            State.stats.failed = State.stats.failed + 1
+        end
+
+        if (os.clock() - frameStart) >= budget then
+            if progressCb then progressCb(i, #State.results) end
+            RunService.RenderStepped:Wait()
+            frameStart = os.clock()
         end
     end
-    if type(getscriptbytecode) == "function" then
-        local ok, r = pcall(getscriptbytecode, script)
-        if ok and type(r) == "string" and #r > 0 then
-            -- bytecode is only useful as proof; don't store MBs of it
-            return "", "BYTECODE"
-        end
-    end
-    return nil, "NODECOMP"
 end
 
--- SLOW: on-demand decompile, one script at a time
+-- PASS C: on-demand decompile (single or all remaining)
 local function decompileOne(entry)
     if not decompile then
-        return nil, "decompile not available in this executor"
+        return nil, "decompile not available"
     end
     local inst = entry.inst
     if not inst or not inst.Parent then
-        return nil, "script no longer exists"
+        return nil, "script gone"
     end
     for _ = 1, 2 do
         local ok, r = pcall(decompile, inst)
@@ -263,124 +495,15 @@ local function decompileOne(entry)
             entry.source = r
             entry.size = #r
             entry.status = "SOURCE"
+            State.stats.needDecomp = State.stats.needDecomp - 1
+            State.stats.source = State.stats.source + 1
             return r, nil
         end
     end
-    -- last resort: getsrc in case it appeared late
-    if getsrc then
-        local ok, r = pcall(getsrc, inst)
-        if ok and type(r) == "string" and #r > 0 then
-            entry.source = r
-            entry.size = #r
-            entry.status = "SOURCE"
-            return r, nil
-        end
-    end
-    return nil, "decompile failed (likely server-only)"
+    return nil, "decompile failed (likely server-only or VM-packed)"
 end
 
-local catKeywords = {
-    Combat    = {"combat", "damage", "weapon", "gun", "kill", "sword", "attack"},
-    Movement  = {"walkspeed", "fly", "noclip", "jump", "teleport", "cframe"},
-    Economy   = {"shop", "buy", "cash", "coin", "rebirth", "sell", "pet", "egg"},
-    NPC       = {"npc", "monster", "enemy", "boss", "mob", "spawn"},
-    Remote    = {"remoteevent", "remotefunction", "fireserver", "invokeserver"},
-    DataStore = {"datastore", "save", "load", "profile"},
-    Security  = {"anticheat", "detect", "flag", "integrity"},
-    Animation = {"animation", "animator", "motor6d"},
-    Audio     = {"sound", "music", "sfx"}
-}
-
-local function splitLines(source)
-    local lines = {}
-    for line in (source .. "\n"):gmatch("(.-)\n") do
-        table.insert(lines, line)
-    end
-    return lines
-end
-
-local function categorize(path, className)
-    local combined = path:lower()
-    for cat, kws in pairs(catKeywords) do
-        for _, kw in ipairs(kws) do
-            if combined:find(kw, 1, true) then return cat end
-        end
-    end
-    if className == "LocalScript" then return "Client" end
-    if className == "Script" then return "Server" end
-    if className == "ModuleScript" then return "Module" end
-    return "Other"
-end
-
--- PASS 1: fast scan, zero decompile
-local function scanScripts(progressCb)
-    State.results = {}
-    State.hashes = {}
-    State.stats.total = 0
-    State.stats.source = 0
-    State.stats.bytecode = 0
-    State.stats.needDecomp = 0
-    State.stats.failed = 0
-    State.stats.deduped = 0
-
-    local allScripts = {}
-    for _, cd in ipairs(getContainers()) do
-        pcall(function()
-            for _, d in ipairs(getAllDescendants(cd[1])) do
-                if d:IsA("LocalScript") or d:IsA("Script") or d:IsA("ModuleScript") then
-                    table.insert(allScripts, {inst = d, container = cd[2]})
-                end
-            end
-        end)
-        if State.cancelScan then break end
-    end
-
-    State.stats.total = #allScripts
-    notify("Pass 1", #allScripts .. " scripts found — fast scan (no decompile)...", 4)
-
-    for i, entry in ipairs(allScripts) do
-        if State.cancelScan then break end
-        local s = entry.inst
-        if s.Parent then
-            local path = s:GetFullName()
-            local hash = quickHash(path .. "|" .. s.ClassName)
-            if CFG.dedup and State.hashes[hash] then
-                State.stats.deduped = State.stats.deduped + 1
-            else
-                State.hashes[hash] = true
-                local cls = s.ClassName
-                local src, status = fastSource(s)
-
-                local r = {
-                    path = path,
-                    name = s.Name,
-                    className = cls,
-                    category = categorize(path, cls),
-                    source = src or "",
-                    size = src and #src or 0,
-                    status = status,
-                    inst = s
-                }
-                table.insert(State.results, r)
-
-                if status == "SOURCE" then
-                    State.stats.source = State.stats.source + 1
-                elseif status == "BYTECODE" then
-                    State.stats.bytecode = State.stats.bytecode + 1
-                else
-                    State.stats.needDecomp = State.stats.needDecomp + 1
-                end
-            end
-        end
-        if i % 20 == 0 then
-            if progressCb then progressCb(i, #allScripts) end
-            RunService.RenderStepped:Wait()
-        end
-    end
-end
-
--- PASS 2: decompile everything marked NODECOMP, with yields and progress
-local function decompileAllPass(progressCb)
+local function decompileAllRemaining(progressCb)
     if State.decompiling then return end
     local targets = {}
     for _, r in ipairs(State.results) do
@@ -389,125 +512,38 @@ local function decompileAllPass(progressCb)
         end
     end
     if #targets == 0 then
-        notify("Pass 2", "Nothing needs decompiling", 3)
+        notify("Pass C", "Nothing needs decompiling", 3)
         return
     end
     State.decompiling = true
-    notify("Pass 2", "Decompiling " .. #targets .. " scripts one by one...", 4)
+    notify("Pass C", "Decompiling " .. #targets .. " — cancelable", 4)
 
-    local ok = 0
-    local fail = 0
+    local ok, fail = 0, 0
     for i, r in ipairs(targets) do
         if State.cancelScan then break end
         local _, err = decompileOne(r)
         if r.status == "SOURCE" then
             ok = ok + 1
-            State.stats.needDecomp = State.stats.needDecomp - 1
-            State.stats.source = State.stats.source + 1
         else
             fail = fail + 1
             r.status = "FAILED"
-            State.stats.needDecomp = State.stats.needDecomp - 1
             State.stats.failed = State.stats.failed + 1
         end
         if progressCb then progressCb(i, #targets, ok, fail) end
-        -- yield between EVERY decompile — this is what keeps it alive
         RunService.RenderStepped:Wait()
         RunService.RenderStepped:Wait()
     end
     State.decompiling = false
-    notify("Pass 2 done", "OK: " .. ok .. " | Failed: " .. fail .. " (server-only)", 6)
+    notify("Pass C done", "OK: " .. ok .. " | failed: " .. fail, 6)
 end
 
-local function scanRemotes()
-    State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
-    for _, cd in ipairs(getContainers()) do
-        pcall(function()
-            for _, d in ipairs(getAllDescendants(cd[1])) do
-                if d:IsA("RemoteEvent") then
-                    table.insert(State.remotes.events, {path = d:GetFullName(), name = d.Name})
-                elseif d:IsA("RemoteFunction") then
-                    table.insert(State.remotes.functions, {path = d:GetFullName(), name = d.Name})
-                elseif d:IsA("BindableEvent") then
-                    table.insert(State.remotes.bindables, {path = d:GetFullName(), name = d.Name})
-                elseif d:IsA("BindableFunction") then
-                    table.insert(State.remotes.bindableFuncs, {path = d:GetFullName(), name = d.Name})
-                end
-            end
-        end)
-        if State.cancelScan then break end
+-- security scan (unchanged logic, on captured sources)
+local function splitLines(source)
+    local lines = {}
+    for line in (source .. "\n"):gmatch("(.-)\n") do
+        table.insert(lines, line)
     end
-    notify("Remotes", string.format("Events: %d | Functions: %d",
-        #State.remotes.events, #State.remotes.functions), 4)
-end
-
-local function scanObjects()
-    State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}}
-    pcall(function()
-        for _, d in ipairs(getAllDescendants(Workspace)) do
-            if d:IsA("ProximityPrompt") then
-                table.insert(State.objects.prompts, {path = d:GetFullName(), name = d.Name})
-            elseif d:IsA("ClickDetector") then
-                table.insert(State.objects.clickDetectors, {path = d:GetFullName(), name = d.Name})
-            elseif d:IsA("Model") then
-                local hum = d:FindFirstChildOfClass("Humanoid")
-                if hum and not Players:GetPlayerFromCharacter(d) then
-                    local root = d:FindFirstChild("HumanoidRootPart") or d.PrimaryPart
-                    local p = root and root.Position
-                    table.insert(State.objects.humanoids, {
-                        path = d:GetFullName(),
-                        name = d.Name,
-                        hp = hum.Health,
-                        mhp = hum.MaxHealth,
-                        ws = hum.WalkSpeed,
-                        pos = p and string.format("%.1f, %.1f, %.1f", p.X, p.Y, p.Z) or "?",
-                        px = p and p.X,
-                        py = p and p.Y,
-                        pz = p and p.Z
-                    })
-                end
-            elseif d:IsA("SpawnLocation") then
-                table.insert(State.objects.spawns, {path = d:GetFullName(), pos = tostring(d.Position)})
-            end
-        end
-    end)
-    for _, root in ipairs({Workspace, ReplicatedStorage}) do
-        pcall(function()
-            for _, d in ipairs(getAllDescendants(root)) do
-                if d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("StringValue")
-                or d:IsA("BoolValue") or d:IsA("ObjectValue") or d:IsA("Vector3Value") then
-                    local entry = {path = d:GetFullName(), class = d.ClassName, ref = d}
-                    pcall(function() entry.val = tostring(d.Value):sub(1, 80) end)
-                    table.insert(State.objects.values, entry)
-                end
-            end
-        end)
-        if State.cancelScan then break end
-    end
-    notify("Objects", string.format("NPCs: %d | Prompts: %d | Values: %d",
-        #State.objects.humanoids, #State.objects.prompts, #State.objects.values), 4)
-end
-
-local function scanAssets()
-    State.assets = {sounds = {}, animations = {}, decals = {}, meshes = {}}
-    for _, root in ipairs({Workspace, ReplicatedStorage}) do
-        pcall(function()
-            for _, d in ipairs(getAllDescendants(root)) do
-                if d:IsA("Sound") then
-                    table.insert(State.assets.sounds, {path = d:GetFullName(), id = tostring(d.SoundId)})
-                elseif d:IsA("Animation") then
-                    table.insert(State.assets.animations, {path = d:GetFullName(), id = tostring(d.AnimationId)})
-                elseif d:IsA("Decal") then
-                    table.insert(State.assets.decals, {path = d:GetFullName(), tex = tostring(d.Texture)})
-                elseif d:IsA("SpecialMesh") or d:IsA("MeshPart") then
-                    table.insert(State.assets.meshes, {path = d:GetFullName(), id = tostring(d.MeshId or "")})
-                end
-            end
-        end)
-        if State.cancelScan then break end
-    end
-    notify("Assets", string.format("Sounds: %d | Anims: %d | Meshes: %d",
-        #State.assets.sounds, #State.assets.animations, #State.assets.meshes), 4)
+    return lines
 end
 
 local function scanSecurity()
@@ -549,7 +585,7 @@ local function scanSecurity()
                 end
             end
         end
-        if si % 25 == 0 then
+        if si % 40 == 0 then
             RunService.RenderStepped:Wait()
         end
     end
@@ -594,7 +630,7 @@ local function pathToCode(path)
 end
 
 local function generateTemplates()
-    local buf = {"-- PHANTOM REMOTE TEMPLATES -- " .. GameName, "-- paste into executor, edit args", ""}
+    local buf = {"-- PHANTOM REMOTE TEMPLATES -- " .. GameName, "", ""}
     for _, e in ipairs(State.remotes.events) do
         local var = "evt" .. tostring(#buf)
         table.insert(buf, "-- " .. e.path)
@@ -679,8 +715,7 @@ local function writeChunked(buf, baseName, ext)
     for i = 1, parts do
         local s = (i - 1) * CHUNK_SIZE + 1
         local e = math.min(i * CHUNK_SIZE, #out)
-        local chunk = out:sub(s, e)
-        local p = writeSingle(chunk, baseName .. "_part" .. i, ext)
+        local p = writeSingle(out:sub(s, e), baseName .. "_part" .. i, ext)
         if p then savedAny = true end
         RunService.RenderStepped:Wait()
     end
@@ -695,20 +730,22 @@ local function buildReportBuf(includeSources)
     local function add(t) table.insert(buf, t) end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v12 EXPORT")
+    add("  PHANTOM SCANNER v13 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(game.PlaceId))
     add("Date: " .. os.date("%Y-%m-%d %H:%M:%S"))
     add("Executor: " .. executorInfo)
     add("Scan Duration: " .. string.format("%.1fs", State.scanDuration))
+    add("Instances Walked: " .. State.stats.instancesWalked)
+    add("Containers Failed: " .. State.stats.containersFailed)
     add("")
     add("========== STATS ==========")
     add("Total Scripts: " .. State.stats.total)
     add("Source captured: " .. State.stats.source)
     add("Bytecode proven: " .. State.stats.bytecode)
     add("Needs decompile: " .. State.stats.needDecomp)
-    add("Failed (server-only): " .. State.stats.failed)
+    add("Failed/gone: " .. State.stats.failed)
     add("Deduped: " .. State.stats.deduped)
     add("")
     add("========== REMOTES ==========")
@@ -789,12 +826,12 @@ local function buildReportBuf(includeSources)
         add("")
         for ri, r in ipairs(State.results) do
             add("------ " .. r.path .. " [" .. r.className .. "] ------")
-            add("Category: " .. r.category .. " | Size: " .. r.size .. " | Status: " .. r.status)
+            add("Status: " .. r.status .. " | Size: " .. r.size)
             add("")
             if r.source and #r.source > 0 then
                 add(r.source)
             else
-                add("[NO SOURCE — use Pass 2 decompile or server-only]")
+                add("[NO SOURCE — Pass C decompile or server-only]")
             end
             add("")
             if ri % 50 == 0 then
@@ -816,7 +853,7 @@ local function exportTXT(includeSources)
         if setclipboard and size <= CLIPBOARD_LIMIT then
             setclipboard(table.concat(buf, "\n"))
         end
-        local note = size > CLIPBOARD_LIMIT and " (big — clipboard skipped)" or " + clipboard"
+        local note = size > CLIPBOARD_LIMIT and " (clipboard skipped)" or " + clipboard"
         notify("Export Saved", saved .. note, 6)
         return true
     else
@@ -838,14 +875,14 @@ local function exportSourcesToFiles()
     for i, r in ipairs(State.results) do
         if r.source and #r.source > 0 and r.status == "SOURCE" then
             local fname = folder .. "/" .. sanitizeFilename(r.name) .. "_" .. i .. ".lua"
-            pcall(writefile, fname, "-- " .. r.path .. "\n-- " .. r.className .. " | " .. r.category .. "\n\n" .. r.source)
+            pcall(writefile, fname, "-- " .. r.path .. "\n-- " .. r.className .. "\n\n" .. r.source)
             count = count + 1
             if count % 20 == 0 then
                 RunService.RenderStepped:Wait()
             end
         end
     end
-    notify("Sources", "Saved " .. count .. " files to " .. folder, 5)
+    notify("Sources", "Saved " .. count .. " files", 5)
 end
 
 -- deep scan
@@ -884,22 +921,6 @@ local function startDeepScan(duration)
     State.deepScanning = true
     State.deepData = {remoteCalls = {}, promptHits = {}, spawns = {}}
     notify("Deep Scan", "Monitoring " .. duration .. "s — play normally", 5)
-
-    pcall(function()
-        for _, d in ipairs(getAllDescendants(Workspace)) do
-            if d:IsA("ProximityPrompt") then
-                d.Triggered:Connect(function(plr)
-                    if plr == LocalPlayer then
-                        table.insert(State.deepData.promptHits, {
-                            time = os.date("%H:%M:%S"),
-                            prompt = d.Name,
-                            path = d:GetFullName()
-                        })
-                    end
-                end)
-            end
-        end
-    end)
 
     connections.promptAdded = Workspace.DescendantAdded:Connect(function(d)
         if d:IsA("ProximityPrompt") then
@@ -972,54 +993,60 @@ local function stopDeepScan()
         #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns), 5)
 end
 
-local function runScanPipeline(progressCb)
+-- full pipeline
+local function runFullScan(progressCb)
     State.busy = true
     State.cancelScan = false
     State.scanStart = os.clock()
 
-    scanScripts(progressCb)
-    if not State.cancelScan then scanRemotes() end
-    if not State.cancelScan then scanObjects() end
-    if not State.cancelScan then scanAssets() end
-    if not State.cancelScan then scanSecurity() end
+    -- pass A: unified walk
+    unifiedWalk(function(walked)
+        pcall(function()
+            progressCb("walking... " .. walked .. " instances")
+        end)
+    end)
+
+    -- pass B: sources
+    grabSources(function(i, total)
+        pcall(function()
+            progressCb("sources... " .. i .. " / " .. total)
+        end)
+    end)
+
+    -- security
+    scanSecurity()
 
     State.scanDuration = os.clock() - State.scanStart
-    local wasCancelled = State.cancelScan
     State.busy = false
     State.cancelScan = false
 
-    if wasCancelled then
-        notify("Scan", "Cancelled", 3)
-    else
-        notify("Pass 1 Complete", string.format(
-            "%.1fs | %d scripts | src:%d bc:%d need-decomp:%d",
-            State.scanDuration, State.stats.total,
-            State.stats.source, State.stats.bytecode, State.stats.needDecomp), 7)
-    end
+    notify("Scan Complete",
+        string.format("%.1fs | %d instances | %d scripts | src:%d bc:%d need:%d",
+            State.scanDuration, State.stats.instancesWalked, State.stats.total,
+            State.stats.source, State.stats.bytecode, State.stats.needDecomp), 8)
 end
 
 -- ============== TABS ==============
 
 local TabMain = Window:CreateTab("Main", 4483345998)
-TabMain:CreateSection("Two-Pass Scanner")
+TabMain:CreateSection("Unified Scanner")
 
 local progressLabel = TabMain:CreateLabel("ready.")
 
 TabMain:CreateButton({
-    Name = "PASS 1: FAST SCAN (no decompile, never freezes)",
+    Name = "SCAN (walk + sources, one pass)",
     Callback = function()
         task.spawn(function()
-            runScanPipeline(function(done, total)
-                pcall(function()
-                    progressLabel:Set(string.format("pass1... %d / %d (%d%%)",
-                        done, total, math.floor(done / total * 100)))
-                end)
+            runFullScan(function(text)
+                pcall(function() progressLabel:Set(text) end)
             end)
             pcall(function()
                 progressLabel:Set(string.format(
-                    "pass1 done %.1fs — %d scripts | src:%d bc:%d need:%d",
-                    State.scanDuration, State.stats.total,
-                    State.stats.source, State.stats.bytecode, State.stats.needDecomp))
+                    "done %.1fs | %d instances | %d scripts | src:%d bc:%d need:%d | walkfail:%d",
+                    State.scanDuration, State.stats.instancesWalked,
+                    State.stats.total, State.stats.source,
+                    State.stats.bytecode, State.stats.needDecomp,
+                    State.stats.containersFailed))
             end)
             if refreshScriptDropdown then refreshScriptDropdown() end
         end)
@@ -1027,13 +1054,12 @@ TabMain:CreateButton({
 }, 40)
 
 TabMain:CreateButton({
-    Name = "PASS 2: Decompile All Remaining (background, cancelable)",
+    Name = "PASS C: Decompile All Remaining",
     Callback = function()
         task.spawn(function()
-            decompileAllPass(function(done, total, ok, fail)
+            decompileAllRemaining(function(done, total, ok, fail)
                 pcall(function()
-                    progressLabel:Set(string.format(
-                        "pass2... %d / %d | ok:%d fail:%d", done, total, ok, fail))
+                    progressLabel:Set(string.format("passC... %d / %d | ok:%d fail:%d", done, total, ok, fail))
                 end)
             end)
             if refreshScriptDropdown then refreshScriptDropdown() end
@@ -1042,7 +1068,7 @@ TabMain:CreateButton({
 })
 
 TabMain:CreateButton({
-    Name = "Cancel Everything",
+    Name = "Cancel",
     Callback = function()
         if State.busy or State.decompiling then
             State.cancelScan = true
@@ -1051,22 +1077,18 @@ TabMain:CreateButton({
     end
 })
 
-TabMain:CreateSection("Individual Scans")
-
-TabMain:CreateButton({Name = "Remotes Only", Callback = function() task.spawn(scanRemotes) end})
 TabMain:CreateButton({
-    Name = "Objects + Assets",
-    Callback = function() task.spawn(function() scanObjects() scanAssets() end) end
+    Name = "Security Scan (on captured sources)",
+    Callback = function() task.spawn(scanSecurity) end
 })
-TabMain:CreateButton({Name = "Security Scan", Callback = function() task.spawn(scanSecurity) end})
 
 -- scripts tab
 local TabScr = Window:CreateTab("Scripts", 4483345998)
-TabScr:CreateSection("Search + Select + Decompile")
+TabScr:CreateSection("Search + Select")
 
 TabScr:CreateInput({
-    Name = "Search (name or path)",
-    PlaceholderText = "type to filter scripts...",
+    Name = "Search",
+    PlaceholderText = "filter by name or path...",
     RemoveTextAfterFocusLost = false,
     Callback = function(text)
         State._searchQuery = text or ""
@@ -1075,8 +1097,30 @@ TabScr:CreateInput({
 })
 
 local filterOptions = {"All", "Combat", "Movement", "Economy", "NPC", "Remote",
-    "DataStore", "Security", "Animation", "Audio", "Client", "Server", "Module", "Other", "NEEDS-DECOMP"}
+    "DataStore", "Security", "Client", "Server", "Module", "Other", "NEEDS-DECOMP"}
 local filterIndex = 1
+
+local function categorize(path, className)
+    local combined = path:lower()
+    local catKeywords = {
+        Combat = {"combat", "damage", "weapon", "gun", "kill", "sword"},
+        Movement = {"walkspeed", "fly", "noclip", "jump", "teleport"},
+        Economy = {"shop", "buy", "cash", "coin", "rebirth", "sell"},
+        NPC = {"npc", "monster", "enemy", "boss", "mob"},
+        Remote = {"remoteevent", "remotefunction", "fireserver"},
+        DataStore = {"datastore", "save", "profile"},
+        Security = {"anticheat", "detect", "flag"}
+    }
+    for cat, kws in pairs(catKeywords) do
+        for _, kw in ipairs(kws) do
+            if combined:find(kw, 1, true) then return cat end
+        end
+    end
+    if className == "LocalScript" then return "Client" end
+    if className == "Script" then return "Server" end
+    if className == "ModuleScript" then return "Module" end
+    return "Other"
+end
 
 TabScr:CreateDropdown({
     Name = "Category Filter",
@@ -1092,7 +1136,7 @@ TabScr:CreateDropdown({
 
 local scriptSelectDropdown = TabScr:CreateDropdown({
     Name = "Select Script",
-    Options = {"run pass 1 first"},
+    Options = {"scan first"},
     CurrentOption = {},
     Callback = function(opt)
         State.selectedScript = nil
@@ -1100,26 +1144,23 @@ local scriptSelectDropdown = TabScr:CreateDropdown({
             local idx = tonumber(opt[1]:match("#(%d+)$"))
             if idx and State.filteredScripts[idx] then
                 State.selectedScript = State.filteredScripts[idx]
-                local r = State.selectedScript
-                notify("Selected", r.status .. " | " .. r.name, 3)
             end
         end
     end
 })
 
-TabScr:CreateSection("On-Demand Actions")
+TabScr:CreateSection("Actions")
 
 TabScr:CreateButton({
-    Name = "Decompile SELECTED Script (one at a time)",
+    Name = "Decompile SELECTED (one script)",
     Callback = function()
         local r = State.selectedScript
-        if not r then notify("Scripts", "Select a script first", 3) return end
+        if not r then notify("Scripts", "Select first", 3) return end
         task.spawn(function()
-            notify("Decompiling", r.name .. "... (UI may hiccup briefly)", 3)
+            notify("Decompiling", r.name, 3)
             local src, err = decompileOne(r)
             if src then
-                notify("Decompiled", r.name .. " (" .. tostring(#src) .. " bytes)", 4)
-                if refreshScriptDropdown then refreshScriptDropdown() end
+                notify("Done", r.name .. " (" .. #src .. " bytes)", 4)
             else
                 notify("Failed", tostring(err), 4)
             end
@@ -1131,9 +1172,8 @@ TabScr:CreateButton({
     Name = "Copy Selected Source",
     Callback = function()
         local r = State.selectedScript
-        if not r then notify("Scripts", "No script selected", 3) return end
-        local content = (r.source and #r.source > 0) and r.source
-            or ("-- no source yet — run Decompile Selected first\n-- path: " .. r.path)
+        if not r then notify("Scripts", "Select first", 3) return end
+        local content = (r.source and #r.source > 0) and r.source or ("-- no source -- path: " .. r.path)
         if setclipboard then
             setclipboard(content)
             notify("Copied", r.name, 3)
@@ -1145,26 +1185,13 @@ TabScr:CreateButton({
     Name = "Copy Selected Path",
     Callback = function()
         local r = State.selectedScript
-        if not r then notify("Scripts", "No script selected", 3) return end
+        if not r then notify("Scripts", "Select first", 3) return end
         if setclipboard then setclipboard(r.path) notify("Copied", r.path, 3) end
     end
 })
 
 TabScr:CreateButton({
-    Name = "Save Selected Source to File",
-    Callback = function()
-        local r = State.selectedScript
-        if not r then notify("Scripts", "No script selected", 3) return end
-        if writefile then
-            local fname = safeGameName .. "_" .. sanitizeFilename(r.name) .. ".lua"
-            pcall(writefile, fname, "-- " .. r.path .. "\n\n" .. (r.source or ""))
-            notify("Saved", fname, 3)
-        end
-    end
-})
-
-TabScr:CreateButton({
-    Name = "Copy ALL Captured Sources (capped 1.5MB)",
+    Name = "Copy ALL Sources (capped 1.5MB)",
     Callback = function()
         task.spawn(function()
             local all = {}
@@ -1198,6 +1225,9 @@ refreshScriptDropdown = function()
         local options = {}
 
         for _, r in ipairs(State.results) do
+            if r.category == nil then
+                r.category = categorize(r.path, r.className)
+            end
             local matchesCat
             if selCat == "All" then
                 matchesCat = true
@@ -1221,17 +1251,12 @@ refreshScriptDropdown = function()
             end
         end
 
-        if #options == 0 then
-            options = {"no matches"}
-        end
-
-        pcall(function()
-            scriptSelectDropdown:Refresh(options)
-        end)
+        if #options == 0 then options = {"no matches"} end
+        pcall(function() scriptSelectDropdown:Refresh(options) end)
     end)
 end
 
--- remotes tab (same as v11.2, trimmed comments)
+-- remotes tab
 local TabRem = Window:CreateTab("Remotes", 4483345998)
 TabRem:CreateSection("Remote Tester")
 
@@ -1429,7 +1454,7 @@ TabObj:CreateButton({
     Name = "Teleport to Selected NPC",
     Callback = function()
         local n = State.selectedNPC
-        if not n then notify("Objects", "Select an NPC first", 3) return end
+        if not n then notify("Objects", "Select first", 3) return end
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if hrp and n.px then
@@ -1499,7 +1524,7 @@ TabVal:CreateButton({
     Name = "Apply to Selected",
     Callback = function()
         local v = State.selectedValue
-        if not v then notify("Values", "Select a value first", 3) return end
+        if not v then notify("Values", "Select first", 3) return end
         local inst = v.ref
         if not inst or not inst.Parent then
             notify("Values", "Instance gone", 4)
@@ -1516,33 +1541,6 @@ TabVal:CreateButton({
             end
         end)
         notify(ok and "Set" or "Error", v.path, 4)
-    end
-})
-
--- security tab
-local TabSec = Window:CreateTab("Security", 4483345998)
-TabSec:CreateSection("Detections")
-
-TabSec:CreateButton({
-    Name = "Print Security Report (F9)",
-    Callback = function()
-        print("=== SECURITY ===")
-        print("--- AC (" .. #State.acDetections .. ") ---")
-        for i, d in ipairs(State.acDetections) do
-            if i > 50 then print("...more") break end
-            print(d.script .. ":L" .. d.line .. " [" .. d.pattern .. "] " .. d.text)
-        end
-        print("--- BD (" .. #State.bdDetections .. ") ---")
-        for i, d in ipairs(State.bdDetections) do
-            if i > 50 then print("...more") break end
-            print(d.script .. ":L" .. d.line .. " [" .. d.pattern .. "] " .. d.text)
-        end
-        print("--- WH (" .. #State.webhookHits .. ") ---")
-        for i, d in ipairs(State.webhookHits) do
-            if i > 30 then print("...more") break end
-            print(d.script .. ":L" .. d.line .. " " .. d.text)
-        end
-        notify("Security", "Report in F9", 5)
     end
 })
 
@@ -1605,7 +1603,46 @@ TabExp:CreateButton({
 
 -- settings tab
 local TabSet = Window:CreateTab("Settings", 4483345998)
-TabSet:CreateSection("Scan Config")
+TabSet:CreateSection("Performance")
+
+TabSet:CreateSlider({
+    Name = "Frame Budget (ms per frame, higher = faster + riskier)",
+    Range = {2, 16},
+    Increment = 1,
+    Suffix = "ms",
+    CurrentValue = CFG.frameBudgetMS,
+    Flag = "FrameBudget",
+    Callback = function(v)
+        CFG.frameBudgetMS = v
+        saveConfig(CFG)
+    end
+})
+
+TabSet:CreateSlider({
+    Name = "Instance Cap (hard stop)",
+    Range = {100000, 2000000},
+    Increment = 100000,
+    Suffix = "inst",
+    CurrentValue = CFG.maxInstances,
+    Flag = "MaxInstances",
+    Callback = function(v)
+        CFG.maxInstances = v
+        saveConfig(CFG)
+    end
+})
+
+TabSet:CreateSection("Filters")
+
+TabSet:CreateToggle({
+    Name = "Filter Junk Values (attachments etc)",
+    CurrentValue = CFG.valueFilterJunk,
+    Flag = "JunkFilter",
+    Callback = function(v)
+        CFG.valueFilterJunk = v
+        saveConfig(CFG)
+        notify("Setting", v and "Junk filter ON" or "Junk filter OFF", 3)
+    end
+})
 
 TabSet:CreateToggle({
     Name = "Deduplicate Scripts",
@@ -1619,9 +1656,9 @@ TabSet:CreateToggle({
 })
 
 TabSet:CreateToggle({
-    Name = "Scan CoreGui (noisy, usually off)",
+    Name = "Scan CoreGui (noisy)",
     CurrentValue = CFG.scanCoreGui,
-    Flag = "ScanCoreGuiToggle",
+    Flag = "CoreGuiToggle",
     Callback = function(v)
         CFG.scanCoreGui = v
         saveConfig(CFG)
@@ -1630,18 +1667,12 @@ TabSet:CreateToggle({
 })
 
 -- wire dropdown refresh
-local origRunPipeline = runScanPipeline
-runScanPipeline = function(cb)
-    origRunPipeline(cb)
+local origRunFullScan = runFullScan
+runFullScan = function(cb)
+    origRunFullScan(cb)
     refreshRemoteDropdown()
 end
 
-local origScanRemotes = scanRemotes
-scanRemotes = function()
-    origScanRemotes()
-    refreshRemoteDropdown()
-end
-
-print("=== PHANTOM SCANNER v12 loaded ===")
+print("=== PHANTOM SCANNER v13 loaded ===")
 print("=== Game: " .. GameName .. " ===")
-notify("Phantom v12", "Two-pass engine. Pass 1 = instant, no freezes.", 6)
+notify("Phantom v13", "Unified engine — one walk, unfreezable", 6)
