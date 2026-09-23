@@ -1,10 +1,17 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v13 — UNIFIED SINGLE-WALK ENGINE
---  One tree walk captures everything | Time-sliced | Unfreezable
---  Pass A: unified walk (scripts+remotes+objects+values+assets)
---  Pass B: fast source grab (getsrc/bytecode only)
---  Pass C: optional on-demand decompile
+--  PHANTOM SCANNER v14 — FULL RECON EDITION
+--  Uncover any game's code + architecture + protocol
+--
+--  ENGINE (unfreezable, from v13):
+--    unified single-walk, time-sliced, container-isolated
+--  INTELLIGENCE (new):
+--    - Fingerprint engine: auto tier classification + risk report
+--    - Traffic capture: args + RETURN VALUES + cooldown analysis
+--    - Code coverage: getsrc→decompile→bytecode ladder + %
+--    - Structure map: remote sub-system grouping, folder architecture
+--    - Value intelligence: game-state detection vs noise
+--    - One-click briefing: everything analyzed automatically
 -- ==============================================================
 
 local Players              = game:GetService("Players")
@@ -57,8 +64,8 @@ pcall(function()
     executorInfo = tostring(n) .. (v and (" v" .. tostring(v)) or "")
 end)
 
-print("[Phantom] Game: " .. GameName)
-print("[Phantom] Executor: " .. executorInfo)
+print("[Phantom v14] Game: " .. GameName)
+print("[Phantom v14] Executor: " .. executorInfo)
 
 -- config
 local CONFIG_FILE = "PhantomScanner/config.json"
@@ -88,8 +95,9 @@ local CFG = loadConfig()
 if CFG.dedup == nil then CFG.dedup = true end
 if CFG.scanCoreGui == nil then CFG.scanCoreGui = false end
 if CFG.frameBudgetMS == nil then CFG.frameBudgetMS = 8 end
-if CFG.valueFilterJunk == nil then CFG.valueFilterJunk = true end
 if CFG.maxInstances == nil then CFG.maxInstances = 1000000 end
+if CFG.captureReturns == nil then CFG.captureReturns = true end
+if CFG.skipCharacters == nil then CFG.skipCharacters = true end
 
 -- state
 local State = {
@@ -102,11 +110,12 @@ local State = {
     bdDetections     = {},
     webhookHits      = {},
     requireMap       = {},
-    deepData         = {remoteCalls = {}, promptHits = {}, spawns = {}},
+    deepData         = {remoteCalls = {}, promptHits = {}, spawns = {}, returns = {}},
     stats            = {
         total = 0, source = 0, bytecode = 0, needDecomp = 0, failed = 0, deduped = 0,
         instancesWalked = 0, containersFailed = 0
     },
+    fingerprint      = nil,
     deepScanning     = false,
     busy             = false,
     cancelScan       = false,
@@ -141,9 +150,9 @@ do
     if ok and type(result) == "table" then
         Rayfield = result
         Window = Rayfield:CreateWindow({
-            Name = "Phantom Scanner v13",
+            Name = "Phantom Scanner v14",
             LoadingTitle = GameName,
-            LoadingSubtitle = "unified engine | unfreezable",
+            LoadingSubtitle = "full recon | uncover everything",
             ConfigurationSaving = {Enabled = false},
             KeySystem = false
         })
@@ -164,8 +173,7 @@ local function notify(title, content, dur)
 end
 
 -- ==============================================================
---  UNIFIED WALK ENGINE
---  one pass, everything classified, time-sliced per frame
+--  UNIFIED WALK ENGINE (v13 core, + character skip + full dedup)
 -- ==============================================================
 
 local junkValueNames = {
@@ -174,7 +182,6 @@ local junkValueNames = {
     AvatarPartScaleType = true
 }
 
--- containers to walk, resolved at scan time
 local function getContainers()
     local list = {}
     local function tryAdd(svc, name)
@@ -222,10 +229,7 @@ local function quickHash(str)
     return string.format("%08x", h)
 end
 
--- THE unified walk. classifies every instance in one traversal.
--- time-budgeted: yields whenever this frame's ms budget is spent.
 local function unifiedWalk(progressCb)
-    -- reset all collections
     State.results = {}
     State.hashes = {}
     State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
@@ -234,47 +238,42 @@ local function unifiedWalk(progressCb)
     State.stats.instancesWalked = 0
     State.stats.containersFailed = 0
 
+    -- full dedup across all capture types
+    local remoteHashes = {}
+    local valueHashes = {}
+    local objHashes = {}
+
     local budget = CFG.frameBudgetMS / 1000
     local frameStart = os.clock()
-    local yielded = false
 
     local function maybeYield(force)
         if force or (os.clock() - frameStart) >= budget then
-            if progressCb then
-                progressCb(State.stats.instancesWalked)
-            end
+            if progressCb then progressCb(State.stats.instancesWalked) end
             RunService.RenderStepped:Wait()
             frameStart = os.clock()
-            yielded = true
         end
     end
 
     for _, cd in ipairs(getContainers()) do
         if State.cancelScan then break end
-
-        -- per-container: pcall'd so one broken container never kills the scan
         local ok, err = pcall(function()
             local stack = {cd[1]}
             while #stack > 0 do
                 if State.cancelScan then return end
                 if State.stats.instancesWalked >= CFG.maxInstances then
-                    notify("Walk", "Instance cap reached (" .. CFG.maxInstances .. ") — results still valid", 5)
+                    notify("Walk", "Instance cap reached — results valid", 5)
                     return
                 end
 
                 local node = table.remove(stack)
                 local gotKids, children = pcall(node.GetChildren, node)
                 if not gotKids then
-                    -- instance died or is protected — skip quietly
                     maybeYield(true)
                 else
                     for _, inst in ipairs(children) do
                         State.stats.instancesWalked = State.stats.instancesWalked + 1
-
-                        -- class check via ClassName string (cheaper than IsA chain)
                         local cls = inst.ClassName
 
-                        -- scripts
                         if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
                             table.insert(stack, inst)
                             local okPath, path = pcall(inst.GetFullName, inst)
@@ -296,69 +295,75 @@ local function unifiedWalk(progressCb)
                                 end
                             end
 
-                        -- remotes
                         elseif cls == "RemoteEvent" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not remoteHashes[p] then
+                                remoteHashes[p] = true
                                 table.insert(State.remotes.events, {path = p, name = inst.Name})
                             end
                         elseif cls == "RemoteFunction" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not remoteHashes[p] then
+                                remoteHashes[p] = true
                                 table.insert(State.remotes.functions, {path = p, name = inst.Name})
                             end
                         elseif cls == "BindableEvent" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not remoteHashes[p] then
+                                remoteHashes[p] = true
                                 table.insert(State.remotes.bindables, {path = p, name = inst.Name})
                             end
                         elseif cls == "BindableFunction" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not remoteHashes[p] then
+                                remoteHashes[p] = true
                                 table.insert(State.remotes.bindableFuncs, {path = p, name = inst.Name})
                             end
 
-                        -- interactables
                         elseif cls == "ProximityPrompt" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not objHashes[p] then
+                                objHashes[p] = true
                                 table.insert(State.objects.prompts, {path = p, name = inst.Name})
                             end
                         elseif cls == "ClickDetector" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not objHashes[p] then
+                                objHashes[p] = true
                                 table.insert(State.objects.clickDetectors, {path = p, name = inst.Name})
                             end
                         elseif cls == "SpawnLocation" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not objHashes[p] then
+                                objHashes[p] = true
                                 local okPos, pos = pcall(function() return tostring(inst.Position) end)
                                 table.insert(State.objects.spawns, {path = p, pos = okPos and pos or "?"})
                             end
 
-                        -- values (with junk filter)
                         elseif cls == "IntValue" or cls == "NumberValue" or cls == "StringValue"
                             or cls == "BoolValue" or cls == "ObjectValue" then
-                            if not (CFG.valueFilterJunk and junkValueNames[inst.Name]) then
+                            if not (junkValueNames[inst.Name]) then
                                 local okP, p = pcall(inst.GetFullName, inst)
-                                if okP then
+                                if okP and not valueHashes[p] then
+                                    valueHashes[p] = true
                                     local entry = {path = p, class = cls, ref = inst}
                                     pcall(function() entry.val = tostring(inst.Value):sub(1, 80) end)
                                     table.insert(State.objects.values, entry)
                                 end
                             end
 
-                        -- assets
                         elseif cls == "Sound" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not objHashes[p] then
+                                objHashes[p] = true
                                 local id = ""
                                 pcall(function() id = tostring(inst.SoundId) end)
                                 table.insert(State.assets.sounds, {path = p, id = id})
                             end
                         elseif cls == "Animation" then
                             local okP, p = pcall(inst.GetFullName, inst)
-                            if okP then
+                            if okP and not objHashes[p] then
+                                objHashes[p] = true
                                 local id = ""
                                 pcall(function() id = tostring(inst.AnimationId) end)
                                 table.insert(State.assets.animations, {path = p, id = id})
@@ -370,41 +375,41 @@ local function unifiedWalk(progressCb)
                                 pcall(function() id = tostring(inst.MeshId) end)
                                 table.insert(State.assets.meshes, {path = p, id = id})
                             end
+                        elseif cls == "Decal" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP then
+                                local tex = ""
+                                pcall(function() tex = tostring(inst.Texture) end)
+                                table.insert(State.assets.decals, {path = p, tex = tex})
+                            end
                         end
 
-                        -- models with humanoids = NPCs (check via FindFirstChildOfClass on Model cls only)
                         if cls == "Model" then
-                            local hum = inst:FindFirstChildOfClass("Humanoid")
-                            if hum and not Players:GetPlayerFromCharacter(inst) then
-                                local okP, p = pcall(inst.GetFullName, inst)
-                                if okP then
-                                    local root = inst:FindFirstChild("HumanoidRootPart") or inst.PrimaryPart
-                                    local px, py, pz
-                                    if root then
-                                        pcall(function()
-                                            px, py, pz = root.Position.X, root.Position.Y, root.Position.Z
-                                        end)
+                            -- record NPC humanoid but skip player characters
+                            local isChar = CFG.skipCharacters and Players:GetPlayerFromCharacter(inst)
+                            if not isChar then
+                                local hum = inst:FindFirstChildOfClass("Humanoid")
+                                if hum then
+                                    local okP, p = pcall(inst.GetFullName, inst)
+                                    if okP and not objHashes[p] then
+                                        objHashes[p] = true
+                                        local root = inst:FindFirstChild("HumanoidRootPart") or inst.PrimaryPart
+                                        local px, py, pz
+                                        if root then
+                                            pcall(function()
+                                                px, py, pz = root.Position.X, root.Position.Y, root.Position.Z
+                                            end)
+                                        end
+                                        table.insert(State.objects.humanoids, {
+                                            path = p,
+                                            name = inst.Name,
+                                            hp = hum.Health,
+                                            mhp = hum.MaxHealth,
+                                            ws = hum.WalkSpeed,
+                                            pos = px and string.format("%.1f, %.1f, %.1f", px, py, pz) or "?",
+                                            px = px, py = py, pz = pz
+                                        })
                                     end
-                                    table.insert(State.objects.humanoids, {
-                                        path = p,
-                                        name = inst.Name,
-                                        hp = hum.Health,
-                                        mhp = hum.MaxHealth,
-                                        ws = hum.WalkSpeed,
-                                        pos = px and string.format("%.1f, %.1f, %.1f", px, py, pz) or "?",
-                                        px = px, py = py, pz = pz
-                                    })
-                                end
-                            end
-                            table.insert(stack, inst)
-                        elseif cls == "MeshPart" or cls == "Decal" then
-                            -- decal texture / meshpart meshid
-                            if cls == "Decal" then
-                                local okP, p = pcall(inst.GetFullName, inst)
-                                if okP then
-                                    local tex = ""
-                                    pcall(function() tex = tostring(inst.Texture) end)
-                                    table.insert(State.assets.decals, {path = p, tex = tex})
                                 end
                             end
                             table.insert(stack, inst)
@@ -422,15 +427,17 @@ local function unifiedWalk(progressCb)
             State.stats.containersFailed = State.stats.containersFailed + 1
             warn("[Phantom] container walk failed: " .. tostring(err))
         end
-        -- yield between containers regardless
         RunService.RenderStepped:Wait()
     end
 
     State.stats.total = #State.results
-    return yielded
 end
 
--- PASS B: fast source grab (getsrc + bytecode only, never decompile)
+-- ==============================================================
+--  CODE COVERAGE ENGINE
+--  Pass B: getsrc + bytecode. Pass C: decompile ladder.
+-- ==============================================================
+
 local function grabSources(progressCb)
     State.stats.source = 0
     State.stats.bytecode = 0
@@ -480,7 +487,6 @@ local function grabSources(progressCb)
     end
 end
 
--- PASS C: on-demand decompile (single or all remaining)
 local function decompileOne(entry)
     if not decompile then
         return nil, "decompile not available"
@@ -500,7 +506,18 @@ local function decompileOne(entry)
             return r, nil
         end
     end
-    return nil, "decompile failed (likely server-only or VM-packed)"
+    if getsrc then
+        local ok, r = pcall(getsrc, inst)
+        if ok and type(r) == "string" and #r > 0 then
+            entry.source = r
+            entry.size = #r
+            entry.status = "SOURCE"
+            State.stats.needDecomp = State.stats.needDecomp - 1
+            State.stats.source = State.stats.source + 1
+            return r, nil
+        end
+    end
+    return nil, "failed (server-only or VM-packed)"
 end
 
 local function decompileAllRemaining(progressCb)
@@ -537,7 +554,10 @@ local function decompileAllRemaining(progressCb)
     notify("Pass C done", "OK: " .. ok .. " | failed: " .. fail, 6)
 end
 
--- security scan (unchanged logic, on captured sources)
+-- ==============================================================
+--  SECURITY SCAN
+-- ==============================================================
+
 local function splitLines(source)
     local lines = {}
     for line in (source .. "\n"):gmatch("(.-)\n") do
@@ -589,9 +609,480 @@ local function scanSecurity()
             RunService.RenderStepped:Wait()
         end
     end
-    notify("Security", string.format("AC: %d | BD: %d | Webhooks: %d",
-        #State.acDetections, #State.bdDetections, #State.webhookHits), 5)
 end
+
+-- ==============================================================
+--  FINGERPRINT ENGINE — the tier classifier
+-- ==============================================================
+
+local function analyzeFingerprint()
+    local fp = {
+        tier = "?",
+        tierName = "unknown",
+        confidence = 0,
+        signals = {},
+        risks = {},
+        recommendations = {},
+        clientAuthSignals = 0,
+        serverAuthSignals = 0,
+        obfuscationScore = 0
+    }
+
+    -- SIGNAL 1: validation bindables (the big warning)
+    local validationNames = {"dataverification", "validate", "anticheat", "securitycheck", "verifyaction", "integritycheck"}
+    local foundValidation = false
+    for _, b in ipairs(State.remotes.bindables) do
+        local low = b.path:lower()
+        for _, vn in ipairs(validationNames) do
+            if low:find(vn, 1, true) then
+                foundValidation = true
+                table.insert(fp.signals, "validation bindable: " .. b.path)
+                break
+            end
+        end
+    end
+    if foundValidation then
+        fp.serverAuthSignals = fp.serverAuthSignals + 3
+        table.insert(fp.risks, "SERVER-SIDE ACTION VALIDATION DETECTED — economy remotes are fingerprinted")
+    end
+
+    -- SIGNAL 2: remote naming entropy (obfuscated vs descriptive)
+    local totalLen, totalRemotes = 0, 0
+    local shortNames = 0
+    for _, e in ipairs(State.remotes.events) do
+        totalLen = totalLen + #e.name
+        totalRemotes = totalRemotes + 1
+        if #e.name <= 3 then shortNames = shortNames + 1 end
+    end
+    if totalRemotes > 0 then
+        local avgLen = totalLen / totalRemotes
+        local shortRatio = shortNames / totalRemotes
+        if avgLen < 4 or shortRatio > 0.3 then
+            fp.obfuscationScore = fp.obfuscationScore + 2
+            table.insert(fp.signals, string.format("obfuscated remote naming (avg len %.1f, short %.0f%%)", avgLen, shortRatio * 100))
+            table.insert(fp.risks, "PROFESSIONAL CODEBASE — assume all remotes validated")
+        else
+            table.insert(fp.signals, string.format("descriptive remote naming (avg len %.1f)", avgLen))
+            fp.clientAuthSignals = fp.clientAuthSignals + 1
+        end
+    end
+
+    -- SIGNAL 3: script coverage ratio
+    local total = State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed
+    if total > 0 then
+        local srcRatio = State.stats.source / total
+        local failRatio = (State.stats.needDecomp + State.stats.failed) / total
+        if srcRatio > 0.7 then
+            fp.clientAuthSignals = fp.clientAuthSignals + 2
+            table.insert(fp.signals, string.format("high source visibility (%.0f%% readable)", srcRatio * 100))
+        elseif failRatio > 0.4 then
+            fp.serverAuthSignals = fp.serverAuthSignals + 2
+            table.insert(fp.signals, string.format("high server-only ratio (%.0f%% unreachable)", failRatio * 100))
+            table.insert(fp.risks, "logic mostly server-side — client edits are visual only")
+        end
+    end
+
+    -- SIGNAL 4: value-based game state
+    local gameStateValues = 0
+    local statePatterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory"}
+    for _, v in ipairs(State.objects.values) do
+        local low = v.path:lower()
+        for _, sp in ipairs(statePatterns) do
+            if low:find(sp, 1, true) then
+                gameStateValues = gameStateValues + 1
+                break
+            end
+        end
+    end
+    if gameStateValues > 20 then
+        fp.clientAuthSignals = fp.clientAuthSignals + 2
+        table.insert(fp.signals, string.format("game state replicated as values (%d candidates) — client-readable", gameStateValues))
+        table.insert(fp.recommendations, "check Values tab for currency/inventory — often client-writable in low-security games")
+    end
+
+    -- SIGNAL 5: webhook logging (snitch detection)
+    if #State.webhookHits > 0 then
+        table.insert(fp.risks, "GAME LOGS TO DISCORD WEBHOOKS — exploits may be reported in real-time")
+        fp.serverAuthSignals = fp.serverAuthSignals + 1
+    end
+
+    -- SIGNAL 6: anti-cheat mentions in source
+    if #State.acDetections > 10 then
+        fp.serverAuthSignals = fp.serverAuthSignals + 1
+        table.insert(fp.signals, #State.acDetections .. " anti-cheat related lines in captured source")
+    end
+
+    -- CLASSIFY
+    local score = fp.serverAuthSignals - fp.clientAuthSignals
+    if score >= 4 then
+        fp.tier = "TIER 3"
+        fp.tierName = "server-auth + hardened"
+        fp.confidence = 85
+        table.insert(fp.recommendations, "SAFE: teleport menu, ESP, fullbright, database browsers (replicated data)")
+        table.insert(fp.recommendations, "AVOID: firing economy/damage remotes — validation + ban teams likely")
+        table.insert(fp.recommendations, "USE: deep scan while playing for protocol recon only")
+    elseif score >= 1 then
+        fp.tier = "TIER 2"
+        fp.tierName = "hybrid validation"
+        fp.confidence = 70
+        table.insert(fp.recommendations, "SAFE: movement mods, ESP, TPs, prompt automation, client visuals")
+        table.insert(fp.recommendations, "TEST ON ALT: any remote that spends/moves/creates — observe response pattern")
+        table.insert(fp.recommendations, "USE: deep scan → smart templates → replicate exact observed args")
+    else
+        fp.tier = "TIER 1"
+        fp.tierName = "client-authoritative"
+        fp.confidence = 75
+        table.insert(fp.recommendations, "FULL SURFACE: value edits, remote firing, auto-farm loops all viable")
+        table.insert(fp.recommendations, "start with the Values tab — game state is probably writable")
+    end
+
+    if fp.obfuscationScore >= 2 and fp.tier == "TIER 1" then
+        fp.tier = "TIER 2"
+        fp.confidence = 60
+        table.insert(fp.risks, "downgraded to tier 2 due to obfuscation despite client-visible sources")
+    end
+
+    State.fingerprint = fp
+    return fp
+end
+
+local function buildFingerprintReport()
+    local fp = State.fingerprint or analyzeFingerprint()
+    local buf = {}
+    local function add(t) table.insert(buf, t) end
+
+    add("╔══════════════════════════════════════════╗")
+    add("  PHANTOM FINGERPRINT REPORT")
+    add("╚══════════════════════════════════════════╝")
+    add("Game: " .. GameName)
+    add("Place: " .. tostring(game.PlaceId))
+    add("")
+    add("CLASSIFICATION: " .. fp.tier .. " — " .. fp.tierName)
+    add("Confidence: " .. fp.confidence .. "%")
+    add("")
+    add("── SIGNALS DETECTED ──")
+    for _, s in ipairs(fp.signals) do
+        add("  • " .. s)
+    end
+    if #fp.signals == 0 then add("  (none)") end
+    add("")
+    add("── RISKS ──")
+    for _, r in ipairs(fp.risks) do
+        add("  ⚠ " .. r)
+    end
+    if #fp.risks == 0 then add("  none flagged") end
+    add("")
+    add("── RECOMMENDED APPROACH ──")
+    for _, rec in ipairs(fp.recommendations) do
+        add("  → " .. rec)
+    end
+    add("")
+    add("── EXPLOIT SURFACE SUMMARY ──")
+    add("  Scripts: " .. State.stats.total .. " total | " .. State.stats.source .. " source | " .. State.stats.needDecomp .. " need-decomp | " .. State.stats.failed .. " unreachable")
+    add("  Remotes: " .. #State.remotes.events .. " events | " .. #State.remotes.functions .. " functions")
+    add("  Values: " .. #State.objects.values .. " (game-state candidates: " .. (fp.gameStateValues or "see signals") .. ")")
+    add("  NPCs: " .. #State.objects.humanoids .. " | Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
+    local coverage = 0
+    if (State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed) > 0 then
+        coverage = math.floor((State.stats.source / (State.stats.source + State.stats.bytecode + State.stats.needDecomp + State.stats.failed)) * 100)
+    end
+    add("  Code coverage: " .. coverage .. "% of scripts readable")
+    add("")
+    add("── TRAFFIC (deep scan) ──")
+    add("  Observed calls: " .. #State.deepData.remoteCalls)
+    add("  Captured returns: " .. #State.deepData.returns)
+    if #State.deepData.remoteCalls > 0 then
+        add("  → run 'Smart Templates' to convert traffic into a script skeleton")
+    end
+
+    return table.concat(buf, "\n")
+end
+
+-- ==============================================================
+--  STRUCTURE MAP — remote sub-system grouping
+-- ==============================================================
+
+local function buildStructureMap()
+    local buf = {}
+    local function add(t) table.insert(buf, t) end
+
+    add("════════ STRUCTURE MAP ════════")
+
+    -- group remotes by parent container
+    local systems = {}
+    for _, e in ipairs(State.remotes.events) do
+        local parent = e.path:match("^(.+)%.[^%.]+$") or "root"
+        systems[parent] = systems[parent] or {events = 0, funcs = 0}
+        systems[parent].events = systems[parent].events + 1
+    end
+    for _, f in ipairs(State.remotes.functions) do
+        local parent = f.path:match("^(.+)%.[^%.]+$") or "root"
+        systems[parent] = systems[parent] or {events = 0, funcs = 0}
+        systems[parent].funcs = systems[parent].funcs + 1
+    end
+
+    -- sort by count, show top systems
+    local sorted = {}
+    for name, data in pairs(systems) do
+        table.insert(sorted, {name = name, events = data.events, funcs = data.funcs})
+    end
+    table.sort(sorted, function(a, b)
+        return (a.events + a.funcs) > (b.events + b.funcs)
+    end)
+
+    add("REMOTE SUB-SYSTEMS (by call surface):")
+    for i, s in ipairs(sorted) do
+        if i > 40 then add("  ...+" .. (#sorted - 40) .. " more") break end
+        add(string.format("  [%dE/%dF] %s", s.events, s.funcs, s.name))
+    end
+
+    add("")
+    add("KEY FOLDERS IN REPLICATEDSTORAGE:")
+    local rs = game:GetService("ReplicatedStorage")
+    pcall(function()
+        for _, child in ipairs(rs:GetChildren()) do
+            if child:IsA("Folder") then
+                local count = 0
+                pcall(function() count = #child:GetDescendants() end)
+                add(string.format("  %s/ (%d descendants)", child.Name, count))
+            end
+        end
+    end)
+
+    add("")
+    add("WORKSPACE TOP-LEVEL:")
+    pcall(function()
+        for _, child in ipairs(workspace:GetChildren()) do
+            if child:IsA("Folder") or child:IsA("Model") then
+                add("  " .. child.Name)
+            end
+        end
+    end)
+
+    return table.concat(buf, "\n")
+end
+
+-- ==============================================================
+--  DEEP SCAN v2 — returns capture + cooldown analysis
+-- ==============================================================
+
+local originalNamecall = nil
+local namecallHooked = false
+
+restoreHook = function()
+    if namecallHooked and originalNamecall then
+        pcall(function()
+            local mt = getrawmetatable(game)
+            setreadonly(mt, false)
+            mt.__namecall = originalNamecall
+            setreadonly(mt, true)
+        end)
+        namecallHooked = false
+    end
+end
+
+local function disconnectDeep()
+    if connections.promptAdded then
+        pcall(function() connections.promptAdded:Disconnect() end)
+        connections.promptAdded = nil
+    end
+    if connections.spawnWatch then
+        pcall(function() connections.spawnWatch:Disconnect() end)
+        connections.spawnWatch = nil
+    end
+end
+
+-- serialize an arg with type info
+local function serializeArg(arg)
+    local t = typeof(arg)
+    if t == "Instance" then
+        return "Instance:" .. arg.ClassName .. "(" .. arg.Name .. ")"
+    elseif t == "CFrame" then
+        local p = arg.Position
+        return string.format("CFrame(%.1f,%.1f,%.1f)", p.X, p.Y, p.Z)
+    elseif t == "Vector3" then
+        return string.format("V3(%.1f,%.1f,%.1f)", arg.X, arg.Y, arg.Z)
+    elseif t == "Color3" then
+        return string.format("Color(%d,%d,%d)", arg.R * 255, arg.G * 255, arg.B * 255)
+    elseif t == "table" then
+        local ok, j = pcall(function() return HttpService:JSONEncode(arg) end)
+        if ok and j then
+            return "table:" .. j:sub(1, 80)
+        end
+        return "table:" .. tostring(arg):sub(1, 40)
+    elseif t == "string" then
+        return '"' .. tostring(arg):sub(1, 40) .. '"'
+    else
+        return t .. ":" .. tostring(arg):sub(1, 30)
+    end
+end
+
+local function startDeepScan(duration)
+    duration = duration or 300
+    if State.deepScanning then
+        notify("Deep Scan", "Already running", 3)
+        return
+    end
+    State.deepScanning = true
+    State.deepData = {remoteCalls = {}, promptHits = {}, spawns = {}, returns = {}}
+    notify("Deep Scan", "Monitoring " .. duration .. "s — play the game's core loop", 6)
+
+    connections.promptAdded = workspace.DescendantAdded:Connect(function(d)
+        if d:IsA("ProximityPrompt") then
+            d.Triggered:Connect(function(plr)
+                if plr == LocalPlayer then
+                    table.insert(State.deepData.promptHits, {
+                        time = os.date("%H:%M:%S"),
+                        prompt = d.Name,
+                        path = d:GetFullName()
+                    })
+                end
+            end)
+        end
+    end)
+
+    connections.spawnWatch = workspace.DescendantAdded:Connect(function(d)
+        if d:IsA("Model") and not (CFG.skipCharacters and Players:GetPlayerFromCharacter(d)) then
+            if d:FindFirstChildOfClass("Humanoid") then
+                table.insert(State.deepData.spawns, {
+                    time = os.date("%H:%M:%S"),
+                    name = d.Name,
+                    path = d:GetFullName()
+                })
+            end
+        end
+    end)
+
+    pcall(function()
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+        originalNamecall = mt.__namecall
+        mt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer" or method == "InvokeServer" then
+                local args = {...}
+                local argStr = ""
+                for i, arg in ipairs(args) do
+                    argStr = argStr .. "[" .. i .. "] " .. serializeArg(arg) .. "  "
+                end
+
+                local call = {
+                    time = os.date("%H:%M:%S"),
+                    clock = os.clock(),
+                    method = method,
+                    remote = self.Name,
+                    path = self:GetFullName(),
+                    args = argStr,
+                    argCount = #args
+                }
+                table.insert(State.deepData.remoteCalls, call)
+
+                -- capture InvokeServer RETURN values (server data coming back)
+                if method == "InvokeServer" and CFG.captureReturns then
+                    local results = {originalNamecall(self, ...)}
+                    local retStr = ""
+                    for i, res in ipairs(results) do
+                        retStr = retStr .. "[" .. i .. "] " .. serializeArg(res) .. "  "
+                    end
+                    table.insert(State.deepData.returns, {
+                        time = call.time,
+                        remote = self.Name,
+                        path = call.path,
+                        returns = retStr
+                    })
+                    return unpack(results)
+                end
+            end
+            return originalNamecall(self, ...)
+        end)
+        setreadonly(mt, true)
+        namecallHooked = true
+    end)
+
+    task.delay(duration, function()
+        if State.deepScanning then
+            restoreHook()
+            disconnectDeep()
+            State.deepScanning = false
+            notify("Deep Scan Done",
+                string.format("Calls: %d | Returns: %d | Prompts: %d",
+                    #State.deepData.remoteCalls, #State.deepData.returns, #State.deepData.promptHits), 7)
+        end
+    end)
+end
+
+local function stopDeepScan()
+    if not State.deepScanning then return end
+    State.deepScanning = false
+    disconnectDeep()
+    restoreHook()
+    notify("Deep Scan Stopped", string.format("Calls: %d | Returns: %d",
+        #State.deepData.remoteCalls, #State.deepData.returns), 5)
+end
+
+-- traffic analysis: cooldowns + call frequencies
+local function analyzeTraffic()
+    local buf = {}
+    local function add(t) table.insert(buf, t) end
+
+    add("════════ TRAFFIC ANALYSIS ════════")
+    add("Total calls: " .. #State.deepData.remoteCalls)
+    add("Captured returns: " .. #State.deepData.returns)
+    add("")
+
+    -- frequency per remote
+    local freq = {}
+    local order = {}
+    local lastCallTime = {}
+    local minGaps = {}
+    for _, c in ipairs(State.deepData.remoteCalls) do
+        if not freq[c.path] then
+            freq[c.path] = 0
+            table.insert(order, c.path)
+        end
+        freq[c.path] = freq[c.path] + 1
+        -- cooldown detection: smallest gap between calls to same remote
+        if lastCallTime[c.path] then
+            local gap = c.clock - lastCallTime[c.path]
+            if not minGaps[c.path] or gap < minGaps[c.path] then
+                minGaps[c.path] = gap
+            end
+        end
+        lastCallTime[c.path] = c.clock
+    end
+    table.sort(order, function(a, b) return freq[a] > freq[b] end)
+
+    add("── CALL FREQUENCY + DETECTED COOLDOWNS ──")
+    for i, path in ipairs(order) do
+        if i > 40 then add("  ...+" .. (#order - 40) .. " more") break end
+        local gapStr = minGaps[path] and string.format("min-gap %.2fs", minGaps[path]) or "single"
+        add(string.format("  %3dx | %s | %s", freq[path], gapStr, path))
+    end
+
+    if #State.deepData.returns > 0 then
+        add("")
+        add("── SERVER RETURN VALUES (game data coming back) ──")
+        for i, r in ipairs(State.deepData.returns) do
+            if i > 30 then add("  ...more") break end
+            add("  [" .. r.time .. "] " .. r.remote)
+            add("    → " .. r.returns)
+        end
+    end
+
+    add("")
+    add("── SAFETY NOTES ──")
+    for path, gap in pairs(minGaps) do
+        if gap < 0.1 and freq[path] > 5 then
+            add("  ⚠ " .. path .. " fires <100ms apart naturally — do NOT spam faster than this")
+        end
+    end
+
+    return table.concat(buf, "\n")
+end
+
+-- ==============================================================
+--  TEMPLATES + EXPORT
+-- ==============================================================
 
 local function resolvePath(path)
     local parts = {}
@@ -630,7 +1121,7 @@ local function pathToCode(path)
 end
 
 local function generateTemplates()
-    local buf = {"-- PHANTOM REMOTE TEMPLATES -- " .. GameName, "", ""}
+    local buf = {"-- PHANTOM REMOTE TEMPLATES -- " .. GameName, ""}
     for _, e in ipairs(State.remotes.events) do
         local var = "evt" .. tostring(#buf)
         table.insert(buf, "-- " .. e.path)
@@ -649,7 +1140,7 @@ local function generateTemplates()
 end
 
 local function generateSmartTemplates()
-    local buf = {"-- SMART TEMPLATES (observed deep-scan calls)", ""}
+    local buf = {"-- SMART TEMPLATES (from live traffic — replicate these exactly)", ""}
     local observed, order = {}, {}
     for _, c in ipairs(State.deepData.remoteCalls) do
         if not observed[c.path] then
@@ -662,21 +1153,20 @@ local function generateSmartTemplates()
         local data = observed[path]
         table.insert(buf, "-- " .. path .. "  (observed " .. #data.calls .. "x)")
         table.insert(buf, "local remote = " .. pathToCode(path))
-        table.insert(buf, "-- args: " .. data.calls[1].args)
+        table.insert(buf, "-- observed args: " .. data.calls[1].args)
         if data.method == "FireServer" then
-            table.insert(buf, "remote:FireServer(--[[ replicate args ]])")
+            table.insert(buf, "remote:FireServer(--[[ replicate exact args above ]])")
         else
-            table.insert(buf, "local result = remote:InvokeServer(--[[ replicate args ]])")
+            table.insert(buf, "local result = remote:InvokeServer(--[[ replicate exact args above ]])")
         end
         table.insert(buf, "")
     end
     if #order == 0 then
-        table.insert(buf, "-- none yet. run deep scan while playing.")
+        table.insert(buf, "-- no traffic yet. run deep scan + play the game's core loop.")
     end
     return table.concat(buf, "\n")
 end
 
--- export
 local CHUNK_SIZE = 3000000
 local CLIPBOARD_LIMIT = 1500000
 
@@ -725,12 +1215,15 @@ local function writeChunked(buf, baseName, ext)
     return nil, #out
 end
 
-local function buildReportBuf(includeSources)
+local function exportTXT(includeSources)
+    if includeSources == nil then includeSources = true end
+
+    -- v14 export = full report WITH intelligence sections
     local buf = {}
     local function add(t) table.insert(buf, t) end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v13 EXPORT")
+    add("  PHANTOM SCANNER v14 — FULL RECON EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(game.PlaceId))
@@ -740,6 +1233,29 @@ local function buildReportBuf(includeSources)
     add("Instances Walked: " .. State.stats.instancesWalked)
     add("Containers Failed: " .. State.stats.containersFailed)
     add("")
+
+    -- fingerprint section always first
+    if not State.fingerprint then analyzeFingerprint() end
+    for _, line in ipairs(buildFingerprintReport():split("\n")) do
+        add(line)
+    end
+    add("")
+
+    -- structure map
+    for _, line in ipairs(buildStructureMap():split("\n")) do
+        add(line)
+    end
+    add("")
+
+    -- traffic analysis
+    if #State.deepData.remoteCalls > 0 then
+        for _, line in ipairs(analyzeTraffic():split("\n")) do
+            add(line)
+        end
+        add("")
+    end
+
+    -- raw data sections
     add("========== STATS ==========")
     add("Total Scripts: " .. State.stats.total)
     add("Source captured: " .. State.stats.source)
@@ -804,20 +1320,21 @@ local function buildReportBuf(includeSources)
     add("--- Requires (" .. #State.requireMap .. ") ---")
     for _, r in ipairs(State.requireMap) do add(r.script .. " -> " .. r.target) end
     add("")
-    add("========== DEEP SCAN ==========")
+    add("========== DEEP SCAN RAW ==========")
     add("--- Remote Calls (" .. #State.deepData.remoteCalls .. ") ---")
     for _, c in ipairs(State.deepData.remoteCalls) do
         add("[" .. c.time .. "] " .. c.method .. "." .. c.remote)
         add("  Path: " .. c.path)
         add("  Args: " .. c.args)
     end
+    add("--- Invoke Returns (" .. #State.deepData.returns .. ") ---")
+    for _, r in ipairs(State.deepData.returns) do
+        add("[" .. r.time .. "] " .. r.remote)
+        add("  Returns: " .. r.returns)
+    end
     add("--- Prompt Hits (" .. #State.deepData.promptHits .. ") ---")
     for _, c in ipairs(State.deepData.promptHits) do
         add("[" .. c.time .. "] " .. c.prompt .. " | " .. c.path)
-    end
-    add("--- Spawns (" .. #State.deepData.spawns .. ") ---")
-    for _, c in ipairs(State.deepData.spawns) do
-        add("[" .. c.time .. "] " .. c.name .. " | " .. c.path)
     end
     add("")
 
@@ -831,7 +1348,7 @@ local function buildReportBuf(includeSources)
             if r.source and #r.source > 0 then
                 add(r.source)
             else
-                add("[NO SOURCE — Pass C decompile or server-only]")
+                add("[NO SOURCE — Pass C or server-only]")
             end
             add("")
             if ri % 50 == 0 then
@@ -840,14 +1357,7 @@ local function buildReportBuf(includeSources)
         end
     end
 
-    return buf
-end
-
-local function exportTXT(includeSources)
-    if includeSources == nil then includeSources = true end
-    local buf = buildReportBuf(includeSources)
     local saved, size = writeChunked(buf, safeGameName, ".txt")
-
     if saved then
         State.lastExportPath = saved
         if setclipboard and size <= CLIPBOARD_LIMIT then
@@ -885,168 +1395,55 @@ local function exportSourcesToFiles()
     notify("Sources", "Saved " .. count .. " files", 5)
 end
 
--- deep scan
-local originalNamecall = nil
-local namecallHooked = false
-
-restoreHook = function()
-    if namecallHooked and originalNamecall then
-        pcall(function()
-            local mt = getrawmetatable(game)
-            setreadonly(mt, false)
-            mt.__namecall = originalNamecall
-            setreadonly(mt, true)
-        end)
-        namecallHooked = false
-    end
-end
-
-local function disconnectDeep()
-    if connections.promptAdded then
-        pcall(function() connections.promptAdded:Disconnect() end)
-        connections.promptAdded = nil
-    end
-    if connections.spawnWatch then
-        pcall(function() connections.spawnWatch:Disconnect() end)
-        connections.spawnWatch = nil
-    end
-end
-
-local function startDeepScan(duration)
-    duration = duration or 300
-    if State.deepScanning then
-        notify("Deep Scan", "Already running", 3)
-        return
-    end
-    State.deepScanning = true
-    State.deepData = {remoteCalls = {}, promptHits = {}, spawns = {}}
-    notify("Deep Scan", "Monitoring " .. duration .. "s — play normally", 5)
-
-    connections.promptAdded = Workspace.DescendantAdded:Connect(function(d)
-        if d:IsA("ProximityPrompt") then
-            d.Triggered:Connect(function(plr)
-                if plr == LocalPlayer then
-                    table.insert(State.deepData.promptHits, {
-                        time = os.date("%H:%M:%S"),
-                        prompt = d.Name,
-                        path = d:GetFullName()
-                    })
-                end
-            end)
-        end
-    end)
-
-    connections.spawnWatch = Workspace.DescendantAdded:Connect(function(d)
-        if d:IsA("Model") and d:FindFirstChildOfClass("Humanoid") then
-            table.insert(State.deepData.spawns, {
-                time = os.date("%H:%M:%S"),
-                name = d.Name,
-                path = d:GetFullName()
-            })
-        end
-    end)
-
-    pcall(function()
-        local mt = getrawmetatable(game)
-        setreadonly(mt, false)
-        originalNamecall = mt.__namecall
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if method == "FireServer" or method == "InvokeServer" then
-                local args = {...}
-                local argStr = ""
-                for i, arg in ipairs(args) do
-                    local t = typeof(arg) == "Instance" and arg.ClassName or type(arg)
-                    argStr = argStr .. "[" .. i .. "]:" .. t .. "=" .. tostring(arg):sub(1, 30) .. " "
-                end
-                table.insert(State.deepData.remoteCalls, {
-                    time = os.date("%H:%M:%S"),
-                    method = method,
-                    remote = self.Name,
-                    path = self:GetFullName(),
-                    args = argStr
-                })
-            end
-            return originalNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
-        namecallHooked = true
-    end)
-
-    task.delay(duration, function()
-        if State.deepScanning then
-            restoreHook()
-            disconnectDeep()
-            State.deepScanning = false
-            notify("Deep Scan Done", string.format("Calls: %d | Prompts: %d | Spawns: %d",
-                #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns), 6)
-        end
-    end)
-end
-
-local function stopDeepScan()
-    if not State.deepScanning then return end
-    State.deepScanning = false
-    disconnectDeep()
-    restoreHook()
-    notify("Deep Scan Stopped", string.format("Calls: %d | Prompts: %d | Spawns: %d",
-        #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns), 5)
-end
-
 -- full pipeline
 local function runFullScan(progressCb)
     State.busy = true
     State.cancelScan = false
     State.scanStart = os.clock()
 
-    -- pass A: unified walk
     unifiedWalk(function(walked)
-        pcall(function()
-            progressCb("walking... " .. walked .. " instances")
-        end)
+        pcall(function() progressCb("walking... " .. walked .. " instances") end)
     end)
 
-    -- pass B: sources
     grabSources(function(i, total)
-        pcall(function()
-            progressCb("sources... " .. i .. " / " .. total)
-        end)
+        pcall(function() progressCb("sources... " .. i .. " / " .. total) end)
     end)
 
-    -- security
     scanSecurity()
+    analyzeFingerprint()
 
     State.scanDuration = os.clock() - State.scanStart
     State.busy = false
     State.cancelScan = false
 
+    local fp = State.fingerprint
     notify("Scan Complete",
-        string.format("%.1fs | %d instances | %d scripts | src:%d bc:%d need:%d",
-            State.scanDuration, State.stats.instancesWalked, State.stats.total,
-            State.stats.source, State.stats.bytecode, State.stats.needDecomp), 8)
+        string.format("%.1fs | %d instances | %s (%s)",
+            State.scanDuration, State.stats.instancesWalked, fp.tier, fp.tierName), 9)
 end
 
--- ============== TABS ==============
+-- ==============================================================
+--  TABS
+-- ==============================================================
 
 local TabMain = Window:CreateTab("Main", 4483345998)
-TabMain:CreateSection("Unified Scanner")
+TabMain:CreateSection("Recon Pipeline")
 
 local progressLabel = TabMain:CreateLabel("ready.")
 
 TabMain:CreateButton({
-    Name = "SCAN (walk + sources, one pass)",
+    Name = "SCAN (walk + sources + fingerprint)",
     Callback = function()
         task.spawn(function()
             runFullScan(function(text)
                 pcall(function() progressLabel:Set(text) end)
             end)
+            local fp = State.fingerprint
             pcall(function()
                 progressLabel:Set(string.format(
-                    "done %.1fs | %d instances | %d scripts | src:%d bc:%d need:%d | walkfail:%d",
+                    "done %.1fs | %d inst | %d scripts | %s — %s",
                     State.scanDuration, State.stats.instancesWalked,
-                    State.stats.total, State.stats.source,
-                    State.stats.bytecode, State.stats.needDecomp,
-                    State.stats.containersFailed))
+                    State.stats.total, fp.tier, fp.tierName))
             end)
             if refreshScriptDropdown then refreshScriptDropdown() end
         end)
@@ -1054,7 +1451,7 @@ TabMain:CreateButton({
 }, 40)
 
 TabMain:CreateButton({
-    Name = "PASS C: Decompile All Remaining",
+    Name = "Pass C: Decompile All Remaining",
     Callback = function()
         task.spawn(function()
             decompileAllRemaining(function(done, total, ok, fail)
@@ -1077,9 +1474,49 @@ TabMain:CreateButton({
     end
 })
 
+TabMain:CreateSection("Intelligence")
+
 TabMain:CreateButton({
-    Name = "Security Scan (on captured sources)",
-    Callback = function() task.spawn(scanSecurity) end
+    Name = "Generate Fingerprint Report (F9 + file)",
+    Callback = function()
+        task.spawn(function()
+            if not State.fingerprint then analyzeFingerprint() end
+            local report = buildFingerprintReport()
+            print(report)
+            if writefile then
+                writeSingle(report, safeGameName .. "_fingerprint", ".txt")
+            end
+            if setclipboard then setclipboard(report) end
+            notify("Fingerprint", State.fingerprint.tier .. " — full report in F9", 7)
+        end)
+    end
+})
+
+TabMain:CreateButton({
+    Name = "Generate Structure Map (F9)",
+    Callback = function()
+        task.spawn(function()
+            print(buildStructureMap())
+            notify("Structure", "Map printed to F9", 5)
+        end)
+    end
+})
+
+TabMain:CreateButton({
+    Name = "Analyze Traffic (F9) — cooldowns + returns",
+    Callback = function()
+        task.spawn(function()
+            if #State.deepData.remoteCalls == 0 then
+                notify("Traffic", "No traffic — run deep scan first", 4)
+                return
+            end
+            print(analyzeTraffic())
+            if writefile then
+                writeSingle(analyzeTraffic(), safeGameName .. "_traffic", ".txt")
+            end
+            notify("Traffic", "Analysis in F9 + saved", 6)
+        end)
+    end
 })
 
 -- scripts tab
@@ -1152,7 +1589,7 @@ local scriptSelectDropdown = TabScr:CreateDropdown({
 TabScr:CreateSection("Actions")
 
 TabScr:CreateButton({
-    Name = "Decompile SELECTED (one script)",
+    Name = "Decompile SELECTED",
     Callback = function()
         local r = State.selectedScript
         if not r then notify("Scripts", "Select first", 3) return end
@@ -1340,7 +1777,7 @@ TabRem:CreateButton({
             local args = parseArgs(State.remoteArgs)
             local ok, err = pcall(function() obj:FireServer(unpack(args)) end)
             notify(ok and "Fired" or "Error",
-                ok and (tostring(#args) .. " args") or tostring(err), 4)
+                ok and (tostring(#args) .. " args — watch for delayed kick") or tostring(err), 5)
         end)
     end
 })
@@ -1365,7 +1802,8 @@ TabRem:CreateButton({
                 else
                     s = tostring(res)
                 end
-                notify("Returned", s:sub(1, 200), 6)
+                notify("Returned", s:sub(1, 200), 7)
+                print("[Phantom invoke] " .. State.remotePath .. " → " .. s)
             else
                 notify("Error", tostring(res), 5)
             end
@@ -1388,13 +1826,13 @@ TabRem:CreateButton({
 })
 
 TabRem:CreateButton({
-    Name = "Smart Templates (deep scan)",
+    Name = "Smart Templates (from traffic)",
     Callback = function()
         task.spawn(function()
             local t = generateSmartTemplates()
             if setclipboard then setclipboard(t) end
             pcall(writefile, safeGameName .. "_smart_templates.lua", t)
-            notify("Smart Templates", #State.deepData.remoteCalls .. " calls", 5)
+            notify("Smart Templates", #State.deepData.remoteCalls .. " calls processed", 5)
         end)
     end
 })
@@ -1486,7 +1924,7 @@ local valueDropdown = TabVal:CreateDropdown({
 
 TabVal:CreateInput({
     Name = "Search values",
-    PlaceholderText = "Speed, Enabled, DoorKey...",
+    PlaceholderText = "cash, health, enabled, doorkey...",
     RemoveTextAfterFocusLost = false,
     Callback = function(text) State._valueQuery = text or "" end
 })
@@ -1509,6 +1947,29 @@ TabVal:CreateButton({
             if #options == 0 then options = {"no matches"} end
             pcall(function() valueDropdown:Refresh(options) end)
             notify("Values", tostring(#State.filteredValues) .. " matching", 3)
+        end)
+    end
+})
+
+TabVal:CreateButton({
+    Name = "Find Game-State Values (currency/health/etc) — F9",
+    Callback = function()
+        task.spawn(function()
+            local patterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory", "gold", "credit"}
+            local count = 0
+            print("=== GAME-STATE VALUE CANDIDATES ===")
+            for _, v in ipairs(State.objects.values) do
+                local low = v.path:lower()
+                for _, sp in ipairs(patterns) do
+                    if low:find(sp, 1, true) then
+                        print("[" .. v.class .. "] " .. v.path .. " = " .. tostring(v.val))
+                        count = count + 1
+                        break
+                    end
+                end
+                if count > 100 then print("...more") break end
+            end
+            notify("Values", count .. " state candidates in F9", 5)
         end)
     end
 })
@@ -1546,25 +2007,58 @@ TabVal:CreateButton({
 
 -- deep scan tab
 local TabDeep = Window:CreateTab("Deep Scan", 4483345998)
-TabDeep:CreateSection("Live Monitor")
+TabDeep:CreateSection("Live Traffic Monitor")
 
-local deepStatsLabel = TabDeep:CreateLabel("calls: 0 | prompts: 0 | spawns: 0")
+local deepStatsLabel = TabDeep:CreateLabel("calls: 0 | returns: 0 | prompts: 0")
 
 task.spawn(function()
     while true do
         if State.deepScanning then
             pcall(function()
-                deepStatsLabel:Set(string.format("calls: %d | prompts: %d | spawns: %d",
-                    #State.deepData.remoteCalls, #State.deepData.promptHits, #State.deepData.spawns))
+                deepStatsLabel:Set(string.format("calls: %d | returns: %d | prompts: %d",
+                    #State.deepData.remoteCalls, #State.deepData.returns, #State.deepData.promptHits))
             end)
         end
         task.wait(1)
     end
 end)
 
-TabDeep:CreateButton({Name = "Start Deep Scan (300s)", Callback = function() startDeepScan(300) end})
+TabDeep:CreateButton({Name = "Start Deep Scan (300s) — play the core loop", Callback = function() startDeepScan(300) end})
 TabDeep:CreateButton({Name = "Start Deep Scan (60s)", Callback = function() startDeepScan(60) end})
 TabDeep:CreateButton({Name = "Stop Deep Scan", Callback = function() stopDeepScan() end})
+
+TabDeep:CreateButton({
+    Name = "Print Traffic Analysis (F9)",
+    Callback = function()
+        task.spawn(function()
+            if #State.deepData.remoteCalls == 0 then
+                notify("Traffic", "No data yet", 3)
+                return
+            end
+            print(analyzeTraffic())
+            notify("Traffic", "Analysis in F9", 4)
+        end)
+    end
+})
+
+TabDeep:CreateButton({
+    Name = "Print Raw Calls (F9)",
+    Callback = function()
+        print("=== REMOTE CALLS (" .. #State.deepData.remoteCalls .. ") ===")
+        for i, c in ipairs(State.deepData.remoteCalls) do
+            if i > 100 then print("...more") break end
+            print("[" .. c.time .. "] " .. c.method .. "." .. c.remote)
+            print("  Path: " .. c.path)
+            print("  Args: " .. c.args)
+        end
+        print("=== INVOKE RETURNS (" .. #State.deepData.returns .. ") ===")
+        for i, r in ipairs(State.deepData.returns) do
+            if i > 50 then print("...more") break end
+            print("[" .. r.time .. "] " .. r.remote .. " → " .. r.returns)
+        end
+        notify("Deep Scan", "Raw data in F9", 4)
+    end
+})
 
 -- export tab
 local TabExp = Window:CreateTab("Export", 4483345998)
@@ -1573,7 +2067,7 @@ TabExp:CreateSection("Export")
 local exportLabel = TabExp:CreateLabel("filename: " .. safeGameName .. "_<ts>.txt")
 
 TabExp:CreateButton({
-    Name = "Export Full Report + Sources (chunked)",
+    Name = "Export FULL RECON (fingerprint + map + traffic + data + sources)",
     Callback = function()
         task.spawn(function()
             exportTXT(true)
@@ -1585,7 +2079,7 @@ TabExp:CreateButton({
 })
 
 TabExp:CreateButton({
-    Name = "Export Report ONLY (instant)",
+    Name = "Export Intel ONLY (no sources, instant)",
     Callback = function()
         task.spawn(function()
             exportTXT(false)
@@ -1606,7 +2100,7 @@ local TabSet = Window:CreateTab("Settings", 4483345998)
 TabSet:CreateSection("Performance")
 
 TabSet:CreateSlider({
-    Name = "Frame Budget (ms per frame, higher = faster + riskier)",
+    Name = "Frame Budget (ms per frame)",
     Range = {2, 16},
     Increment = 1,
     Suffix = "ms",
@@ -1619,7 +2113,7 @@ TabSet:CreateSlider({
 })
 
 TabSet:CreateSlider({
-    Name = "Instance Cap (hard stop)",
+    Name = "Instance Cap",
     Range = {100000, 2000000},
     Increment = 100000,
     Suffix = "inst",
@@ -1631,21 +2125,32 @@ TabSet:CreateSlider({
     end
 })
 
-TabSet:CreateSection("Filters")
+TabSet:CreateSection("Behavior")
 
 TabSet:CreateToggle({
-    Name = "Filter Junk Values (attachments etc)",
-    CurrentValue = CFG.valueFilterJunk,
-    Flag = "JunkFilter",
+    Name = "Skip Player Characters (kills avatar noise)",
+    CurrentValue = CFG.skipCharacters,
+    Flag = "SkipChars",
     Callback = function(v)
-        CFG.valueFilterJunk = v
+        CFG.skipCharacters = v
         saveConfig(CFG)
-        notify("Setting", v and "Junk filter ON" or "Junk filter OFF", 3)
+        notify("Setting", v and "Char skip ON" or "Char skip OFF", 3)
     end
 })
 
 TabSet:CreateToggle({
-    Name = "Deduplicate Scripts",
+    Name = "Capture InvokeServer Returns (server data)",
+    CurrentValue = CFG.captureReturns,
+    Flag = "CaptureRet",
+    Callback = function(v)
+        CFG.captureReturns = v
+        saveConfig(CFG)
+        notify("Setting", v and "Return capture ON" or "OFF", 3)
+    end
+})
+
+TabSet:CreateToggle({
+    Name = "Deduplicate",
     CurrentValue = CFG.dedup,
     Flag = "DedupToggle",
     Callback = function(v)
@@ -1666,13 +2171,14 @@ TabSet:CreateToggle({
     end
 })
 
--- wire dropdown refresh
+-- wire refresh
 local origRunFullScan = runFullScan
 runFullScan = function(cb)
     origRunFullScan(cb)
     refreshRemoteDropdown()
 end
 
-print("=== PHANTOM SCANNER v13 loaded ===")
+print("=== PHANTOM SCANNER v14 loaded ===")
 print("=== Game: " .. GameName .. " ===")
-notify("Phantom v13", "Unified engine — one walk, unfreezable", 6)
+print("=== Pipeline: SCAN → Fingerprint → Deep Scan → Smart Templates → Build ===")
+notify("Phantom v14", "Full recon loaded — " .. GameName, 6)
