@@ -1,6 +1,7 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v11.1 — RAYFIELD (fixed)
+--  PHANTOM SCANNER v11.2 — FREEZE FIX EDITION
+--  Budgeted decompile | Yielding scans | Chunked export
 -- ==============================================================
 
 local Players              = game:GetService("Players")
@@ -91,6 +92,11 @@ end
 
 local CFG = loadConfig()
 if CFG.dedup == nil then CFG.dedup = true end
+if CFG.safeMode == nil then CFG.safeMode = true end
+if CFG.skipCoreGui == nil then CFG.skipCoreGui = true end
+if CFG.scanCoreGui == nil then CFG.scanCoreGui = false end
+if CFG.maxSourceKB == nil then CFG.maxSourceKB = 300 end
+if CFG.maxTotalMB == nil then CFG.maxTotalMB = 30 end
 
 -- state
 local State = {
@@ -104,13 +110,14 @@ local State = {
     webhookHits      = {},
     requireMap       = {},
     deepData         = {remoteCalls = {}, promptHits = {}, spawns = {}},
-    stats            = {total = 0, success = 0, failed = 0, deduped = 0, bytecode = 0},
+    stats            = {total = 0, success = 0, failed = 0, deduped = 0, bytecode = 0, skippedCore = 0, truncated = 0},
     deepScanning     = false,
     busy             = false,
     cancelScan       = false,
     lastExportPath   = "",
     scanStart        = 0,
     scanDuration     = 0,
+    sourceBytes      = 0,
     selectedScript   = nil,
     selectedNPC      = nil,
     selectedValue    = nil,
@@ -129,7 +136,7 @@ local connections = {}
 local restoreHook
 local refreshScriptDropdown
 
--- rayfield — wrapped so load failures give a visible message
+-- rayfield
 local Rayfield, Window
 do
     local ok, result = pcall(function()
@@ -138,19 +145,14 @@ do
     if ok and type(result) == "table" then
         Rayfield = result
         Window = Rayfield:CreateWindow({
-            Name = "Phantom Scanner v11.1",
+            Name = "Phantom Scanner v11.2",
             LoadingTitle = GameName,
-            LoadingSubtitle = "by snowy-dot | v11.1",
+            LoadingSubtitle = "by snowy-dot | v11.2",
             ConfigurationSaving = {Enabled = false},
             KeySystem = false
         })
     else
         warn("[Phantom] RAYFIELD LOAD FAILED: " .. tostring(result))
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "Phantom Scanner",
-            Text = "Rayfield failed to load — check F9",
-            Duration = 10
-        })
         return
     end
 end
@@ -192,10 +194,12 @@ local function getContainers()
             list[#list+1] = {LocalPlayer.PlayerGui, "PlayerGui"}
         end
     end)
-    pcall(function()
-        local cg = gethui and gethui() or game:GetService("CoreGui")
-        if cg then list[#list+1] = {cg, "CoreGui"} end
-    end)
+    if CFG.scanCoreGui then
+        pcall(function()
+            local cg = gethui and gethui() or game:GetService("CoreGui")
+            if cg then list[#list+1] = {cg, "CoreGui"} end
+        end)
+    end
     return list
 end
 
@@ -208,24 +212,7 @@ local function quickHash(str)
     return string.format("%08x", h)
 end
 
-local function getScriptSource(script)
-    if type(getsrc) == "function" then
-        local ok, r = pcall(getsrc, script)
-        if ok and type(r) == "string" and #r > 0 then return r, "OK" end
-    end
-    if type(decompile) == "function" then
-        for _ = 1, 2 do
-            local ok, r = pcall(decompile, script)
-            if ok and type(r) == "string" and #r > 0 then return r, "OK" end
-        end
-    end
-    if type(getscriptbytecode) == "function" then
-        local ok, r = pcall(getscriptbytecode, script)
-        if ok and type(r) == "string" and #r > 0 then return r, "BYTECODE" end
-    end
-    return nil, "FAILED"
-end
-
+-- FIX 1: single source of truth for tree walking, always yields
 local function getAllDescendants(container)
     local results = {}
     local stack = {container}
@@ -239,9 +226,68 @@ local function getAllDescendants(container)
                 table.insert(stack, child)
             end
         end
-        if #results % 400 == 0 then RunService.RenderStepped:Wait() end
+        if #results % 250 == 0 then
+            RunService.RenderStepped:Wait()
+        end
     end
     return results
+end
+
+-- FIX 2: budgeted source grab — truncates + skips instead of freezing
+local function getScriptSource(script, isCoreGui)
+    -- hard skip: budget exhausted
+    local maxTotal = CFG.maxTotalMB * 1000000
+    if State.sourceBytes >= maxTotal then
+        return nil, "BUDGET"
+    end
+
+    -- coregui scripts: bytecode-fast path or full skip
+    if isCoreGui and CFG.skipCoreGui then
+        return nil, "CORESKIP"
+    end
+
+    local maxSrc = CFG.maxSourceKB * 1000
+    local src, status
+
+    if type(getsrc) == "function" then
+        local ok, r = pcall(getsrc, script)
+        if ok and type(r) == "string" and #r > 0 then
+            src = r
+            status = "OK"
+        end
+    end
+
+    if not src and type(decompile) == "function" then
+        for _ = 1, 2 do
+            local ok, r = pcall(decompile, script)
+            if ok and type(r) == "string" and #r > 0 then
+                src = r
+                status = "OK"
+                break
+            end
+        end
+    end
+
+    if not src and type(getscriptbytecode) == "function" then
+        local ok, r = pcall(getscriptbytecode, script)
+        if ok and type(r) == "string" and #r > 0 then
+            src = r
+            status = "BYTECODE"
+        end
+    end
+
+    if src then
+        if #src > maxSrc then
+            src = src:sub(1, maxSrc)
+            State.stats.truncated = State.stats.truncated + 1
+        end
+        State.sourceBytes = State.sourceBytes + #src
+    end
+
+    if src then
+        return src, status
+    end
+    return nil, "FAILED"
 end
 
 local catKeywords = {
@@ -283,18 +329,21 @@ end
 local function scanScripts(progressCb)
     State.results = {}
     State.hashes = {}
+    State.sourceBytes = 0
     State.stats.total = 0
     State.stats.success = 0
     State.stats.failed = 0
     State.stats.deduped = 0
     State.stats.bytecode = 0
+    State.stats.skippedCore = 0
+    State.stats.truncated = 0
 
     local allScripts = {}
     for _, cd in ipairs(getContainers()) do
         pcall(function()
             for _, d in ipairs(getAllDescendants(cd[1])) do
                 if d:IsA("LocalScript") or d:IsA("Script") or d:IsA("ModuleScript") then
-                    table.insert(allScripts, d)
+                    table.insert(allScripts, {inst = d, container = cd[2]})
                 end
             end
         end)
@@ -302,10 +351,14 @@ local function scanScripts(progressCb)
     end
 
     State.stats.total = #allScripts
-    notify("Scripts", "Found " .. #allScripts .. " — grabbing sources...", 3)
+    notify("Scripts", "Found " .. #allScripts .. " — scanning with budget...", 3)
 
-    for i, s in ipairs(allScripts) do
+    local yieldEvery = CFG.safeMode and 1 or 5
+
+    for i, entry in ipairs(allScripts) do
         if State.cancelScan then break end
+        local s = entry.inst
+        local isCore = (entry.container == "CoreGui")
         if s.Parent then
             local path = s:GetFullName()
             local hash = quickHash(path .. "|" .. s.ClassName)
@@ -313,38 +366,49 @@ local function scanScripts(progressCb)
                 State.stats.deduped = State.stats.deduped + 1
             else
                 State.hashes[hash] = true
-                local src, status = getScriptSource(s)
-                local cls = s.ClassName
-                table.insert(State.results, {
-                    path = path,
-                    name = s.Name,
-                    className = cls,
-                    category = categorize(path, cls, src),
-                    source = src or "",
-                    size = src and #src or 0,
-                    status = status
-                })
-                if status == "OK" then
-                    State.stats.success = State.stats.success + 1
-                elseif status == "BYTECODE" then
-                    State.stats.bytecode = State.stats.bytecode + 1
+
+                if isCore and CFG.skipCoreGui then
+                    State.stats.skippedCore = State.stats.skippedCore + 1
                 else
-                    State.stats.failed = State.stats.failed + 1
+                    local src, status = getScriptSource(s, isCore)
+                    local cls = s.ClassName
+                    table.insert(State.results, {
+                        path = path,
+                        name = s.Name,
+                        className = cls,
+                        category = categorize(path, cls, src),
+                        source = src or "",
+                        size = src and #src or 0,
+                        status = status
+                    })
+                    if status == "OK" then
+                        State.stats.success = State.stats.success + 1
+                    elseif status == "BYTECODE" then
+                        State.stats.bytecode = State.stats.bytecode + 1
+                    else
+                        State.stats.failed = State.stats.failed + 1
+                    end
                 end
             end
         end
-        if i % 15 == 0 then
-            if progressCb then progressCb(i, #allScripts) end
+        if i % yieldEvery == 0 then
+            if progressCb then
+                progressCb(i, #allScripts)
+            end
             RunService.RenderStepped:Wait()
+        end
+        if i % 100 == 0 then
+            task.wait()
         end
     end
 end
 
+-- FIX 3: remotes/objects/assets use the yielding walker, not raw GetDescendants
 local function scanRemotes()
     State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
     for _, cd in ipairs(getContainers()) do
         pcall(function()
-            for _, d in ipairs(cd[1]:GetDescendants()) do
+            for _, d in ipairs(getAllDescendants(cd[1])) do
                 if d:IsA("RemoteEvent") then
                     table.insert(State.remotes.events, {path = d:GetFullName(), name = d.Name})
                 elseif d:IsA("RemoteFunction") then
@@ -356,6 +420,7 @@ local function scanRemotes()
                 end
             end
         end)
+        if State.cancelScan then break end
     end
     notify("Remotes", string.format("Events: %d | Functions: %d",
         #State.remotes.events, #State.remotes.functions), 4)
@@ -364,7 +429,7 @@ end
 local function scanObjects()
     State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}}
     pcall(function()
-        for _, d in ipairs(Workspace:GetDescendants()) do
+        for _, d in ipairs(getAllDescendants(Workspace)) do
             if d:IsA("ProximityPrompt") then
                 table.insert(State.objects.prompts, {path = d:GetFullName(), name = d.Name})
             elseif d:IsA("ClickDetector") then
@@ -393,7 +458,7 @@ local function scanObjects()
     end)
     for _, root in ipairs({Workspace, ReplicatedStorage}) do
         pcall(function()
-            for _, d in ipairs(root:GetDescendants()) do
+            for _, d in ipairs(getAllDescendants(root)) do
                 if d:IsA("IntValue") or d:IsA("NumberValue") or d:IsA("StringValue")
                 or d:IsA("BoolValue") or d:IsA("ObjectValue") or d:IsA("Vector3Value") then
                     local entry = {path = d:GetFullName(), class = d.ClassName, ref = d}
@@ -402,6 +467,7 @@ local function scanObjects()
                 end
             end
         end)
+        if State.cancelScan then break end
     end
     notify("Objects", string.format("NPCs: %d | Prompts: %d | Values: %d",
         #State.objects.humanoids, #State.objects.prompts, #State.objects.values), 4)
@@ -411,7 +477,7 @@ local function scanAssets()
     State.assets = {sounds = {}, animations = {}, decals = {}, meshes = {}}
     for _, root in ipairs({Workspace, ReplicatedStorage}) do
         pcall(function()
-            for _, d in ipairs(root:GetDescendants()) do
+            for _, d in ipairs(getAllDescendants(root)) do
                 if d:IsA("Sound") then
                     table.insert(State.assets.sounds, {path = d:GetFullName(), id = tostring(d.SoundId)})
                 elseif d:IsA("Animation") then
@@ -423,11 +489,13 @@ local function scanAssets()
                 end
             end
         end)
+        if State.cancelScan then break end
     end
     notify("Assets", string.format("Sounds: %d | Anims: %d | Meshes: %d",
         #State.assets.sounds, #State.assets.animations, #State.assets.meshes), 4)
 end
 
+-- FIX 4: security scan yields between scripts
 local function scanSecurity()
     State.acDetections = {}
     State.bdDetections = {}
@@ -438,7 +506,7 @@ local function scanSecurity()
     local bdPatterns = {"loadstring(game:httpget", "require(", "backdoor", "getfenv(", "setfenv(", "getgenv("}
     local webhookPatterns = {"discord.com/api/webhooks", "discordapp.com/api/webhooks", "webhook"}
 
-    for _, r in ipairs(State.results) do
+    for si, r in ipairs(State.results) do
         if r.source and #r.source > 0 and r.status == "OK" then
             local lines = splitLines(r.source)
             for li, line in ipairs(lines) do
@@ -467,19 +535,21 @@ local function scanSecurity()
                 end
             end
         end
+        if si % 25 == 0 then
+            RunService.RenderStepped:Wait()
+        end
     end
     notify("Security", string.format("AC: %d | BD: %d | Webhooks: %d",
         #State.acDetections, #State.bdDetections, #State.webhookHits), 5)
 end
 
--- path resolver + templates
+-- path resolver + templates (unchanged logic)
 local function resolvePath(path)
     local parts = {}
     for p in path:gmatch("[^%.]+") do
         table.insert(parts, p)
     end
     if #parts == 0 then return nil end
-
     local cur = game
     for i, p in ipairs(parts) do
         if i == 1 then
@@ -557,8 +627,12 @@ local function generateSmartTemplates()
     return table.concat(buf, "\n")
 end
 
--- export
-local function writeMultiPath(content, baseName, ext)
+-- ============== EXPORT (FIX 5: chunked writes, capped clipboard) ==============
+
+local CLIPBOARD_LIMIT = 1500000
+local CHUNK_SIZE = 3000000
+
+local function writeSingle(content, baseName, ext)
     local timestamp = tostring(os.time())
     local attemptPaths = {
         baseName .. "_" .. timestamp .. ext,
@@ -582,25 +656,51 @@ local function writeMultiPath(content, baseName, ext)
     return nil
 end
 
-local function exportTXT()
+local function writeChunked(buf, baseName, ext)
+    local out = table.concat(buf, "\n")
+    if #out <= CHUNK_SIZE then
+        local p = writeSingle(out, baseName, ext)
+        return p, #out
+    end
+    -- multi-part export
+    local parts = math.ceil(#out / CHUNK_SIZE)
+    local savedAny = false
+    for i = 1, parts do
+        local s = (i - 1) * CHUNK_SIZE + 1
+        local e = math.min(i * CHUNK_SIZE, #out)
+        local chunk = out:sub(s, e)
+        local p = writeSingle(chunk, baseName .. "_part" .. i, ext)
+        if p then savedAny = true end
+        RunService.RenderStepped:Wait()
+    end
+    if savedAny then
+        return baseName .. "_part1-.." .. parts .. ext, #out
+    end
+    return nil, #out
+end
+
+local function buildReportBuf(includeSources)
     local buf = {}
     local function add(t) table.insert(buf, t) end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v11.1 EXPORT")
+    add("  PHANTOM SCANNER v11.2 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(game.PlaceId))
     add("Date: " .. os.date("%Y-%m-%d %H:%M:%S"))
     add("Executor: " .. executorInfo)
     add("Scan Duration: " .. string.format("%.1fs", State.scanDuration))
+    add("Source Collected: " .. string.format("%.1f MB", State.sourceBytes / 1000000))
     add("")
     add("========== STATS ==========")
     add("Total Scripts: " .. State.stats.total)
     add("Successful (source): " .. State.stats.success)
     add("Bytecode only: " .. State.stats.bytecode)
-    add("Failed (server-only): " .. State.stats.failed)
+    add("Failed (server-only/budget): " .. State.stats.failed)
     add("Deduped: " .. State.stats.deduped)
+    add("CoreGui skipped: " .. State.stats.skippedCore)
+    add("Truncated: " .. State.stats.truncated)
     add("")
     add("========== REMOTES ==========")
     add("--- RemoteEvents (" .. #State.remotes.events .. ") ---")
@@ -674,32 +774,46 @@ local function exportTXT()
         add("[" .. c.time .. "] " .. c.name .. " | " .. c.path)
     end
     add("")
-    add("========== SCRIPT SOURCES ==========")
-    add("")
-    for _, r in ipairs(State.results) do
-        add("------ " .. r.path .. " [" .. r.className .. "] ------")
-        add("Category: " .. r.category .. " | Size: " .. r.size .. " | Status: " .. r.status)
+
+    if includeSources then
+        add("========== SCRIPT SOURCES ==========")
         add("")
-        if r.source and #r.source > 0 then
-            add(r.source)
-        else
-            add("[NO SOURCE AVAILABLE]")
+        for ri, r in ipairs(State.results) do
+            add("------ " .. r.path .. " [" .. r.className .. "] ------")
+            add("Category: " .. r.category .. " | Size: " .. r.size .. " | Status: " .. r.status)
+            add("")
+            if r.source and #r.source > 0 then
+                add(r.source)
+            else
+                add("[NO SOURCE AVAILABLE]")
+            end
+            add("")
+            if ri % 50 == 0 then
+                RunService.RenderStepped:Wait()
+            end
         end
-        add("")
     end
 
-    local out = table.concat(buf, "\n")
-    local saved = writeMultiPath(out, safeGameName, ".txt")
+    return buf
+end
+
+local function exportTXT(includeSources)
+    if includeSources == nil then includeSources = true end
+    local buf = buildReportBuf(includeSources)
+    local saved, size = writeChunked(buf, safeGameName, ".txt")
+
     if saved then
         State.lastExportPath = saved
-        if setclipboard then setclipboard(out) end
-        notify("Export Saved", saved, 6)
+        if setclipboard and size <= CLIPBOARD_LIMIT then
+            -- clipboard only for small reports; big ones freeze
+            local out = table.concat(buf, "\n")
+            setclipboard(out)
+        end
+        local note = size > CLIPBOARD_LIMIT and " (too big for clipboard)" or " + clipboard"
+        notify("Export Saved", saved .. note, 6)
         return true
     else
-        if setclipboard then
-            setclipboard(out)
-            notify("Export Failed", "writefile unavailable. Copied to clipboard.", 6)
-        end
+        notify("Export Failed", "writefile unavailable", 6)
         return false
     end
 end
@@ -719,13 +833,16 @@ local function exportSourcesToFiles()
             local fname = folder .. "/" .. sanitizeFilename(r.name) .. "_" .. i .. ".lua"
             pcall(writefile, fname, "-- " .. r.path .. "\n-- " .. r.className .. " | " .. r.category .. "\n\n" .. r.source)
             count = count + 1
-            if count % 20 == 0 then RunService.RenderStepped:Wait() end
+            if count % 20 == 0 then
+                RunService.RenderStepped:Wait()
+            end
         end
     end
     notify("Sources", "Saved " .. count .. " files to " .. folder, 5)
 end
 
--- deep scan
+-- ============== DEEP SCAN ==============
+
 local originalNamecall = nil
 local namecallHooked = false
 
@@ -763,7 +880,7 @@ local function startDeepScan(duration)
     notify("Deep Scan", "Monitoring " .. duration .. "s — play normally", 5)
 
     pcall(function()
-        for _, d in ipairs(Workspace:GetDescendants()) do
+        for _, d in ipairs(getAllDescendants(Workspace)) do
             if d:IsA("ProximityPrompt") then
                 d.Triggered:Connect(function(plr)
                     if plr == LocalPlayer then
@@ -858,8 +975,7 @@ local function runDiagnostics()
     log("getsrc: " .. tostring(type(getsrc)))
     log("decompile: " .. tostring(type(decompile)))
     log("getscriptbytecode: " .. tostring(type(getscriptbytecode)))
-    log("newcclosure: " .. tostring(type(newcclosure)))
-    log("getrawmetatable: " .. tostring(type(getrawmetatable)))
+    log("Source budget: " .. CFG.maxTotalMB .. "MB used " .. string.format("%.1f", State.sourceBytes / 1000000) .. "MB")
     log("GameName: " .. GameName)
     log("PlaceId: " .. tostring(game.PlaceId))
     local report = table.concat(lines, "\n")
@@ -906,15 +1022,19 @@ TabMain:CreateButton({
         task.spawn(function()
             runScanPipeline(function(done, total)
                 pcall(function()
-                    progressLabel:Set(string.format("scanning... %d / %d (%d%%)",
-                        done, total, math.floor(done / total * 100)))
+                    progressLabel:Set(string.format(
+                        "scanning... %d / %d (%d%%) | src %.1fMB",
+                        done, total, math.floor(done / total * 100),
+                        State.sourceBytes / 1000000))
                 end)
             end)
             pcall(function()
                 progressLabel:Set(string.format(
-                    "done in %.1fs — OK:%d BC:%d Fail:%d Dup:%d",
+                    "done in %.1fs — OK:%d BC:%d Fail:%d Dup:%d CoreSkip:%d Trunc:%d",
                     State.scanDuration, State.stats.success,
-                    State.stats.bytecode, State.stats.failed, State.stats.deduped))
+                    State.stats.bytecode, State.stats.failed,
+                    State.stats.deduped, State.stats.skippedCore,
+                    State.stats.truncated))
             end)
             if refreshScriptDropdown then refreshScriptDropdown() end
         end)
@@ -1053,19 +1173,25 @@ TabScr:CreateButton({
 })
 
 TabScr:CreateButton({
-    Name = "Copy ALL Sources",
+    Name = "Copy ALL Sources (capped 1.5MB)",
     Callback = function()
         task.spawn(function()
             local all = {}
+            local total = 0
             for _, r in ipairs(State.results) do
                 if (r.status == "OK" or r.status == "BYTECODE") and r.source and #r.source > 0 then
+                    total = total + #r.source
+                    if total > CLIPBOARD_LIMIT then
+                        notify("Copy", "Capped at 1.5MB — use file export for everything", 5)
+                        break
+                    end
                     table.insert(all, "--===== " .. r.path .. " [" .. r.className .. "] =====")
                     table.insert(all, r.source)
                     table.insert(all, "")
                 end
             end
             local out = table.concat(all, "\n")
-            if setclipboard then
+            if setclipboard and #out > 0 then
                 setclipboard(out)
                 notify("Copy", tostring(#out) .. " bytes", 3)
             end
@@ -1403,65 +1529,6 @@ TabVal:CreateButton({
     end
 })
 
-TabVal:CreateSection("Ear Game Presets")
-
-TabVal:CreateButton({
-    Name = "Disable ALL Monster SpeedControllers",
-    Callback = function()
-        task.spawn(function()
-            local count = 0
-            for _, v in ipairs(State.objects.values) do
-                if v.path:find("SpeedController") and v.path:find("Enabled") then
-                    local inst = v.ref
-                    if inst and inst.Parent then
-                        pcall(function() inst.Value = false end)
-                        count = count + 1
-                    end
-                end
-            end
-            notify("Monsters", "Disabled " .. count .. " controllers", 5)
-        end)
-    end
-})
-
-TabVal:CreateButton({
-    Name = "Re-enable ALL SpeedControllers",
-    Callback = function()
-        task.spawn(function()
-            local count = 0
-            for _, v in ipairs(State.objects.values) do
-                if v.path:find("SpeedController") and v.path:find("Enabled") then
-                    local inst = v.ref
-                    if inst and inst.Parent then
-                        pcall(function() inst.Value = true end)
-                        count = count + 1
-                    end
-                end
-            end
-            notify("Monsters", "Enabled " .. count .. " controllers", 5)
-        end)
-    end
-})
-
-TabVal:CreateButton({
-    Name = "Set ALL Monster Speed to 0",
-    Callback = function()
-        task.spawn(function()
-            local count = 0
-            for _, v in ipairs(State.objects.values) do
-                if v.path:find("SpeedController") and v.path:find("Settings.Speed") then
-                    local inst = v.ref
-                    if inst and inst.Parent then
-                        pcall(function() inst.Value = 0 end)
-                        count = count + 1
-                    end
-                end
-            end
-            notify("Monsters", "Set " .. count .. " speeds to 0", 5)
-        end)
-    end
-})
-
 -- security tab
 local TabSec = Window:CreateTab("Security", 4483345998)
 TabSec:CreateSection("Detections")
@@ -1547,18 +1614,6 @@ TabDeep:CreateButton({
     end
 })
 
-TabDeep:CreateButton({
-    Name = "Print Prompt Hits (F9)",
-    Callback = function()
-        print("=== PROMPT HITS (" .. #State.deepData.promptHits .. ") ===")
-        for i, c in ipairs(State.deepData.promptHits) do
-            if i > 50 then print("...more") break end
-            print("[" .. c.time .. "] " .. c.prompt .. " | " .. c.path)
-        end
-        notify("Deep Scan", "Hits in F9", 4)
-    end
-})
-
 -- export tab
 local TabExp = Window:CreateTab("Export", 4483345998)
 TabExp:CreateSection("Export Options")
@@ -1566,12 +1621,24 @@ TabExp:CreateSection("Export Options")
 local exportLabel = TabExp:CreateLabel("filename: " .. safeGameName .. "_<timestamp>.txt")
 
 TabExp:CreateButton({
-    Name = "Export Full Report (TXT)",
+    Name = "Export Full Report + Sources (chunked)",
     Callback = function()
         task.spawn(function()
-            exportTXT()
+            exportTXT(true)
             pcall(function()
-                exportLabel:Set("last: " .. (State.lastExportPath ~= "" and State.lastExportPath or "clipboard"))
+                exportLabel:Set("last: " .. (State.lastExportPath ~= "" and State.lastExportPath or "failed"))
+            end)
+        end)
+    end
+})
+
+TabExp:CreateButton({
+    Name = "Export Report ONLY (fast, no sources)",
+    Callback = function()
+        task.spawn(function()
+            exportTXT(false)
+            pcall(function()
+                exportLabel:Set("last: " .. (State.lastExportPath ~= "" and State.lastExportPath or "failed"))
             end)
         end)
     end
@@ -1587,9 +1654,9 @@ TabExp:CreateButton({
     Callback = function()
         task.spawn(function()
             local t = generateTemplates()
-            local saved = writeMultiPath(t, safeGameName .. "_templates", ".lua")
+            local saved = writeSingle(t, safeGameName .. "_templates", ".lua")
             if setclipboard then setclipboard(t) end
-            notify("Templates", saved or "clipboard", 5)
+            notify("Templates", saved or "clipboard only", 5)
         end)
     end
 })
@@ -1599,25 +1666,81 @@ TabExp:CreateButton({
     Callback = function()
         task.spawn(function()
             local t = generateSmartTemplates()
-            local saved = writeMultiPath(t, safeGameName .. "_smart", ".lua")
+            local saved = writeSingle(t, safeGameName .. "_smart", ".lua")
             if setclipboard then setclipboard(t) end
-            notify("Smart Templates", saved or "clipboard", 5)
+            notify("Smart Templates", saved or "clipboard only", 5)
         end)
     end
 })
 
-TabExp:CreateButton({
-    Name = "Copy Full Report to Clipboard",
-    Callback = function() task.spawn(exportTXT) end
-})
-
 -- settings tab
 local TabSet = Window:CreateTab("Settings", 4483345998)
-TabSet:CreateSection("Scan Config (auto-saved)")
+TabSet:CreateSection("Performance (anti-freeze)")
+
+TabSet:CreateToggle({
+    Name = "Safe Mode (yield every script — slowest, safest)",
+    CurrentValue = CFG.safeMode,
+    Flag = "SafeModeToggle",
+    Callback = function(v)
+        CFG.safeMode = v
+        saveConfig(CFG)
+        notify("Setting", v and "Safe Mode ON" or "Safe Mode OFF (faster, riskier)", 3)
+    end
+})
+
+TabSet:CreateToggle({
+    Name = "Skip CoreGui Scripts (recommended)",
+    CurrentValue = CFG.skipCoreGui,
+    Flag = "SkipCoreGuiToggle",
+    Callback = function(v)
+        CFG.skipCoreGui = v
+        saveConfig(CFG)
+        notify("Setting", v and "CoreGui skip ON" or "CoreGui skip OFF", 3)
+    end
+})
+
+TabSet:CreateToggle({
+    Name = "Scan CoreGui Container (noise warning)",
+    CurrentValue = CFG.scanCoreGui,
+    Flag = "ScanCoreGuiToggle",
+    Callback = function(v)
+        CFG.scanCoreGui = v
+        saveConfig(CFG)
+        notify("Setting", v and "CoreGui scanning ON" or "CoreGui scanning OFF", 3)
+    end
+})
+
+TabSet:CreateSlider({
+    Name = "Max Source Size per Script (KB)",
+    Range = {50, 1000},
+    Increment = 50,
+    Suffix = "KB",
+    CurrentValue = CFG.maxSourceKB,
+    Flag = "MaxSourceKB",
+    Callback = function(v)
+        CFG.maxSourceKB = v
+        saveConfig(CFG)
+    end
+})
+
+TabSet:CreateSlider({
+    Name = "Total Source Budget (MB)",
+    Range = {5, 100},
+    Increment = 5,
+    Suffix = "MB",
+    CurrentValue = CFG.maxTotalMB,
+    Flag = "MaxTotalMB",
+    Callback = function(v)
+        CFG.maxTotalMB = v
+        saveConfig(CFG)
+    end
+})
+
+TabSet:CreateSection("Scan Config")
 
 TabSet:CreateToggle({
     Name = "Deduplicate Scripts",
-    CurrentValue = CFG.dedup ~= false,
+    CurrentValue = CFG.dedup,
     Flag = "DedupToggle",
     Callback = function(v)
         CFG.dedup = v
@@ -1626,20 +1749,19 @@ TabSet:CreateToggle({
     end
 })
 
--- wire dropdowns to populate after scans
+-- wire dropdown refresh after scans
 local origRunPipeline = runScanPipeline
 runScanPipeline = function(cb)
     origRunPipeline(cb)
     refreshRemoteDropdown()
 end
 
--- also refresh remote list on manual remote scan
 local origScanRemotes = scanRemotes
 scanRemotes = function()
     origScanRemotes()
     refreshRemoteDropdown()
 end
 
-print("=== PHANTOM SCANNER v11.1 loaded ===")
+print("=== PHANTOM SCANNER v11.2 loaded ===")
 print("=== Game: " .. GameName .. " ===")
-notify("Phantom Ready", GameName .. " | v11.1 loaded", 6)
+notify("Phantom Ready", GameName .. " | v11.2 (anti-freeze) loaded", 6)
