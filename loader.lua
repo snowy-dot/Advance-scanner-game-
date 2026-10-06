@@ -1,9 +1,8 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v16.1 — HEADLESS+ / ONE-BUTTON GUI
+--  PHANTOM SCANNER v16.2 — HEADLESS+ / ONE-BUTTON GUI (FIXED SAVE)
 --  1 button (SCAN ALL), progress bar, live status.
---  Scans everything: scripts, remotes, players, NPCs, values,
---  prompts, spawns, sounds, animations. Single .txt export.
+--  Fixed: multi-path save, chunked writes, clear output path.
 --  Verify: last line prints BUILD OK.
 -- ==============================================================
 
@@ -11,7 +10,6 @@ local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
 local HttpService        = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
-local TweenService       = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local unpack = table.unpack or unpack
@@ -30,11 +28,12 @@ local getscriptbytecode = getExecFunc("getscriptbytecode")
 local writefile         = getExecFunc("writefile")
 local isfolder          = getExecFunc("isfolder")
 local makefolder        = getExecFunc("makefolder")
-local newcclosure       = getExecFunc("newcclosure")
-local getrawmetatable   = getExecFunc("getrawmetatable")
-local setreadonly       = getExecFunc("setreadonly")
-local getnamecallmethod = getExecFunc("getnamecallmethod")
+local setclipboard      = getExecFunc("setclipboard")
 local identifyexecutor  = getExecFunc("identifyexecutor")
+
+if not writefile then
+    warn("[Phantom v16.2] CRITICAL: writefile not available on this executor. Cannot save.")
+end
 
 -- ============== GAME IDENTITY ==============
 
@@ -45,7 +44,6 @@ pcall(function()
 end)
 
 local PlaceId = game.PlaceId
-local JobId = game.JobId
 
 local executorInfo = "Unknown"
 pcall(function()
@@ -54,23 +52,107 @@ pcall(function()
 end)
 
 local function sanitizeFilename(str)
-    return tostring(str):gsub("[^%w%-_]", "_"):sub(1, 60)
+    return tostring(str):gsub("[^%w%-_]", "_"):sub(1, 50)
 end
 
 local safeGameName = sanitizeFilename(GameName)
-local ROOT_FOLDER = "PhantomScanner"
 local timestamp = os.time()
-local EXPORT_PATH = ROOT_FOLDER .. "/" .. safeGameName .. "_" .. tostring(PlaceId) .. "_" .. tostring(timestamp) .. ".txt"
+local EXPORT_FILENAME = safeGameName .. "_" .. tostring(PlaceId) .. "_" .. tostring(timestamp) .. ".txt"
 
-local function ensureFolder(path)
-    if isfolder and makefolder then
-        if not isfolder(path) then
-            pcall(makefolder, path)
-        end
+-- ============== BULLETPROOF FILE SAVE ==============
+
+local SAVED_PATH = nil -- will store the actual path used
+
+local function tryWrite(path, content)
+    local ok, err = pcall(function()
+        writefile(path, content)
+    end)
+    if ok then
+        print("[Phantom SAVE] SUCCESS: " .. path .. " (" .. math.floor(#content / 1024) .. " KB)")
+        return true
+    else
+        print("[Phantom SAVE] FAILED: " .. path .. " | error: " .. tostring(err))
+        return false
     end
 end
 
-ensureFolder(ROOT_FOLDER)
+local function attemptSave(content)
+    if not writefile then
+        print("[Phantom SAVE] no writefile — cannot save")
+        return nil
+    end
+
+    print("[Phantom SAVE] attempting save, content size: " .. #content .. " bytes")
+
+    -- Strategy 1: subfolder with makefolder
+    if makefolder and isfolder then
+        local folderOk = pcall(function()
+            if not isfolder("PhantomScanner") then
+                makefolder("PhantomScanner")
+            end
+        end)
+        if folderOk then
+            local path = "PhantomScanner/" .. EXPORT_FILENAME
+            if tryWrite(path, content) then return path end
+        end
+    end
+
+    -- Strategy 2: root directory, no subfolder
+    do
+        local path = EXPORT_FILENAME
+        if tryWrite(path, content) then return path end
+    end
+
+    -- Strategy 3: short filename in root (some executors have path length limits)
+    do
+        local path = "phantom_" .. tostring(timestamp) .. ".txt"
+        if tryWrite(path, content) then return path end
+    end
+
+    -- Strategy 4: chunked write (content too large for single write)
+    local CHUNK = 1000000 -- 1MB chunks
+    if #content > CHUNK then
+        print("[Phantom SAVE] content too large, trying chunked write...")
+        local parts = math.ceil(#content / CHUNK)
+        local allOk = true
+        for i = 1, parts do
+            local s = (i - 1) * CHUNK + 1
+            local e = math.min(i * CHUNK, #content)
+            local path = EXPORT_FILENAME:gsub("%.txt$", "_part" .. i .. ".txt")
+            if not tryWrite(path, content:sub(s, e)) then
+                allOk = false
+            end
+        end
+        if allOk then
+            local path = EXPORT_FILENAME:gsub("%.txt$", "_part1-" .. parts .. ".txt")
+            print("[Phantom SAVE] chunked write complete: " .. parts .. " parts")
+            return path
+        end
+    end
+
+    -- Strategy 5: minimal export (just index, no sources) — last resort
+    print("[Phantom SAVE] all strategies failed, trying minimal index export")
+    local minimal = {}
+    minimal[#minimal + 1] = "PHANTOM v16.2 MINIMAL EXPORT (full write failed)"
+    minimal[#minimal + 1] = "Game: " .. GameName .. " | Place: " .. tostring(PlaceId)
+    minimal[#minimal + 1] = "Scripts: " .. tostring(#State.results)
+    minimal[#minimal + 1] = "Remotes: " .. tostring(#State.remotes.events) .. "E/" .. #State.remotes.functions .. "F"
+    minimal[#minimal + 1] = "Players: " .. tostring(#State.objects.players)
+    minimal[#minimal + 1] = "NPCs: " .. tostring(#State.objects.humanoids)
+    minimal[#minimal + 1] = "Values: " .. tostring(#State.objects.values)
+    minimal[#minimal + 1] = ""
+    minimal[#minimal + 1] = "=== SCRIPT INDEX ==="
+    for _, r in ipairs(State.results) do
+        minimal[#minimal + 1] = r.className .. " | " .. r.status .. " | " .. r.path
+    end
+    local minimalContent = table.concat(minimal, "\n")
+    local path = "phantom_minimal_" .. tostring(timestamp) .. ".txt"
+    if tryWrite(path, minimalContent) then return path end
+
+    -- all failed
+    print("[Phantom SAVE] ALL STRATEGIES FAILED")
+    return nil
+end
 
 -- ============== GUI ==============
 
@@ -87,8 +169,8 @@ end
 
 local frame = Instance.new("Frame")
 frame.Name = "Main"
-frame.Size = UDim2.new(0, 320, 0, 210)
-frame.Position = UDim2.new(0.5, -160, 0.5, -105)
+frame.Size = UDim2.new(0, 340, 0, 260)
+frame.Position = UDim2.new(0.5, -170, 0.5, -130)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel = 0
 frame.Active = true
@@ -108,7 +190,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 30)
 title.Position = UDim2.new(0, 10, 0, 8)
 title.BackgroundTransparency = 1
-title.Text = "PHANTOM v16.1"
+title.Text = "PHANTOM v16.2"
 title.TextColor3 = Color3.fromRGB(200, 180, 255)
 title.TextSize = 16
 title.Font = Enum.Font.GothamBold
@@ -129,7 +211,7 @@ subtitle.Parent = frame
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 20)
-statusLabel.Position = UDim2.new(0, 10, 0, 58)
+statusLabel.Position = UDim2.new(0, 10, 0, 56)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = "idle — press SCAN ALL to begin"
 statusLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
@@ -142,7 +224,7 @@ statusLabel.Parent = frame
 -- progress bar
 local barBG = Instance.new("Frame")
 barBG.Size = UDim2.new(1, -20, 0, 18)
-barBG.Position = UDim2.new(0, 10, 0, 84)
+barBG.Position = UDim2.new(0, 10, 0, 82)
 barBG.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
 barBG.BorderSizePixel = 0
 barBG.Parent = frame
@@ -170,10 +252,10 @@ pctLabel.TextSize = 11
 pctLabel.Font = Enum.Font.GothamBold
 pctLabel.Parent = barBG
 
--- stats line (live counters)
+-- stats line
 local statsLabel = Instance.new("TextLabel")
 statsLabel.Size = UDim2.new(1, -20, 0, 34)
-statsLabel.Position = UDim2.new(0, 10, 0, 108)
+statsLabel.Position = UDim2.new(0, 10, 0, 106)
 statsLabel.BackgroundTransparency = 1
 statsLabel.Text = "scripts: 0 | remotes: 0 | npcs: 0\nplayers: 0 | values: 0 | items: 0"
 statsLabel.TextColor3 = Color3.fromRGB(160, 160, 180)
@@ -183,10 +265,23 @@ statsLabel.TextXAlignment = Enum.TextXAlignment.Left
 statsLabel.TextYAlignment = Enum.TextYAlignment.Top
 statsLabel.Parent = frame
 
+-- save path display
+local savePathLabel = Instance.new("TextLabel")
+savePathLabel.Size = UDim2.new(1, -20, 0, 16)
+savePathLabel.Position = UDim2.new(0, 10, 0, 144)
+savePathLabel.BackgroundTransparency = 1
+savePathLabel.Text = ""
+savePathLabel.TextColor3 = Color3.fromRGB(100, 200, 120)
+savePathLabel.TextSize = 10
+savePathLabel.Font = Enum.Font.Code
+savePathLabel.TextXAlignment = Enum.TextXAlignment.Left
+savePathLabel.TextTruncate = Enum.TextTruncate.AtEnd
+savePathLabel.Parent = frame
+
 -- SCAN ALL button
 local scanBtn = Instance.new("TextButton")
 scanBtn.Size = UDim2.new(1, -20, 0, 38)
-scanBtn.Position = UDim2.new(0, 10, 0, 152)
+scanBtn.Position = UDim2.new(0, 10, 0, 166)
 scanBtn.BackgroundColor3 = Color3.fromRGB(110, 70, 200)
 scanBtn.Text = "SCAN ALL"
 scanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -199,7 +294,33 @@ local btnCorner = Instance.new("UICorner")
 btnCorner.CornerRadius = UDim.new(0, 8)
 btnCorner.Parent = scanBtn
 
--- minimize / close
+-- copy path button (appears after save)
+local copyBtn = Instance.new("TextButton")
+copyBtn.Size = UDim2.new(1, -20, 0, 26)
+copyBtn.Position = UDim2.new(0, 10, 0, 210)
+copyBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+copyBtn.Text = "COPY SAVE PATH"
+copyBtn.TextColor3 = Color3.fromRGB(180, 180, 200)
+copyBtn.TextSize = 11
+copyBtn.Font = Enum.Font.Gotham
+copyBtn.Visible = false
+copyBtn.Parent = frame
+
+local copyCorner = Instance.new("UICorner")
+copyCorner.CornerRadius = UDim.new(0, 6)
+copyCorner.Parent = copyBtn
+
+copyBtn.MouseButton1Click:Connect(function()
+    if SAVED_PATH and setclipboard then
+        setclipboard(SAVED_PATH)
+        copyBtn.Text = "COPIED!"
+        task.delay(2, function()
+            copyBtn.Text = "COPY SAVE PATH"
+        end)
+    end
+end)
+
+-- close button
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 24, 0, 24)
 closeBtn.Position = UDim2.new(1, -28, 0, 6)
@@ -225,7 +346,6 @@ local function setStatus(text)
 end
 
 local function setProgress(pct)
-    -- pct: 0-1
     pct = math.clamp(pct, 0, 1)
     barFill.Size = UDim2.new(pct, 0, 1, 0)
     pctLabel.Text = tostring(math.floor(pct * 100)) .. "%"
@@ -235,20 +355,30 @@ local function setStats(line)
     statsLabel.Text = line
 end
 
+local function setSavePath(path)
+    SAVED_PATH = path
+    if path then
+        savePathLabel.Text = "saved: " .. path
+        copyBtn.Visible = true
+    else
+        savePathLabel.Text = "SAVE FAILED — check F9 console"
+        copyBtn.Visible = false
+    end
+end
+
 local function flashButton(color, text)
     scanBtn.BackgroundColor3 = color
     scanBtn.Text = text
 end
 
 local function notifyResult(success, msg)
-    -- small in-frame flash instead of external notify
     if success then
         flashButton(Color3.fromRGB(60, 180, 100), "DONE")
     else
         flashButton(Color3.fromRGB(200, 60, 60), "ERROR")
     end
     setStatus(msg)
-    task.delay(4, function()
+    task.delay(5, function()
         flashButton(Color3.fromRGB(110, 70, 200), "SCAN ALL")
     end)
 end
@@ -262,8 +392,8 @@ local CFG = {
     decompWait      = 1,
     saveBytecode    = true,
     maxBytecodeDump = 20000,
-    skipCharacters  = false, -- now we WANT player characters tracked
-    maxSourceChars  = 500000,
+    skipCharacters  = false,
+    maxSourceChars  = 300000, -- reduced from 500k to keep file size manageable
 }
 
 -- ============== STATE ==============
@@ -379,7 +509,7 @@ local function unifiedWalk()
             while #stack > 0 do
                 if not State.scanning then return end
                 if State.stats.instancesWalked >= CFG.maxInstances then
-                    setStatus("instance cap reached — results valid")
+                    setStatus("instance cap reached")
                     return
                 end
 
@@ -502,7 +632,6 @@ local function unifiedWalk()
                         elseif cls == "Model" then
                             local plr = Players:GetPlayerFromCharacter(inst)
                             if plr then
-                                -- player character tracked
                                 local okP, p = pcall(inst.GetFullName, inst)
                                 if okP and not objHashes[p] then
                                     objHashes[p] = true
@@ -614,7 +743,7 @@ local function grabSources()
             State.stats.failed = State.stats.failed + 1
         end
 
-        setProgress(i / math.max(1, #State.results))
+        setProgress(i / math.max(1, #State.results) * 0.25 + 0.05)
         setStatus("grabbing sources... " .. i .. "/" .. #State.results)
 
         if (os.clock() - frameStart) >= budget then
@@ -669,7 +798,7 @@ local function decompileAllRemaining()
             State.stats.failed = State.stats.failed + 1
         end
 
-        setProgress(i / math.max(1, #targets))
+        setProgress(i / math.max(1, #targets) * 0.2 + 0.5)
         setStatus("decompiling... " .. i .. "/" .. #targets .. " (ok:" .. ok .. " fail:" .. fail .. ")")
 
         for _ = 1, CFG.decompWait do
@@ -822,7 +951,7 @@ local function analyzeFingerprint()
     end
     if foundValidation then
         fp.serverAuthSignals = fp.serverAuthSignals + 3
-        table.insert(fp.risks, "SERVER-SIDE ACTION VALIDATION DETECTED — economy remotes fingerprinted")
+        table.insert(fp.risks, "SERVER-SIDE ACTION VALIDATION DETECTED")
     end
 
     local totalLen, totalRemotes, shortNames = 0, 0, 0
@@ -853,7 +982,7 @@ local function analyzeFingerprint()
         fp.serverAuthSignals = fp.serverAuthSignals + 3
         table.insert(fp.signals, string.format("low source visibility (%.0f%% readable)", srcRatio * 100))
         if stateCount > 20 then
-            table.insert(fp.risks, "game-state values are DISPLAY-ONLY (server ledger) — client edits won't persist")
+            table.insert(fp.risks, "game-state values are DISPLAY-ONLY (server ledger)")
             fp.clientAuthSignals = fp.clientAuthSignals - 2
         end
     end
@@ -917,19 +1046,17 @@ local function buildExport(fp, genre)
     local function add(t) buf[#buf + 1] = t end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v16.1 EXPORT")
+    add("  PHANTOM SCANNER v16.2 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(PlaceId))
-    add("Job ID: " .. tostring(JobId))
     add("Date: " .. os.date("%Y-%m-%d %H:%M:%S"))
     add("Executor: " .. executorInfo)
     add("Instances Walked: " .. State.stats.instancesWalked)
-    add("Containers Failed: " .. State.stats.containersFailed)
     add("")
 
     add("==================================================")
-    add("  PHANTOM v16.1 — BRIEFING")
+    add("  BRIEFING")
     add("==================================================")
     add("TIER: " .. fp.tier .. " — " .. fp.tierName .. " (" .. fp.confidence .. "% confidence)")
     add("GENRE: " .. genre.name .. " (" .. genre.confidence .. "% confidence)")
@@ -956,7 +1083,7 @@ local function buildExport(fp, genre)
     add("")
     add("-- NUMBERS --")
     add("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " bc:" .. State.stats.bytecode .. " need:" .. State.stats.needDecomp .. " fail:" .. State.stats.failed)
-    add("  Remotes: " .. #State.remotes.events .. "E / " .. #State.remotes.functions .. "F | Bindables: " .. #State.remotes.bindables .. "E / " .. #State.remotes.bindableFuncs .. "F")
+    add("  Remotes: " .. #State.remotes.events .. "E / " .. #State.remotes.functions .. "F")
     add("  Players: " .. #State.objects.players .. " | NPCs: " .. #State.objects.humanoids)
     add("  Values: " .. #State.objects.values .. " (game-state: " .. fp.stateCount .. ")")
     add("  Items/Tools: " .. #State.objects.tools .. " | Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
@@ -989,26 +1116,20 @@ local function buildExport(fp, genre)
     add("========== SECURITY ==========")
     add("--- Anti-Cheat Patterns (" .. #State.acDetections .. ") ---")
     for i, d in ipairs(State.acDetections) do
-        if i > 100 then add("  ...+" .. (#State.acDetections - 100) .. " more") break end
+        if i > 100 then add("  ...more") break end
         add("  " .. d.script .. " [line " .. d.line .. "] (" .. d.pattern .. "): " .. d.text)
     end
     add("")
-    add("--- Backdoor / Loadstring Patterns (" .. #State.bdDetections .. ") ---")
+    add("--- Backdoor/Loadstring (" .. #State.bdDetections .. ") ---")
     for i, d in ipairs(State.bdDetections) do
-        if i > 100 then add("  ...+" .. (#State.bdDetections - 100) .. " more") break end
+        if i > 100 then add("  ...more") break end
         add("  " .. d.script .. " [line " .. d.line .. "] (" .. d.pattern .. "): " .. d.text)
     end
     add("")
     add("--- Webhooks (" .. #State.webhookHits .. ") ---")
     for i, d in ipairs(State.webhookHits) do
-        if i > 50 then add("  ...+" .. (#State.webhookHits - 50) .. " more") break end
+        if i > 50 then add("  ...more") break end
         add("  " .. d.script .. " [line " .. d.line .. "]: " .. d.text)
-    end
-    add("")
-    add("--- Require Map (" .. #State.requireMap .. ") ---")
-    for i, d in ipairs(State.requireMap) do
-        if i > 100 then add("  ...+") break end
-        add("  " .. d.script .. " -> " .. d.target)
     end
     add("")
 
@@ -1064,7 +1185,7 @@ local function buildExport(fp, genre)
     add("")
 
     add("========== SCRIPT SOURCES ==========")
-    add("Total: " .. State.stats.total .. " scripts | SOURCE:" .. State.stats.source .. " BYTECODE:" .. State.stats.bytecode .. " FAILED:" .. State.stats.failed)
+    add("Total: " .. State.stats.total .. " | SOURCE:" .. State.stats.source .. " BYTECODE:" .. State.stats.bytecode .. " FAILED:" .. State.stats.failed)
     add("")
     for i, r in ipairs(State.results) do
         add("--------------------------------------------------")
@@ -1074,15 +1195,15 @@ local function buildExport(fp, genre)
         if r.status == "SOURCE" and #r.source > 0 then
             local src = r.source
             if #src > CFG.maxSourceChars then
-                src = src:sub(1, CFG.maxSourceChars) .. "\n-- [TRUNCATED at " .. CFG.maxSourceChars .. " chars — full size: " .. #r.source .. "]"
+                src = src:sub(1, CFG.maxSourceChars) .. "\n-- [TRUNCATED — full: " .. #r.source .. " chars]"
             end
             add(src)
         elseif r.status == "BYTECODE" and CFG.saveBytecode and #r.bytecode > 0 then
             local bc = r.bytecode
             if #bc > CFG.maxBytecodeDump then
-                bc = bc:sub(1, CFG.maxBytecodeDump) .. "\n-- [BYTECODE TRUNCATED at " .. CFG.maxBytecodeDump .. " chars — full size: " .. #r.bytecode .. "]"
+                bc = bc:sub(1, CFG.maxBytecodeDump) .. "\n-- [BYTECODE TRUNCATED]"
             end
-            add("-- BYTECODE (decompile failed — raw dump):")
+            add("-- BYTECODE:")
             add(bc)
         elseif r.status == "FAILED" then
             add("-- decompile failed (server-only or VM-packed)")
@@ -1098,45 +1219,20 @@ local function buildExport(fp, genre)
     end
 
     add("==========================================")
-    add("  END OF EXPORT — PHANTOM v16.1")
+    add("  END OF EXPORT — PHANTOM v16.2")
     add("==========================================")
 
     return table.concat(buf, "\n")
 end
 
--- ============== WRITE EXPORT ==============
-
-local function writeExport(content)
-    local ok = pcall(function()
-        writefile(EXPORT_PATH, content)
-    end)
-    if ok then
-        return true, math.floor(#content / 1024)
-    end
-
-    -- fallback: compact index
-    print("[Phantom] full write failed — retrying compact export")
-    local compact = {}
-    compact[#compact + 1] = "PHANTOM v16.1 COMPACT EXPORT (full write failed)"
-    compact[#compact + 1] = "Game: " .. GameName .. " | Place: " .. tostring(PlaceId)
-    for _, r in ipairs(State.results) do
-        compact[#compact + 1] = r.className .. " | " .. r.status .. " | " .. r.path
-    end
-    local ok2 = pcall(function()
-        writefile(EXPORT_PATH, table.concat(compact, "\n"))
-    end)
-    if ok2 then
-        return true, math.floor(#table.concat(compact, "\n") / 1024)
-    end
-    return false, 0
-end
-
--- ============== MAIN SCAN RUNNER ==============
+-- ============== MAIN ==============
 
 local function runFullScan()
     if State.scanning then return end
     State.scanning = true
     scanBtn.AutoButtonColor = false
+    setSavePath(nil)
+    copyBtn.Visible = false
 
     setProgress(0)
     setStatus("starting scan...")
@@ -1145,50 +1241,50 @@ local function runFullScan()
     task.spawn(function()
         local scanStart = os.clock()
         local success, errMsg = pcall(function()
-            -- PHASE 1: walk
             setStatus("walking instances...")
             unifiedWalk()
-            setProgress(0.25)
+            setProgress(0.05)
 
-            -- PHASE 2: grab sources
-            setStatus("grabbing sources...")
             grabSources()
             setProgress(0.5)
 
-            -- PHASE 3: decompile
             decompileAllRemaining()
             setProgress(0.7)
 
-            -- PHASE 4: security
             setStatus("scanning security patterns...")
             scanSecurity()
             setProgress(0.8)
 
-            -- PHASE 5: analysis
             setStatus("analyzing fingerprint...")
             local genre = detectGenre()
             local fp = analyzeFingerprint()
-            setProgress(0.9)
+            setProgress(0.85)
 
-            -- PHASE 6: export
             setStatus("building export file...")
             local export = buildExport(fp, genre)
-            local written, kb = writeExport(export)
+            setProgress(0.95)
+
+            setStatus("saving to executor workspace...")
+            local savedPath = attemptSave(export)
             setProgress(1)
 
             local dur = string.format("%.1fs", os.clock() - scanStart)
 
-            if written then
-                notifyResult(true, "DONE in " .. dur .. " — " .. kb .. " KB saved")
+            if savedPath then
+                setSavePath(savedPath)
+                notifyResult(true, "DONE in " .. dur .. " — saved: " .. savedPath)
                 print("==============================================")
-                print("  PHANTOM v16.1 SCAN COMPLETE")
-                print("  Output: " .. EXPORT_PATH)
+                print("  PHANTOM v16.2 SCAN COMPLETE")
+                print("  Output: " .. savedPath)
                 print("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " | bc:" .. State.stats.bytecode .. " | fail:" .. State.stats.failed)
                 print("  Tier: " .. fp.tier .. " | Genre: " .. genre.name)
                 print("==============================================")
-                print("BUILD OK")
             else
-                notifyResult(false, "scan done but write failed — check executor storage")
+                notifyResult(false, "scan done but ALL save attempts failed — check F9 console for errors")
+                if setclipboard then
+                    -- last resort: copy the path they should check
+                    setclipboard(EXPORT_FILENAME)
+                end
             end
         end)
 
@@ -1204,6 +1300,9 @@ end
 
 scanBtn.MouseButton1Click:Connect(runFullScan)
 
-print("[Phantom v16.1] loaded — GUI ready")
-print("[Phantom v16.1] Game: " .. GameName .. " | Place: " .. tostring(PlaceId))
+print("[Phantom v16.2] loaded — GUI ready")
+print("[Phantom v16.2] Game: " .. GameName .. " | Place: " .. tostring(PlaceId))
+print("[Phantom v16.2] writefile: " .. tostring(writefile ~= nil))
+print("[Phantom v16.2] makefolder: " .. tostring(makefolder ~= nil))
+print("[Phantom v16.2] isfolder: " .. tostring(isfolder ~= nil))
 print("BUILD OK")
