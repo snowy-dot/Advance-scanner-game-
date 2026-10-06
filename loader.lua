@@ -1,8 +1,9 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v16.0 — HEADLESS SINGLE-FILE EDITION
---  No GUI. Auto-scan → auto-decompile → ONE .txt export.
---  Output: workspace/PhantomScanner/<GameName>_<PlaceId>_<timestamp>.txt
+--  PHANTOM SCANNER v16.1 — HEADLESS+ / ONE-BUTTON GUI
+--  1 button (SCAN ALL), progress bar, live status.
+--  Scans everything: scripts, remotes, players, NPCs, values,
+--  prompts, spawns, sounds, animations. Single .txt export.
 --  Verify: last line prints BUILD OK.
 -- ==============================================================
 
@@ -10,6 +11,7 @@ local Players            = game:GetService("Players")
 local RunService         = game:GetService("RunService")
 local HttpService        = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService       = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local unpack = table.unpack or unpack
@@ -28,17 +30,11 @@ local getscriptbytecode = getExecFunc("getscriptbytecode")
 local writefile         = getExecFunc("writefile")
 local isfolder          = getExecFunc("isfolder")
 local makefolder        = getExecFunc("makefolder")
-local setclipboard      = getExecFunc("setclipboard")
 local newcclosure       = getExecFunc("newcclosure")
 local getrawmetatable   = getExecFunc("getrawmetatable")
 local setreadonly       = getExecFunc("setreadonly")
 local getnamecallmethod = getExecFunc("getnamecallmethod")
 local identifyexecutor  = getExecFunc("identifyexecutor")
-
-if not writefile then
-    warn("[Phantom v16] writefile unavailable — cannot export. Aborting.")
-    return
-end
 
 -- ============== GAME IDENTITY ==============
 
@@ -76,16 +72,199 @@ end
 
 ensureFolder(ROOT_FOLDER)
 
-print("==============================================")
-print("  PHANTOM SCANNER v16.0 — HEADLESS SINGLE-FILE")
-print("==============================================")
-print("  Game: " .. GameName)
-print("  Place: " .. tostring(PlaceId))
-print("  Executor: " .. executorInfo)
-print("  Output: " .. EXPORT_PATH)
-print("==============================================")
+-- ============== GUI ==============
 
-local scanStart = os.clock()
+local gui = Instance.new("ScreenGui")
+gui.Name = "PhantomScanner_" .. tostring(math.random(1000, 9999))
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function()
+    gui.Parent = gethui and gethui() or game:GetService("CoreGui")
+end)
+if not gui.Parent then
+    gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local frame = Instance.new("Frame")
+frame.Name = "Main"
+frame.Size = UDim2.new(0, 320, 0, 210)
+frame.Position = UDim2.new(0.5, -160, 0.5, -105)
+frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = frame
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(90, 60, 160)
+stroke.Thickness = 1.5
+stroke.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 30)
+title.Position = UDim2.new(0, 10, 0, 8)
+title.BackgroundTransparency = 1
+title.Text = "PHANTOM v16.1"
+title.TextColor3 = Color3.fromRGB(200, 180, 255)
+title.TextSize = 16
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+local subtitle = Instance.new("TextLabel")
+subtitle.Size = UDim2.new(1, -20, 0, 16)
+subtitle.Position = UDim2.new(0, 10, 0, 34)
+subtitle.BackgroundTransparency = 1
+subtitle.Text = GameName
+subtitle.TextColor3 = Color3.fromRGB(140, 140, 160)
+subtitle.TextSize = 11
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextXAlignment = Enum.TextXAlignment.Left
+subtitle.TextTruncate = Enum.TextTruncate.AtEnd
+subtitle.Parent = frame
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 20)
+statusLabel.Position = UDim2.new(0, 10, 0, 58)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "idle — press SCAN ALL to begin"
+statusLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+statusLabel.TextSize = 12
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+statusLabel.Parent = frame
+
+-- progress bar
+local barBG = Instance.new("Frame")
+barBG.Size = UDim2.new(1, -20, 0, 18)
+barBG.Position = UDim2.new(0, 10, 0, 84)
+barBG.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+barBG.BorderSizePixel = 0
+barBG.Parent = frame
+
+local barCorner = Instance.new("UICorner")
+barCorner.CornerRadius = UDim.new(0, 6)
+barCorner.Parent = barBG
+
+local barFill = Instance.new("Frame")
+barFill.Size = UDim2.new(0, 0, 1, 0)
+barFill.BackgroundColor3 = Color3.fromRGB(130, 90, 220)
+barFill.BorderSizePixel = 0
+barFill.Parent = barBG
+
+local fillCorner = Instance.new("UICorner")
+fillCorner.CornerRadius = UDim.new(0, 6)
+fillCorner.Parent = barFill
+
+local pctLabel = Instance.new("TextLabel")
+pctLabel.Size = UDim2.new(1, 0, 1, 0)
+pctLabel.BackgroundTransparency = 1
+pctLabel.Text = "0%"
+pctLabel.TextColor3 = Color3.fromRGB(230, 230, 240)
+pctLabel.TextSize = 11
+pctLabel.Font = Enum.Font.GothamBold
+pctLabel.Parent = barBG
+
+-- stats line (live counters)
+local statsLabel = Instance.new("TextLabel")
+statsLabel.Size = UDim2.new(1, -20, 0, 34)
+statsLabel.Position = UDim2.new(0, 10, 0, 108)
+statsLabel.BackgroundTransparency = 1
+statsLabel.Text = "scripts: 0 | remotes: 0 | npcs: 0\nplayers: 0 | values: 0 | items: 0"
+statsLabel.TextColor3 = Color3.fromRGB(160, 160, 180)
+statsLabel.TextSize = 11
+statsLabel.Font = Enum.Font.Gotham
+statsLabel.TextXAlignment = Enum.TextXAlignment.Left
+statsLabel.TextYAlignment = Enum.TextYAlignment.Top
+statsLabel.Parent = frame
+
+-- SCAN ALL button
+local scanBtn = Instance.new("TextButton")
+scanBtn.Size = UDim2.new(1, -20, 0, 38)
+scanBtn.Position = UDim2.new(0, 10, 0, 152)
+scanBtn.BackgroundColor3 = Color3.fromRGB(110, 70, 200)
+scanBtn.Text = "SCAN ALL"
+scanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+scanBtn.TextSize = 15
+scanBtn.Font = Enum.Font.GothamBold
+scanBtn.AutoButtonColor = true
+scanBtn.Parent = frame
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 8)
+btnCorner.Parent = scanBtn
+
+-- minimize / close
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 24, 0, 24)
+closeBtn.Position = UDim2.new(1, -28, 0, 6)
+closeBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 12
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.Parent = frame
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 6)
+closeCorner.Parent = closeBtn
+
+closeBtn.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+-- ============== GUI HELPERS ==============
+
+local function setStatus(text)
+    statusLabel.Text = text
+end
+
+local function setProgress(pct)
+    -- pct: 0-1
+    pct = math.clamp(pct, 0, 1)
+    barFill.Size = UDim2.new(pct, 0, 1, 0)
+    pctLabel.Text = tostring(math.floor(pct * 100)) .. "%"
+end
+
+local function setStats(line)
+    statsLabel.Text = line
+end
+
+local function flashButton(color, text)
+    scanBtn.BackgroundColor3 = color
+    scanBtn.Text = text
+end
+
+local function notifyResult(success, msg)
+    -- small in-frame flash instead of external notify
+    if success then
+        flashButton(Color3.fromRGB(60, 180, 100), "DONE")
+    else
+        flashButton(Color3.fromRGB(200, 60, 60), "ERROR")
+    end
+    setStatus(msg)
+    task.delay(4, function()
+        flashButton(Color3.fromRGB(110, 70, 200), "SCAN ALL")
+    end)
+end
+
+-- ============== CONFIG ==============
+
+local CFG = {
+    frameBudgetMS   = 8,
+    maxInstances    = 1000000,
+    decompRetries   = 2,
+    decompWait      = 1,
+    saveBytecode    = true,
+    maxBytecodeDump = 20000,
+    skipCharacters  = false, -- now we WANT player characters tracked
+    maxSourceChars  = 500000,
+}
 
 -- ============== STATE ==============
 
@@ -93,7 +272,7 @@ local State = {
     results = {},
     hashes = {},
     remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}},
-    objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}},
+    objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}, players = {}, tools = {}},
     assets  = {sounds = {}, animations = {}},
     acDetections = {},
     bdDetections = {},
@@ -103,20 +282,7 @@ local State = {
         total = 0, source = 0, bytecode = 0, needDecomp = 0, failed = 0, deduped = 0,
         instancesWalked = 0, containersFailed = 0
     },
-    cancelScan = false
-}
-
--- ============== CONFIG ==============
-
-local CFG = {
-    frameBudgetMS   = 8,        -- ms per frame before yielding
-    maxInstances    = 1000000,  -- hard walk cap
-    decompRetries   = 2,        -- decompile retry attempts per script
-    decompWait      = 1,        -- RenderStepped waits between decompiles
-    saveBytecode    = true,     -- embed raw bytecode for failed decompiles
-    maxBytecodeDump = 20000,    -- cap per-script bytecode chars (keeps file sane)
-    skipCharacters  = true,
-    maxSourceChars  = 500000,   -- cap per-script source chars in export
+    scanning = false
 }
 
 -- ============== WALK ENGINE ==============
@@ -169,14 +335,27 @@ local function quickHash(str)
     return string.format("%08x", h)
 end
 
+local function buildStatsLine()
+    return string.format(
+        "scripts: %d | remotes: %d | npcs: %d\nplayers: %d | values: %d | items: %d",
+        State.stats.total,
+        #State.remotes.events + #State.remotes.functions,
+        #State.objects.humanoids,
+        #State.objects.players,
+        #State.objects.values,
+        #State.objects.tools
+    )
+end
+
 local function unifiedWalk()
     State.results = {}
     State.hashes = {}
     State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
-    State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}}
+    State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}, players = {}, tools = {}}
     State.assets  = {sounds = {}, animations = {}}
     State.stats.instancesWalked = 0
     State.stats.containersFailed = 0
+    State.stats.total = 0
 
     local remoteHashes = {}
     local valueHashes = {}
@@ -189,17 +368,18 @@ local function unifiedWalk()
         if (os.clock() - frameStart) >= budget then
             RunService.RenderStepped:Wait()
             frameStart = os.clock()
+            setStats(buildStatsLine())
         end
     end
 
     for _, container in ipairs(getContainers()) do
-        if State.cancelScan then break end
+        if not State.scanning then break end
         local ok, err = pcall(function()
             local stack = {container}
             while #stack > 0 do
-                if State.cancelScan then return end
+                if not State.scanning then return end
                 if State.stats.instancesWalked >= CFG.maxInstances then
-                    print("[Phantom] instance cap reached — results valid")
+                    setStatus("instance cap reached — results valid")
                     return
                 end
 
@@ -231,6 +411,7 @@ local function unifiedWalk()
                                         size = 0,
                                         status = "PENDING"
                                     })
+                                    State.stats.total = #State.results
                                 end
                             end
 
@@ -279,6 +460,16 @@ local function unifiedWalk()
                                 table.insert(State.objects.spawns, {path = p, pos = okPos and pos or "?"})
                             end
 
+                        elseif cls == "Tool" then
+                            local okP, p = pcall(inst.GetFullName, inst)
+                            if okP and not objHashes[p] then
+                                objHashes[p] = true
+                                local tip = ""
+                                pcall(function() tip = tostring(inst.ToolTip) end)
+                                table.insert(State.objects.tools, {path = p, name = inst.Name, tip = tip})
+                            end
+                            table.insert(stack, inst)
+
                         elseif cls == "IntValue" or cls == "NumberValue" or cls == "StringValue"
                             or cls == "BoolValue" or cls == "ObjectValue" then
                             if not junkValueNames[inst.Name] then
@@ -309,8 +500,32 @@ local function unifiedWalk()
                             end
 
                         elseif cls == "Model" then
-                            local isChar = CFG.skipCharacters and Players:GetPlayerFromCharacter(inst)
-                            if not isChar then
+                            local plr = Players:GetPlayerFromCharacter(inst)
+                            if plr then
+                                -- player character tracked
+                                local okP, p = pcall(inst.GetFullName, inst)
+                                if okP and not objHashes[p] then
+                                    objHashes[p] = true
+                                    local hum = inst:FindFirstChildOfClass("Humanoid")
+                                    local root = inst:FindFirstChild("HumanoidRootPart") or inst.PrimaryPart
+                                    local posStr = "?"
+                                    if root then
+                                        pcall(function()
+                                            posStr = string.format("%.1f, %.1f, %.1f", root.Position.X, root.Position.Y, root.Position.Z)
+                                        end)
+                                    end
+                                    table.insert(State.objects.players, {
+                                        name = plr.Name,
+                                        displayName = plr.DisplayName,
+                                        userId = plr.UserId,
+                                        path = p,
+                                        hp = hum and hum.Health or 0,
+                                        mhp = hum and hum.MaxHealth or 0,
+                                        ws = hum and hum.WalkSpeed or 0,
+                                        pos = posStr
+                                    })
+                                end
+                            else
                                 local hum = inst:FindFirstChildOfClass("Humanoid")
                                 if hum then
                                     local okP, p = pcall(inst.GetFullName, inst)
@@ -353,7 +568,6 @@ local function unifiedWalk()
     end
 
     State.stats.total = #State.results
-    print("[Phantom] walk done — " .. State.stats.instancesWalked .. " instances, " .. State.stats.total .. " scripts")
 end
 
 -- ============== SOURCE GRAB + DECOMPILE ==============
@@ -368,7 +582,7 @@ local function grabSources()
     local frameStart = os.clock()
 
     for i, r in ipairs(State.results) do
-        if State.cancelScan then break end
+        if not State.scanning then break end
         local s = r.inst
         if s and s.Parent then
             local got = false
@@ -400,12 +614,14 @@ local function grabSources()
             State.stats.failed = State.stats.failed + 1
         end
 
+        setProgress(i / math.max(1, #State.results))
+        setStatus("grabbing sources... " .. i .. "/" .. #State.results)
+
         if (os.clock() - frameStart) >= budget then
             RunService.RenderStepped:Wait()
             frameStart = os.clock()
         end
     end
-    print("[Phantom] source grab done — src:" .. State.stats.source .. " bc:" .. State.stats.bytecode .. " need:" .. State.stats.needDecomp)
 end
 
 local function decompileOne(entry)
@@ -437,15 +653,13 @@ local function decompileAllRemaining()
     end
 
     if #targets == 0 then
-        print("[Phantom] decompile pass: nothing needs decompiling")
+        setStatus("decompile: nothing needed")
         return
     end
 
-    print("[Phantom] decompile pass: " .. #targets .. " targets")
-
     local ok, fail = 0, 0
     for i, r in ipairs(targets) do
-        if State.cancelScan then break end
+        if not State.scanning then break end
         local success = decompileOne(r)
         if success then
             ok = ok + 1
@@ -454,18 +668,17 @@ local function decompileAllRemaining()
             r.status = "FAILED"
             State.stats.failed = State.stats.failed + 1
         end
-        if i % 25 == 0 then
-            print("[Phantom] decompile progress: " .. i .. "/" .. #targets .. " (ok:" .. ok .. " fail:" .. fail .. ")")
-        end
+
+        setProgress(i / math.max(1, #targets))
+        setStatus("decompiling... " .. i .. "/" .. #targets .. " (ok:" .. ok .. " fail:" .. fail .. ")")
+
         for _ = 1, CFG.decompWait do
             RunService.RenderStepped:Wait()
         end
     end
-
-    print("[Phantom] decompile done — ok:" .. ok .. " failed:" .. fail)
 end
 
--- ============== SECURITY SCAN (source pattern matching) ==============
+-- ============== SECURITY SCAN ==============
 
 local function scanSecurity()
     State.acDetections = {}
@@ -513,7 +726,6 @@ local function scanSecurity()
             RunService.RenderStepped:Wait()
         end
     end
-    print("[Phantom] security scan — ac:" .. #State.acDetections .. " bd:" .. #State.bdDetections .. " webhook:" .. #State.webhookHits)
 end
 
 -- ============== FINGERPRINT + GENRE ==============
@@ -572,7 +784,7 @@ local function detectGenre()
     return {
         name = "Unclassified / Hybrid",
         confidence = 30,
-        advice = {"no strong genre signature — rely on tier fingerprint", "run deep traffic capture during normal play to discover the loop"}
+        advice = {"no strong genre signature — rely on tier fingerprint", "run traffic capture during normal play to discover the loop"}
     }
 end
 
@@ -583,7 +795,7 @@ local function analyzeFingerprint()
         clientAuthSignals = 0, serverAuthSignals = 0, obfuscationScore = 0, stateCount = 0
     }
 
-    local statePatterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory", "gold", "credit", "durz", "wins", "currency"}
+    local statePatterns = {"cash", "coin", "money", "gem", "token", "point", "score", "level", "xp", "health", "ammo", "inventory", "gold", "credit", "wins", "currency"}
     local stateCount = 0
     for _, v in ipairs(State.objects.values) do
         local low = v.path:lower()
@@ -684,7 +896,7 @@ local function analyzeFingerprint()
     return fp
 end
 
--- ============== SINGLE-FILE EXPORT BUILDER ==============
+-- ============== EXPORT BUILDER ==============
 
 local function fmtNPC(n)
     local posStr = "?"
@@ -695,30 +907,30 @@ local function fmtNPC(n)
         n.name, tostring(n.hp), tostring(n.mhp), tostring(n.ws), n.path, posStr)
 end
 
+local function fmtPlayer(p)
+    return string.format("%s (%s) | UserID:%d | HP:%s/%s WS:%s | %s @ %s",
+        p.name, p.displayName, p.userId, tostring(p.hp), tostring(p.mhp), tostring(p.ws), p.path, p.pos)
+end
+
 local function buildExport(fp, genre)
     local buf = {}
-    -- appending 15k+ lines to a Lua table then concat is fastest + memory-safe
     local function add(t) buf[#buf + 1] = t end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v16.0 HEADLESS EXPORT")
+    add("  PHANTOM SCANNER v16.1 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(PlaceId))
     add("Job ID: " .. tostring(JobId))
     add("Date: " .. os.date("%Y-%m-%d %H:%M:%S"))
     add("Executor: " .. executorInfo)
-    add("Scan Duration: " .. string.format("%.1fs", os.clock() - scanStart))
     add("Instances Walked: " .. State.stats.instancesWalked)
     add("Containers Failed: " .. State.stats.containersFailed)
     add("")
 
     add("==================================================")
-    add("  PHANTOM v16.0 — BRIEFING")
+    add("  PHANTOM v16.1 — BRIEFING")
     add("==================================================")
-    add("Game: " .. GameName)
-    add("Place: " .. tostring(PlaceId))
-    add("")
     add("TIER: " .. fp.tier .. " — " .. fp.tierName .. " (" .. fp.confidence .. "% confidence)")
     add("GENRE: " .. genre.name .. " (" .. genre.confidence .. "% confidence)")
     add("")
@@ -745,11 +957,11 @@ local function buildExport(fp, genre)
     add("-- NUMBERS --")
     add("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " bc:" .. State.stats.bytecode .. " need:" .. State.stats.needDecomp .. " fail:" .. State.stats.failed)
     add("  Remotes: " .. #State.remotes.events .. "E / " .. #State.remotes.functions .. "F | Bindables: " .. #State.remotes.bindables .. "E / " .. #State.remotes.bindableFuncs .. "F")
+    add("  Players: " .. #State.objects.players .. " | NPCs: " .. #State.objects.humanoids)
     add("  Values: " .. #State.objects.values .. " (game-state: " .. fp.stateCount .. ")")
-    add("  NPCs: " .. #State.objects.humanoids .. " | Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
+    add("  Items/Tools: " .. #State.objects.tools .. " | Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
     add("")
 
-    -- STRUCTURE MAP
     add("========= STRUCTURE MAP =========")
     local systems = {}
     for _, e in ipairs(State.remotes.events) do
@@ -800,6 +1012,11 @@ local function buildExport(fp, genre)
     end
     add("")
 
+    add("========== PLAYERS ==========")
+    add("--- Players (" .. #State.objects.players .. ") ---")
+    for _, p in ipairs(State.objects.players) do add(fmtPlayer(p)) end
+    add("")
+
     add("========== REMOTES ==========")
     add("--- RemoteEvents (" .. #State.remotes.events .. ") ---")
     for _, e in ipairs(State.remotes.events) do add(e.path) end
@@ -824,6 +1041,11 @@ local function buildExport(fp, genre)
     add("--- NPCs (" .. #State.objects.humanoids .. ") ---")
     for _, n in ipairs(State.objects.humanoids) do add(fmtNPC(n)) end
     add("")
+    add("--- Items/Tools (" .. #State.objects.tools .. ") ---")
+    for _, t in ipairs(State.objects.tools) do
+        add(t.path .. (t.tip ~= "" and (" | tooltip: " .. t.tip) or ""))
+    end
+    add("")
     add("--- SpawnLocations (" .. #State.objects.spawns .. ") ---")
     for _, s in ipairs(State.objects.spawns) do add(s.path .. " @ " .. s.pos) end
     add("")
@@ -841,7 +1063,6 @@ local function buildExport(fp, genre)
     for _, a in ipairs(State.assets.animations) do add(a.path .. " | " .. a.id) end
     add("")
 
-    -- SCRIPT SOURCES
     add("========== SCRIPT SOURCES ==========")
     add("Total: " .. State.stats.total .. " scripts | SOURCE:" .. State.stats.source .. " BYTECODE:" .. State.stats.bytecode .. " FAILED:" .. State.stats.failed)
     add("")
@@ -877,7 +1098,7 @@ local function buildExport(fp, genre)
     end
 
     add("==========================================")
-    add("  END OF EXPORT — PHANTOM v16.0 HEADLESS")
+    add("  END OF EXPORT — PHANTOM v16.1")
     add("==========================================")
 
     return table.concat(buf, "\n")
@@ -890,20 +1111,14 @@ local function writeExport(content)
         writefile(EXPORT_PATH, content)
     end)
     if ok then
-        print("[Phantom] export written: " .. EXPORT_PATH .. " (" .. math.floor(#content / 1024) .. " KB)")
-        return true
+        return true, math.floor(#content / 1024)
     end
 
-    -- fallback: file too big for one write? try without bytecode dumps
-    print("[Phantom] full write failed — retrying without bytecode dumps")
-    for _, r in ipairs(State.results) do
-        if r.status == "BYTECODE" then r.bytecode = "" end
-    end
-    -- rebuild is expensive; simpler: write everything except sources as a compact export
+    -- fallback: compact index
+    print("[Phantom] full write failed — retrying compact export")
     local compact = {}
-    compact[#compact + 1] = "PHANTOM v16.0 COMPACT EXPORT (write of full failed)"
+    compact[#compact + 1] = "PHANTOM v16.1 COMPACT EXPORT (full write failed)"
     compact[#compact + 1] = "Game: " .. GameName .. " | Place: " .. tostring(PlaceId)
-    compact[#compact + 1] = "Scripts found: " .. State.stats.total
     for _, r in ipairs(State.results) do
         compact[#compact + 1] = r.className .. " | " .. r.status .. " | " .. r.path
     end
@@ -911,45 +1126,84 @@ local function writeExport(content)
         writefile(EXPORT_PATH, table.concat(compact, "\n"))
     end)
     if ok2 then
-        print("[Phantom] compact export written: " .. EXPORT_PATH)
-        return true
+        return true, math.floor(#table.concat(compact, "\n") / 1024)
     end
-
-    print("[Phantom] write failed entirely — executor storage issue")
-    return false
+    return false, 0
 end
 
--- ============== MAIN ==============
+-- ============== MAIN SCAN RUNNER ==============
 
-print("[Phantom] starting full scan...")
+local function runFullScan()
+    if State.scanning then return end
+    State.scanning = true
+    scanBtn.AutoButtonColor = false
 
-unifiedWalk()
+    setProgress(0)
+    setStatus("starting scan...")
+    setStats("scripts: 0 | remotes: 0 | npcs: 0\nplayers: 0 | values: 0 | items: 0")
 
-if State.cancelScan then
-    print("[Phantom] scan canceled")
-    return
+    task.spawn(function()
+        local scanStart = os.clock()
+        local success, errMsg = pcall(function()
+            -- PHASE 1: walk
+            setStatus("walking instances...")
+            unifiedWalk()
+            setProgress(0.25)
+
+            -- PHASE 2: grab sources
+            setStatus("grabbing sources...")
+            grabSources()
+            setProgress(0.5)
+
+            -- PHASE 3: decompile
+            decompileAllRemaining()
+            setProgress(0.7)
+
+            -- PHASE 4: security
+            setStatus("scanning security patterns...")
+            scanSecurity()
+            setProgress(0.8)
+
+            -- PHASE 5: analysis
+            setStatus("analyzing fingerprint...")
+            local genre = detectGenre()
+            local fp = analyzeFingerprint()
+            setProgress(0.9)
+
+            -- PHASE 6: export
+            setStatus("building export file...")
+            local export = buildExport(fp, genre)
+            local written, kb = writeExport(export)
+            setProgress(1)
+
+            local dur = string.format("%.1fs", os.clock() - scanStart)
+
+            if written then
+                notifyResult(true, "DONE in " .. dur .. " — " .. kb .. " KB saved")
+                print("==============================================")
+                print("  PHANTOM v16.1 SCAN COMPLETE")
+                print("  Output: " .. EXPORT_PATH)
+                print("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " | bc:" .. State.stats.bytecode .. " | fail:" .. State.stats.failed)
+                print("  Tier: " .. fp.tier .. " | Genre: " .. genre.name)
+                print("==============================================")
+                print("BUILD OK")
+            else
+                notifyResult(false, "scan done but write failed — check executor storage")
+            end
+        end)
+
+        if not success then
+            notifyResult(false, "scan error: " .. tostring(errMsg))
+            warn("[Phantom] scan error: " .. tostring(errMsg))
+        end
+
+        State.scanning = false
+        scanBtn.AutoButtonColor = true
+    end)
 end
 
-grabSources()
-decompileAllRemaining()
-scanSecurity()
+scanBtn.MouseButton1Click:Connect(runFullScan)
 
-local genre = detectGenre()
-local fp = analyzeFingerprint()
-
-print("[Phantom] tier: " .. fp.tier .. " — " .. fp.tierName)
-print("[Phantom] genre: " .. genre.name .. " (" .. genre.confidence .. "%)")
-
-local export = buildExport(fp, genre)
-local written = writeExport(export)
-
-print("==============================================")
-if written then
-    print("  PHANTOM v16.0 SCAN COMPLETE")
-    print("  Output: " .. EXPORT_PATH)
-else
-    print("  PHANTOM v16.0 SCAN FINISHED (export issue)")
-end
-print("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " | bc:" .. State.stats.bytecode .. " | fail:" .. State.stats.failed)
-print("==============================================")
+print("[Phantom v16.1] loaded — GUI ready")
+print("[Phantom v16.1] Game: " .. GameName .. " | Place: " .. tostring(PlaceId))
 print("BUILD OK")
