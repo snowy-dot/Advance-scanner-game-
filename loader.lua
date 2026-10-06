@@ -1,8 +1,7 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v16.2 — HEADLESS+ / ONE-BUTTON GUI (FIXED SAVE)
---  1 button (SCAN ALL), progress bar, live status.
---  Fixed: multi-path save, chunked writes, clear output path.
+--  PHANTOM SCANNER v16.3 — SINGLE TXT, NO FOLDERS
+--  Everything dumps into ONE .txt directly in workspace root.
 --  Verify: last line prints BUILD OK.
 -- ==============================================================
 
@@ -26,13 +25,11 @@ local getsrc            = getExecFunc("getsrc")
 local decompile         = getExecFunc("decompile")
 local getscriptbytecode = getExecFunc("getscriptbytecode")
 local writefile         = getExecFunc("writefile")
-local isfolder          = getExecFunc("isfolder")
-local makefolder        = getExecFunc("makefolder")
 local setclipboard      = getExecFunc("setclipboard")
 local identifyexecutor  = getExecFunc("identifyexecutor")
 
 if not writefile then
-    warn("[Phantom v16.2] CRITICAL: writefile not available on this executor. Cannot save.")
+    warn("[Phantom v16.3] CRITICAL: writefile not available. Cannot save.")
 end
 
 -- ============== GAME IDENTITY ==============
@@ -57,100 +54,49 @@ end
 
 local safeGameName = sanitizeFilename(GameName)
 local timestamp = os.time()
-local EXPORT_FILENAME = safeGameName .. "_" .. tostring(PlaceId) .. "_" .. tostring(timestamp) .. ".txt"
+-- SINGLE FILE NAME — goes straight in workspace root, no folder
+local EXPORT_FILENAME = safeGameName .. "_" .. tostring(PlaceId) .. ".txt"
 
--- ============== BULLETPROOF FILE SAVE ==============
+-- ============== SIMPLE DIRECT SAVE ==============
 
-local SAVED_PATH = nil -- will store the actual path used
-
-local function tryWrite(path, content)
-    local ok, err = pcall(function()
-        writefile(path, content)
-    end)
-    if ok then
-        print("[Phantom SAVE] SUCCESS: " .. path .. " (" .. math.floor(#content / 1024) .. " KB)")
-        return true
-    else
-        print("[Phantom SAVE] FAILED: " .. path .. " | error: " .. tostring(err))
-        return false
-    end
-end
+local SAVED_PATH = nil
 
 local function attemptSave(content)
-    if not writefile then
-        print("[Phantom SAVE] no writefile — cannot save")
-        return nil
+    if not writefile then return nil end
+
+    -- single direct write to workspace root, no subfolder
+    local ok, err = pcall(function()
+        writefile(EXPORT_FILENAME, content)
+    end)
+
+    if ok then
+        print("[Phantom SAVE] OK: " .. EXPORT_FILENAME)
+        return EXPORT_FILENAME
     end
 
-    print("[Phantom SAVE] attempting save, content size: " .. #content .. " bytes")
+    print("[Phantom SAVE] direct write failed: " .. tostring(err))
 
-    -- Strategy 1: subfolder with makefolder
-    if makefolder and isfolder then
-        local folderOk = pcall(function()
-            if not isfolder("PhantomScanner") then
-                makefolder("PhantomScanner")
-            end
-        end)
-        if folderOk then
-            local path = "PhantomScanner/" .. EXPORT_FILENAME
-            if tryWrite(path, content) then return path end
-        end
+    -- fallback: same name, different timestamp (in case of file lock)
+    local retryName = safeGameName .. "_" .. tostring(PlaceId) .. "_" .. tostring(timestamp) .. ".txt"
+    local ok2 = pcall(function()
+        writefile(retryName, content)
+    end)
+    if ok2 then
+        print("[Phantom SAVE] OK (retry): " .. retryName)
+        return retryName
     end
 
-    -- Strategy 2: root directory, no subfolder
-    do
-        local path = EXPORT_FILENAME
-        if tryWrite(path, content) then return path end
+    -- fallback: short name (executor path length limit)
+    local shortName = "phantom_" .. tostring(timestamp) .. ".txt"
+    local ok3 = pcall(function()
+        writefile(shortName, content)
+    end)
+    if ok3 then
+        print("[Phantom SAVE] OK (short): " .. shortName)
+        return shortName
     end
 
-    -- Strategy 3: short filename in root (some executors have path length limits)
-    do
-        local path = "phantom_" .. tostring(timestamp) .. ".txt"
-        if tryWrite(path, content) then return path end
-    end
-
-    -- Strategy 4: chunked write (content too large for single write)
-    local CHUNK = 1000000 -- 1MB chunks
-    if #content > CHUNK then
-        print("[Phantom SAVE] content too large, trying chunked write...")
-        local parts = math.ceil(#content / CHUNK)
-        local allOk = true
-        for i = 1, parts do
-            local s = (i - 1) * CHUNK + 1
-            local e = math.min(i * CHUNK, #content)
-            local path = EXPORT_FILENAME:gsub("%.txt$", "_part" .. i .. ".txt")
-            if not tryWrite(path, content:sub(s, e)) then
-                allOk = false
-            end
-        end
-        if allOk then
-            local path = EXPORT_FILENAME:gsub("%.txt$", "_part1-" .. parts .. ".txt")
-            print("[Phantom SAVE] chunked write complete: " .. parts .. " parts")
-            return path
-        end
-    end
-
-    -- Strategy 5: minimal export (just index, no sources) — last resort
-    print("[Phantom SAVE] all strategies failed, trying minimal index export")
-    local minimal = {}
-    minimal[#minimal + 1] = "PHANTOM v16.2 MINIMAL EXPORT (full write failed)"
-    minimal[#minimal + 1] = "Game: " .. GameName .. " | Place: " .. tostring(PlaceId)
-    minimal[#minimal + 1] = "Scripts: " .. tostring(#State.results)
-    minimal[#minimal + 1] = "Remotes: " .. tostring(#State.remotes.events) .. "E/" .. #State.remotes.functions .. "F"
-    minimal[#minimal + 1] = "Players: " .. tostring(#State.objects.players)
-    minimal[#minimal + 1] = "NPCs: " .. tostring(#State.objects.humanoids)
-    minimal[#minimal + 1] = "Values: " .. tostring(#State.objects.values)
-    minimal[#minimal + 1] = ""
-    minimal[#minimal + 1] = "=== SCRIPT INDEX ==="
-    for _, r in ipairs(State.results) do
-        minimal[#minimal + 1] = r.className .. " | " .. r.status .. " | " .. r.path
-    end
-    local minimalContent = table.concat(minimal, "\n")
-    local path = "phantom_minimal_" .. tostring(timestamp) .. ".txt"
-    if tryWrite(path, minimalContent) then return path end
-
-    -- all failed
-    print("[Phantom SAVE] ALL STRATEGIES FAILED")
+    print("[Phantom SAVE] ALL ATTEMPTS FAILED")
     return nil
 end
 
@@ -190,7 +136,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 30)
 title.Position = UDim2.new(0, 10, 0, 8)
 title.BackgroundTransparency = 1
-title.Text = "PHANTOM v16.2"
+title.Text = "PHANTOM v16.3"
 title.TextColor3 = Color3.fromRGB(200, 180, 255)
 title.TextSize = 16
 title.Font = Enum.Font.GothamBold
@@ -213,7 +159,7 @@ local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -20, 0, 20)
 statusLabel.Position = UDim2.new(0, 10, 0, 56)
 statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "idle — press SCAN ALL to begin"
+statusLabel.Text = "idle — press SCAN ALL"
 statusLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
 statusLabel.TextSize = 12
 statusLabel.Font = Enum.Font.Gotham
@@ -221,7 +167,6 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 statusLabel.Parent = frame
 
--- progress bar
 local barBG = Instance.new("Frame")
 barBG.Size = UDim2.new(1, -20, 0, 18)
 barBG.Position = UDim2.new(0, 10, 0, 82)
@@ -252,7 +197,6 @@ pctLabel.TextSize = 11
 pctLabel.Font = Enum.Font.GothamBold
 pctLabel.Parent = barBG
 
--- stats line
 local statsLabel = Instance.new("TextLabel")
 statsLabel.Size = UDim2.new(1, -20, 0, 34)
 statsLabel.Position = UDim2.new(0, 10, 0, 106)
@@ -265,7 +209,6 @@ statsLabel.TextXAlignment = Enum.TextXAlignment.Left
 statsLabel.TextYAlignment = Enum.TextYAlignment.Top
 statsLabel.Parent = frame
 
--- save path display
 local savePathLabel = Instance.new("TextLabel")
 savePathLabel.Size = UDim2.new(1, -20, 0, 16)
 savePathLabel.Position = UDim2.new(0, 10, 0, 144)
@@ -278,7 +221,6 @@ savePathLabel.TextXAlignment = Enum.TextXAlignment.Left
 savePathLabel.TextTruncate = Enum.TextTruncate.AtEnd
 savePathLabel.Parent = frame
 
--- SCAN ALL button
 local scanBtn = Instance.new("TextButton")
 scanBtn.Size = UDim2.new(1, -20, 0, 38)
 scanBtn.Position = UDim2.new(0, 10, 0, 166)
@@ -294,7 +236,6 @@ local btnCorner = Instance.new("UICorner")
 btnCorner.CornerRadius = UDim.new(0, 8)
 btnCorner.Parent = scanBtn
 
--- copy path button (appears after save)
 local copyBtn = Instance.new("TextButton")
 copyBtn.Size = UDim2.new(1, -20, 0, 26)
 copyBtn.Position = UDim2.new(0, 10, 0, 210)
@@ -320,7 +261,6 @@ copyBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- close button
 local closeBtn = Instance.new("TextButton")
 closeBtn.Size = UDim2.new(0, 24, 0, 24)
 closeBtn.Position = UDim2.new(1, -28, 0, 6)
@@ -341,9 +281,7 @@ end)
 
 -- ============== GUI HELPERS ==============
 
-local function setStatus(text)
-    statusLabel.Text = text
-end
+local function setStatus(text) statusLabel.Text = text end
 
 local function setProgress(pct)
     pct = math.clamp(pct, 0, 1)
@@ -351,9 +289,7 @@ local function setProgress(pct)
     pctLabel.Text = tostring(math.floor(pct * 100)) .. "%"
 end
 
-local function setStats(line)
-    statsLabel.Text = line
-end
+local function setStats(line) statsLabel.Text = line end
 
 local function setSavePath(path)
     SAVED_PATH = path
@@ -361,7 +297,7 @@ local function setSavePath(path)
         savePathLabel.Text = "saved: " .. path
         copyBtn.Visible = true
     else
-        savePathLabel.Text = "SAVE FAILED — check F9 console"
+        savePathLabel.Text = "SAVE FAILED — check F9"
         copyBtn.Visible = false
     end
 end
@@ -393,7 +329,7 @@ local CFG = {
     saveBytecode    = true,
     maxBytecodeDump = 20000,
     skipCharacters  = false,
-    maxSourceChars  = 300000, -- reduced from 500k to keep file size manageable
+    maxSourceChars  = 300000,
 }
 
 -- ============== STATE ==============
@@ -743,7 +679,7 @@ local function grabSources()
             State.stats.failed = State.stats.failed + 1
         end
 
-        setProgress(i / math.max(1, #State.results) * 0.25 + 0.05)
+        setProgress(i / math.max(1, #State.results) * 0.45 + 0.05)
         setStatus("grabbing sources... " .. i .. "/" .. #State.results)
 
         if (os.clock() - frameStart) >= budget then
@@ -781,10 +717,7 @@ local function decompileAllRemaining()
         end
     end
 
-    if #targets == 0 then
-        setStatus("decompile: nothing needed")
-        return
-    end
+    if #targets == 0 then return end
 
     local ok, fail = 0, 0
     for i, r in ipairs(targets) do
@@ -798,8 +731,8 @@ local function decompileAllRemaining()
             State.stats.failed = State.stats.failed + 1
         end
 
-        setProgress(i / math.max(1, #targets) * 0.2 + 0.5)
-        setStatus("decompiling... " .. i .. "/" .. #targets .. " (ok:" .. ok .. " fail:" .. fail .. ")")
+        setProgress(i / math.max(1, #targets) * 0.25 + 0.5)
+        setStatus("decompiling... " .. i .. "/" .. #targets)
 
         for _ = 1, CFG.decompWait do
             RunService.RenderStepped:Wait()
@@ -876,21 +809,21 @@ local function detectGenre()
 
     local genres = {
         {name = "Tycoon / Simulator", kws = {"tycoon", "dropper", "collector", "rebirth", "prestige", "autofarm", "upgrade", "factory", "cash", "income", "plot"},
-            advice = {"currency/income remotes are the target — find the collect/claim pattern", "rebirth/upgrade remotes often have thin validation in sims", "auto-farm = loop the collect remote with observed cooldown"}},
+            advice = {"currency/income remotes are the target", "rebirth/upgrade remotes often have thin validation", "auto-farm = loop the collect remote with observed cooldown"}},
         {name = "Tower / Obby", kws = {"obby", "stage", "checkpoint", "tower", "parkour", "killbrick", "jumps", "floor"},
-            advice = {"checkpoint remotes = whole exploit surface — skip-to-stage is classic", "killbricks client-editable visually — walk through locally", "stage values replicated = check values for stage number"}},
+            advice = {"checkpoint remotes = skip-to-stage is classic", "killbricks client-editable visually", "stage values replicated = check values"}},
         {name = "Horror / Survival", kws = {"monster", "jumpscare", "night", "survive", "hide", "escape", "spawnmonster", "chase", "scary", "demon"},
-            advice = {"monster AI server-side but paths/values may replicate — check values", "ESP on monsters is main weapon — highlights through walls", "door/escape remotes usually validate items — deep scan unlock sequence"}},
+            advice = {"ESP on monsters is main weapon", "door/escape remotes usually validate items", "monster paths/values may replicate"}},
         {name = "Shooter / Fighting", kws = {"gun", "shoot", "damage", "bullet", "weapon", "reload", "ammo", "health", "kill", "hit", "sword", "attack", "combat"},
-            advice = {"hit/damage remotes ALWAYS validated in shooters — never forge", "weapon data (fire rate, spread) often client-side = visual mods work", "ESP + name tags are the safe surface"}},
+            advice = {"hit/damage remotes ALWAYS validated in shooters", "weapon data often client-side = visual mods work", "ESP + name tags are the safe surface"}},
         {name = "Roleplay / Social", kws = {"house", "furniture", "job", "work", "roleplay", "adopt", "family", "money", "buy", "shop", "vehicle", "car", "eat", "perk", "skin"},
-            advice = {"job/work remotes replicate real actions — TP farming through the actual loop is safest", "vehicle remotes often accept simple args — test on alt", "furniture/building placement remotes usually validate ownership"}},
+            advice = {"job/work remotes replicate real actions", "vehicle remotes often accept simple args", "furniture/building remotes usually validate ownership"}},
         {name = "Racing / Vehicle", kws = {"car", "vehicle", "race", "speed", "drive", "engine", "wheel", "crush", "drift", "chassis", "seat"},
-            advice = {"vehicle physics often client-predicted = speed/handling mods work visually", "race checkpoint remotes can be distance-validated — check traffic gaps", "vehicle stats replicated as values = database browsing is free intel"}},
+            advice = {"vehicle physics often client-predicted", "race checkpoint remotes can be distance-validated", "vehicle stats replicated = free intel"}},
         {name = "Clicker / Incremental", kws = {"click", "tap", "mult", "multiplier", "pet", "egg", "hatch", "clicks", "cps", "energy"},
-            advice = {"click remotes are the core loop — capture natural click rate, match it", "pet hatch remotes usually validate currency server-side", "multiplier values client-visible = check for writable boosts"}},
+            advice = {"click remotes are the core loop", "pet hatch remotes validate currency server-side", "multiplier values client-visible = check for writable boosts"}},
         {name = "Social Hangout", kws = {"emote", "music", "boombox", "radio", "avatar", "vip", "social", "chat", "dance"},
-            advice = {"mostly client-visual surface — emotes, music, avatar mods", "few exploit targets; genre is about cosmetic freedom", "boombox/music remotes sometimes accept any id — test on alt"}},
+            advice = {"mostly client-visual surface", "few exploit targets", "boombox/music remotes sometimes accept any id"}},
     }
 
     local best, bestScore = nil, 0
@@ -903,18 +836,10 @@ local function detectGenre()
     end
 
     if best and bestScore >= 3 then
-        return {
-            name = best.name,
-            confidence = math.min(95, 40 + bestScore * 2),
-            advice = best.advice
-        }
+        return {name = best.name, confidence = math.min(95, 40 + bestScore * 2), advice = best.advice}
     end
 
-    return {
-        name = "Unclassified / Hybrid",
-        confidence = 30,
-        advice = {"no strong genre signature — rely on tier fingerprint", "run traffic capture during normal play to discover the loop"}
-    }
+    return {name = "Unclassified / Hybrid", confidence = 30, advice = {"no strong genre signature", "run traffic capture to discover the loop"}}
 end
 
 local function analyzeFingerprint()
@@ -936,23 +861,6 @@ local function analyzeFingerprint()
         end
     end
     fp.stateCount = stateCount
-
-    local validationNames = {"dataverification", "validate", "anticheat", "securitycheck", "verifyaction", "integritycheck"}
-    local foundValidation = false
-    for _, b in ipairs(State.remotes.bindables) do
-        local low = b.path:lower()
-        for _, vn in ipairs(validationNames) do
-            if low:find(vn, 1, true) then
-                foundValidation = true
-                table.insert(fp.signals, "validation bindable: " .. b.path)
-                break
-            end
-        end
-    end
-    if foundValidation then
-        fp.serverAuthSignals = fp.serverAuthSignals + 3
-        table.insert(fp.risks, "SERVER-SIDE ACTION VALIDATION DETECTED")
-    end
 
     local totalLen, totalRemotes, shortNames = 0, 0, 0
     for _, e in ipairs(State.remotes.events) do
@@ -981,33 +889,23 @@ local function analyzeFingerprint()
     elseif srcRatio < 0.3 and total > 0 then
         fp.serverAuthSignals = fp.serverAuthSignals + 3
         table.insert(fp.signals, string.format("low source visibility (%.0f%% readable)", srcRatio * 100))
-        if stateCount > 20 then
-            table.insert(fp.risks, "game-state values are DISPLAY-ONLY (server ledger)")
-            fp.clientAuthSignals = fp.clientAuthSignals - 2
-        end
     end
 
     if stateCount > 20 and srcRatio >= 0.3 then
         fp.clientAuthSignals = fp.clientAuthSignals + 2
         table.insert(fp.signals, stateCount .. " game-state values client-visible — likely writable")
-        table.insert(fp.recommendations, "check values for currency/inventory — try editing")
     end
 
     if #State.webhookHits > 0 then
-        table.insert(fp.risks, "GAME LOGS TO DISCORD WEBHOOKS — actions may be reported live")
+        table.insert(fp.risks, "GAME LOGS TO DISCORD WEBHOOKS")
         fp.serverAuthSignals = fp.serverAuthSignals + 1
-    end
-
-    if #State.acDetections > 10 then
-        fp.serverAuthSignals = fp.serverAuthSignals + 1
-        table.insert(fp.signals, #State.acDetections .. " anti-cheat lines in source")
     end
 
     local score = fp.serverAuthSignals - fp.clientAuthSignals
     if score >= 4 then
         fp.tier, fp.tierName, fp.confidence = "TIER 3", "server-auth + hardened", 85
-        table.insert(fp.recommendations, "SAFE: TPs, ESP, fullbright, replicated-data browsers")
-        table.insert(fp.recommendations, "AVOID: economy/damage remotes — validation + ban teams")
+        table.insert(fp.recommendations, "SAFE: TPs, ESP, fullbright, data browsers")
+        table.insert(fp.recommendations, "AVOID: economy/damage remotes")
     elseif score >= 1 then
         fp.tier, fp.tierName, fp.confidence = "TIER 2", "hybrid validation", 70
         table.insert(fp.recommendations, "SAFE: movement, ESP, TPs, prompt automation")
@@ -1015,11 +913,6 @@ local function analyzeFingerprint()
     else
         fp.tier, fp.tierName, fp.confidence = "TIER 1", "client-authoritative", 75
         table.insert(fp.recommendations, "FULL SURFACE: value edits, remote firing, auto-farm")
-    end
-
-    if fp.obfuscationScore >= 2 and fp.tier == "TIER 1" then
-        fp.tier, fp.confidence = "TIER 2", 60
-        table.insert(fp.risks, "downgraded to tier 2 — obfuscation despite visible sources")
     end
 
     return fp
@@ -1046,7 +939,7 @@ local function buildExport(fp, genre)
     local function add(t) buf[#buf + 1] = t end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v16.2 EXPORT")
+    add("  PHANTOM SCANNER v16.3 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(PlaceId))
@@ -1058,15 +951,11 @@ local function buildExport(fp, genre)
     add("==================================================")
     add("  BRIEFING")
     add("==================================================")
-    add("TIER: " .. fp.tier .. " — " .. fp.tierName .. " (" .. fp.confidence .. "% confidence)")
-    add("GENRE: " .. genre.name .. " (" .. genre.confidence .. "% confidence)")
+    add("TIER: " .. fp.tier .. " — " .. fp.tierName .. " (" .. fp.confidence .. "%)")
+    add("GENRE: " .. genre.name .. " (" .. genre.confidence .. "%)")
     add("")
     add("-- TIER SIGNALS --")
-    if #fp.signals > 0 then
-        for _, s in ipairs(fp.signals) do add("  * " .. s) end
-    else
-        add("  (none)")
-    end
+    for _, s in ipairs(fp.signals) do add("  * " .. s) end
     add("")
     add("-- RISKS --")
     if #fp.risks > 0 then
@@ -1078,39 +967,15 @@ local function buildExport(fp, genre)
     add("-- TIER APPROACH --")
     for _, rec in ipairs(fp.recommendations) do add("  > " .. rec) end
     add("")
-    add("-- GENRE-SPECIFIC PLAYS --")
+    add("-- GENRE PLAYS --")
     for _, a in ipairs(genre.advice) do add("  + " .. a) end
     add("")
     add("-- NUMBERS --")
-    add("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " bc:" .. State.stats.bytecode .. " need:" .. State.stats.needDecomp .. " fail:" .. State.stats.failed)
+    add("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " bc:" .. State.stats.bytecode .. " fail:" .. State.stats.failed)
     add("  Remotes: " .. #State.remotes.events .. "E / " .. #State.remotes.functions .. "F")
     add("  Players: " .. #State.objects.players .. " | NPCs: " .. #State.objects.humanoids)
-    add("  Values: " .. #State.objects.values .. " (game-state: " .. fp.stateCount .. ")")
-    add("  Items/Tools: " .. #State.objects.tools .. " | Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
-    add("")
-
-    add("========= STRUCTURE MAP =========")
-    local systems = {}
-    for _, e in ipairs(State.remotes.events) do
-        local parent = e.path:match("^(.+)%.[^%.]+$") or "root"
-        systems[parent] = systems[parent] or {events = 0, funcs = 0}
-        systems[parent].events = systems[parent].events + 1
-    end
-    for _, f in ipairs(State.remotes.functions) do
-        local parent = f.path:match("^(.+)%.[^%.]+$") or "root"
-        systems[parent] = systems[parent] or {events = 0, funcs = 0}
-        systems[parent].funcs = systems[parent].funcs + 1
-    end
-    local sorted = {}
-    for name, data in pairs(systems) do
-        table.insert(sorted, {name = name, events = data.events, funcs = data.funcs})
-    end
-    table.sort(sorted, function(a, b) return (a.events + a.funcs) > (b.events + b.funcs) end)
-    add("REMOTE SUB-SYSTEMS:")
-    for i, s in ipairs(sorted) do
-        if i > 40 then add("  ...+" .. (#sorted - 40) .. " more") break end
-        add(string.format("  [%dE/%dF] %s", s.events, s.funcs, s.name))
-    end
+    add("  Values: " .. #State.objects.values .. " | Items: " .. #State.objects.tools)
+    add("  Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
     add("")
 
     add("========== SECURITY ==========")
@@ -1134,7 +999,6 @@ local function buildExport(fp, genre)
     add("")
 
     add("========== PLAYERS ==========")
-    add("--- Players (" .. #State.objects.players .. ") ---")
     for _, p in ipairs(State.objects.players) do add(fmtPlayer(p)) end
     add("")
 
@@ -1206,9 +1070,9 @@ local function buildExport(fp, genre)
             add("-- BYTECODE:")
             add(bc)
         elseif r.status == "FAILED" then
-            add("-- decompile failed (server-only or VM-packed)")
+            add("-- decompile failed")
         elseif r.status == "GONE" then
-            add("-- script destroyed before capture")
+            add("-- script destroyed")
         else
             add("-- no data")
         end
@@ -1219,7 +1083,7 @@ local function buildExport(fp, genre)
     end
 
     add("==========================================")
-    add("  END OF EXPORT — PHANTOM v16.2")
+    add("  END OF EXPORT — PHANTOM v16.3")
     add("==========================================")
 
     return table.concat(buf, "\n")
@@ -1231,7 +1095,6 @@ local function runFullScan()
     if State.scanning then return end
     State.scanning = true
     scanBtn.AutoButtonColor = false
-    setSavePath(nil)
     copyBtn.Visible = false
 
     setProgress(0)
@@ -1249,22 +1112,22 @@ local function runFullScan()
             setProgress(0.5)
 
             decompileAllRemaining()
-            setProgress(0.7)
+            setProgress(0.75)
 
-            setStatus("scanning security patterns...")
+            setStatus("security scan...")
             scanSecurity()
-            setProgress(0.8)
+            setProgress(0.82)
 
-            setStatus("analyzing fingerprint...")
+            setStatus("analyzing...")
             local genre = detectGenre()
             local fp = analyzeFingerprint()
-            setProgress(0.85)
+            setProgress(0.87)
 
-            setStatus("building export file...")
+            setStatus("building export...")
             local export = buildExport(fp, genre)
             setProgress(0.95)
 
-            setStatus("saving to executor workspace...")
+            setStatus("saving to workspace root...")
             local savedPath = attemptSave(export)
             setProgress(1)
 
@@ -1274,17 +1137,12 @@ local function runFullScan()
                 setSavePath(savedPath)
                 notifyResult(true, "DONE in " .. dur .. " — saved: " .. savedPath)
                 print("==============================================")
-                print("  PHANTOM v16.2 SCAN COMPLETE")
-                print("  Output: " .. savedPath)
-                print("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " | bc:" .. State.stats.bytecode .. " | fail:" .. State.stats.failed)
+                print("  SCAN COMPLETE — saved as: " .. savedPath)
+                print("  Scripts: " .. State.stats.total .. " | src:" .. State.stats.source .. " | fail:" .. State.stats.failed)
                 print("  Tier: " .. fp.tier .. " | Genre: " .. genre.name)
                 print("==============================================")
             else
-                notifyResult(false, "scan done but ALL save attempts failed — check F9 console for errors")
-                if setclipboard then
-                    -- last resort: copy the path they should check
-                    setclipboard(EXPORT_FILENAME)
-                end
+                notifyResult(false, "ALL SAVE ATTEMPTS FAILED — check F9")
             end
         end)
 
@@ -1300,9 +1158,6 @@ end
 
 scanBtn.MouseButton1Click:Connect(runFullScan)
 
-print("[Phantom v16.2] loaded — GUI ready")
-print("[Phantom v16.2] Game: " .. GameName .. " | Place: " .. tostring(PlaceId))
-print("[Phantom v16.2] writefile: " .. tostring(writefile ~= nil))
-print("[Phantom v16.2] makefolder: " .. tostring(makefolder ~= nil))
-print("[Phantom v16.2] isfolder: " .. tostring(isfolder ~= nil))
+print("[Phantom v16.3] loaded — Game: " .. GameName)
+print("[Phantom v16.3] will save as: " .. EXPORT_FILENAME .. " (workspace root, no folder)")
 print("BUILD OK")
