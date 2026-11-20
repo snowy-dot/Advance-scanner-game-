@@ -1,10 +1,11 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v17.0 — SMITH UPGRADE
---  UI: WindUI (primary) → Rayfield → inline fallback
---  New: staged scan buttons (each with description), live remote spy,
---       script browser, objects browser, security report viewer,
---       settings tab, killswitch. Export format unchanged from v16.3.
+--  PHANTOM SCANNER v18.0 — FULL GAME COVERAGE
+--  UI: Rayfield (primary) → WindUI → inline fallback
+--  New: CoreGui/CorePackages/Backpack walk, getscripts()/
+--       getloadedModules()/getrunningScripts() discovery,
+--       script type classification (Script/LocalScript/
+--       ModuleScript/CoreScript/Dynamic), no export cap.
 -- ==============================================================
 
 local Players            = game:GetService("Players")
@@ -33,8 +34,12 @@ local hookmetamethod    = getExecFunc("hookmetamethod")
 local getrawmetatable   = getExecFunc("getrawmetatable")
 local setreadonly       = getExecFunc("setreadonly")
 local getnamecallmethod = getExecFunc("getnamecallmethod")
+-- NEW v18: script discovery functions
+local getscripts        = getExecFunc("getscripts")
+local getloadedModules  = getExecFunc("getloadedModules")
+local getrunningScripts = getExecFunc("getrunningScripts")
 
-if not writefile then warn("[Phantom v17] CRITICAL: writefile not available. Cannot save.") end
+if not writefile then warn("[Phantom v18] CRITICAL: writefile not available. Cannot save.") end
 
 -- ============== GAME IDENTITY ==============
 
@@ -88,53 +93,139 @@ local function attemptSave(content)
     return nil
 end
 
--- ============== UI LIB SHIM: WindUI → Rayfield → inline ==============
+-- ============== UI LIB SHIM: Rayfield → WindUI → inline ==============
 
 local UI
 local usingLib = "unknown"
 
--- Try WindUI first
-local windUrls = {
-    "https://raw.githubusercontent.com/Daslexia/WindUI/main/main.lua",
-    "https://raw.githubusercontent.com/Daslexia/WindUI-refactor/main/main.lua",
+-- NEW v18: Rayfield primary (Kai's standing preference)
+local rayfieldUrls = {
+    "https://raw.githubusercontent.com/Dawid-scripts/Rayfield/main/source",
+    "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
+    "https://raw.githubusercontent.com/iRayfield/Rayfield/main/source",
 }
-for _, url in ipairs(windUrls) do
+for _, url in ipairs(rayfieldUrls) do
     local ok, src = pcall(function() return game:HttpGet(url) end)
-    if ok and src and #src > 1000 and (src:find("CreateWindow", 1, true) or src:find("WindUI", 1, true)) then
+    if ok and src and #src > 1000 and src:find("CreateWindow", 1, true) then
         local ok2, lib = pcall(function() return loadstring(src)() end)
         if ok2 and lib and lib.CreateWindow then
             UI = lib
-            usingLib = "windui"
-            print("[Phantom UI] WindUI loaded from " .. url)
+            usingLib = "rayfield"
+            print("[Phantom UI] Rayfield loaded from " .. url)
             break
         end
     end
 end
 
--- Try Rayfield second
+-- WindUI secondary
 if not UI then
-    local rayUrls = {
-        "https://raw.githubusercontent.com/Dawid-scripts/Rayfield/main/source",
-        "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
+    local windUrls = {
+        "https://raw.githubusercontent.com/Daslexia/WindUI/main/main.lua",
+        "https://raw.githubusercontent.com/Daslexia/WindUI-refactor/main/main.lua",
     }
-    for _, url in ipairs(rayUrls) do
+    for _, url in ipairs(windUrls) do
         local ok, src = pcall(function() return game:HttpGet(url) end)
-        if ok and src and #src > 1000 and src:find("CreateWindow", 1, true) then
+        if ok and src and #src > 1000 and (src:find("CreateWindow", 1, true) or src:find("WindUI", 1, true)) then
             local ok2, lib = pcall(function() return loadstring(src)() end)
             if ok2 and lib and lib.CreateWindow then
                 UI = lib
-                usingLib = "rayfield"
-                print("[Phantom UI] Rayfield loaded from " .. url)
+                usingLib = "windui"
+                print("[Phantom UI] WindUI loaded from " .. url)
                 break
             end
         end
     end
 end
 
--- Normalize API: each backend exposes UI:MakeWindow, window:MakeTab, tab:AddButton, etc.
--- with a Description field on every element.
-if usingLib == "windui" then
-    -- WindUI: rename CreateWindow -> MakeWindow, Tab -> MakeTab, native Description support
+-- Normalize API across all three backends
+if usingLib == "rayfield" then
+    -- Rayfield: CreateWindow -> MakeWindow, CreateTab -> MakeTab
+    -- No native Description field — use CreateParagraph above each element
+    local Rayfield = UI
+    local Shim = {}
+    function Shim:MakeWindow(opts)
+        local w = Rayfield:CreateWindow({
+            Name = opts.Title,
+            LoadingTitle = opts.Title,
+            LoadingSubtitle = opts.Author or "SMITH",
+            ConfigurationSaving = { Enabled = false },
+            KeySystem = false,
+        })
+        function w:MakeTab(tOpts)
+            local tab = Rayfield:CreateTab(tOpts.Title, tOpts.Icon)
+            -- wrap each Create method to normalize names
+            local wrapped = {}
+            function wrapped:AddParagraph(pOpts)
+                Rayfield:CreateParagraph({ Title = pOpts.Title or "", Content = pOpts.Description or "" })
+            end
+            function wrapped:AddSection(sOpts)
+                if sOpts.Description and sOpts.Description ~= "" then
+                    Rayfield:CreateParagraph({ Title = sOpts.Title or "", Content = sOpts.Description })
+                else
+                    Rayfield:CreateSection(sOpts.Title or "")
+                end
+            end
+            function wrapped:AddButton(bOpts)
+                if bOpts.Description and bOpts.Description ~= "" then
+                    Rayfield:CreateParagraph({ Title = "", Content = bOpts.Description })
+                end
+                Rayfield:CreateButton({ Name = bOpts.Title, Callback = bOpts.Callback })
+            end
+            function wrapped:AddToggle(tOpts)
+                if tOpts.Description and tOpts.Description ~= "" then
+                    Rayfield:CreateParagraph({ Title = "", Content = tOpts.Description })
+                end
+                Rayfield:CreateToggle({ Name = tOpts.Title, CurrentValue = tOpts.Default or false, Callback = tOpts.Callback })
+            end
+            function wrapped:AddSlider(sOpts)
+                if sOpts.Description and sOpts.Description ~= "" then
+                    Rayfield:CreateParagraph({ Title = "", Content = sOpts.Description })
+                end
+                Rayfield:CreateSlider({
+                    Name = sOpts.Title,
+                    Range = { sOpts.Min, sOpts.Max },
+                    Increment = 1,
+                    Suffix = "",
+                    CurrentValue = sOpts.Default,
+                    Callback = sOpts.Callback,
+                })
+            end
+            function wrapped:AddDropdown(dOpts)
+                if dOpts.Description and dOpts.Description ~= "" then
+                    Rayfield:CreateParagraph({ Title = "", Content = dOpts.Description })
+                end
+                local dd = Rayfield:CreateDropdown({
+                    Name = dOpts.Title,
+                    Options = dOpts.Values or {},
+                    CurrentOption = dOpts.Default or (dOpts.Values and dOpts.Values[1]) or "",
+                    Callback = dOpts.Callback,
+                })
+                return dd
+            end
+            function wrapped:AddInput(iOpts)
+                if iOpts.Description and iOpts.Description ~= "" then
+                    Rayfield:CreateParagraph({ Title = "", Content = iOpts.Description })
+                end
+                Rayfield:CreateInput({
+                    Name = iOpts.Title,
+                    PlaceholderText = iOpts.Placeholder or "",
+                    Callback = iOpts.Callback,
+                })
+            end
+            return wrapped
+        end
+        return w
+    end
+    function Shim:Notify(nOpts)
+        Rayfield:Notify({ Title = nOpts.Title, Content = nOpts.Content, Duration = nOpts.Time or 4 })
+    end
+    function Shim:Init() end
+    function Shim:Destroy()
+        pcall(function() Rayfield:Destroy() end)
+    end
+    UI = Shim
+
+elseif usingLib == "windui" then
     local WindUI = UI
     local Shim = {}
     function Shim:MakeWindow(opts)
@@ -160,36 +251,9 @@ if usingLib == "windui" then
     end
     UI = Shim
 
-elseif usingLib == "rayfield" then
-    -- Rayfield: rename CreateWindow -> MakeWindow, CreateTab -> MakeTab,
-    -- embed Description as a Paragraph above each element (Rayfield has no native Description field)
-    local Rayfield = UI
-    local Shim = {}
-    function Shim:MakeWindow(opts)
-        local w = Rayfield:CreateWindow({
-            Name = opts.Title,
-            LoadingTitle = opts.Title,
-            LoadingSubtitle = opts.Author or "SMITH",
-            ConfigurationSaving = { Enabled = false },
-            KeySystem = false,
-        })
-        function w:MakeTab(tOpts)
-            return Rayfield:CreateTab(tOpts.Title, tOpts.Icon)
-        end
-        return w
-    end
-    function Shim:Notify(nOpts)
-        Rayfield:Notify({ Title = nOpts.Title, Content = nOpts.Content, Duration = nOpts.Time or 4 })
-    end
-    function Shim:Init() end
-    function Shim:Destroy()
-        pcall(function() Rayfield:Destroy() end)
-    end
-    UI = Shim
-
 else
-    -- Inline fallback UI (API-compatible with the WindUI shim)
-    warn("[Phantom UI] WindUI + Rayfield unreachable — building inline fallback")
+    -- Inline fallback UI (API-compatible)
+    warn("[Phantom UI] Rayfield + WindUI unreachable — building inline fallback")
     usingLib = "inline"
     local UserInputService = game:GetService("UserInputService")
     local parentTarget
@@ -197,7 +261,7 @@ else
     if not parentTarget then parentTarget = LocalPlayer:WaitForChild("PlayerGui") end
 
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "Phantom_v17"
+    screenGui.Name = "Phantom_v18"
     screenGui.ResetOnSpawn = false
     screenGui.DisplayOrder = 9999
     screenGui.Parent = parentTarget
@@ -216,7 +280,7 @@ else
     titleBar.TextColor3 = Color3.fromRGB(220, 200, 255)
     titleBar.Font = Enum.Font.SourceSansBold
     titleBar.TextSize = 15
-    titleBar.Text = "  Phantom Scanner v17 (fallback)"
+    titleBar.Text = "  Phantom Scanner v18 (fallback)"
     titleBar.TextXAlignment = Enum.TextXAlignment.Left
     titleBar.Parent = mainFrame
 
@@ -241,7 +305,6 @@ else
     content.CanvasSize = UDim2.new(0, 0, 0, 0)
     content.Parent = mainFrame
 
-    -- dragging
     local dragging, dragStart, startPos
     titleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -338,6 +401,7 @@ else
             end
 
             function tab:AddSection(sOpts)
+                makeDescLabel(tf, sOpts.Description)
                 local s = Instance.new("TextLabel")
                 s.Size = UDim2.new(1, 0, 0, 22)
                 s.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
@@ -376,7 +440,9 @@ else
                 makeDescLabel(tf, sOpts.Description)
                 local vals = {}
                 local step = (sOpts.Max - sOpts.Min) / 10
-                for i = 0, 10 do table.insert(vals, math.floor(sOpts.Min + step * i)) end
+                for i = 0, 10 do
+                    table.insert(vals, math.floor(sOpts.Min + step * i))
+                end
                 local idx = 1
                 for i, v in ipairs(vals) do
                     if v == sOpts.Default then
@@ -476,13 +542,16 @@ end
 
 local CFG = {
     frameBudgetMS   = 8,
-    maxInstances    = 1000000,
+    maxInstances    = 5000000,  -- v18: raised from 1M to 5M
     decompRetries   = 2,
     decompWait      = 1,
     saveBytecode    = true,
-    maxBytecodeDump = 20000,
+    maxBytecodeDump = 50000,    -- v18: raised from 20k
     skipCharacters  = false,
-    maxSourceChars  = 300000,
+    maxSourceChars  = 500000,   -- v18: raised from 300k
+    scanCoreGui     = true,     -- v18: new — walk CoreGui/CorePackages
+    scanBackpack    = true,     -- v18: new — walk player backpack tools
+    useExecDiscovery = true,    -- v18: new — use getscripts/getloadedModules/getrunningScripts
 }
 
 -- ============== STATE ==============
@@ -497,9 +566,11 @@ local State = {
     bdDetections = {},
     webhookHits = {},
     requireMap = {},
+    scriptTypes = {Script = 0, LocalScript = 0, ModuleScript = 0, CoreScript = 0, Dynamic = 0},
     stats = {
         total = 0, source = 0, bytecode = 0, needDecomp = 0, failed = 0, deduped = 0,
-        instancesWalked = 0, containersFailed = 0
+        instancesWalked = 0, containersFailed = 0,
+        execDiscovered = 0, -- v18: scripts found via executor functions
     },
     scanning = false,
     lastScan = nil,
@@ -508,7 +579,7 @@ local State = {
     lastExport = nil,
 }
 
--- ============== WALK ENGINE (preserved from v16.3) ==============
+-- ============== WALK ENGINE (v18: expanded containers) ==============
 
 local junkValueNames = {
     OriginalSize = true,
@@ -524,6 +595,7 @@ local function getContainers()
             if s then list[#list + 1] = s end
         end)
     end
+    -- standard services
     tryAdd("Workspace")
     tryAdd("ReplicatedStorage")
     tryAdd("ReplicatedFirst")
@@ -536,12 +608,44 @@ local function getContainers()
     tryAdd("ServerScriptService")
     tryAdd("ServerStorage")
     tryAdd("Players")
+    -- v18 NEW: RobloxReplicatedStorage (server-only replicated storage)
+    tryAdd("RobloxReplicatedStorage")
+
+    -- player-specific containers
     pcall(function()
-        if LocalPlayer:FindFirstChild("PlayerScripts") then list[#list + 1] = LocalPlayer.PlayerScripts end
+        if LocalPlayer:FindFirstChild("PlayerScripts") then
+            list[#list + 1] = LocalPlayer.PlayerScripts
+        end
     end)
     pcall(function()
-        if LocalPlayer:FindFirstChild("PlayerGui") then list[#list + 1] = LocalPlayer.PlayerGui end
+        if LocalPlayer:FindFirstChild("PlayerGui") then
+            list[#list + 1] = LocalPlayer.PlayerGui
+        end
     end)
+    -- v18 NEW: player backpack (contains tools with LocalScripts)
+    if CFG.scanBackpack then
+        pcall(function()
+            if LocalPlayer:FindFirstChild("Backpack") then
+                list[#list + 1] = LocalPlayer.Backpack
+            end
+        end)
+    end
+
+    -- v18 NEW: CoreGui and CorePackages (Roblox internal scripts)
+    if CFG.scanCoreGui then
+        tryAdd("CoreGui")
+        tryAdd("CorePackages")
+        pcall(function()
+            local cg = game:GetService("CoreGui")
+            if cg then
+                -- also walk VersionedApp subfolders
+                for _, child in ipairs(cg:GetChildren()) do
+                    list[#list + 1] = child
+                end
+            end
+        end)
+    end
+
     return list
 end
 
@@ -556,14 +660,57 @@ end
 
 local function buildStatsLine()
     return string.format(
-        "scripts: %d | remotes: %d | npcs: %d\nplayers: %d | values: %d | items: %d",
+        "scripts: %d | remotes: %d | npcs: %d\nplayers: %d | values: %d | items: %d\nScript: %d | Local: %d | Module: %d | Core: %d | Dynamic: %d",
         State.stats.total,
         #State.remotes.events + #State.remotes.functions,
         #State.objects.humanoids,
         #State.objects.players,
         #State.objects.values,
-        #State.objects.tools
+        #State.objects.tools,
+        State.scriptTypes.Script,
+        State.scriptTypes.LocalScript,
+        State.scriptTypes.ModuleScript,
+        State.scriptTypes.CoreScript,
+        State.scriptTypes.Dynamic
     )
+end
+
+local function classifyScript(cls)
+    if cls == "Script" then
+        return "Script"
+    elseif cls == "LocalScript" then
+        return "LocalScript"
+    elseif cls == "ModuleScript" then
+        return "ModuleScript"
+    elseif cls == "CoreScript" then
+        return "CoreScript"
+    else
+        return "Dynamic"
+    end
+end
+
+local function addScriptEntry(path, name, className, inst)
+    local hash = quickHash(path .. "|" .. className)
+    if State.hashes[hash] then
+        State.stats.deduped = State.stats.deduped + 1
+        return false
+    end
+    State.hashes[hash] = true
+    local scriptType = classifyScript(className)
+    State.scriptTypes[scriptType] = (State.scriptTypes[scriptType] or 0) + 1
+    table.insert(State.results, {
+        path = path,
+        name = name,
+        className = className,
+        scriptType = scriptType,
+        inst = inst,
+        source = "",
+        bytecode = "",
+        size = 0,
+        status = "PENDING"
+    })
+    State.stats.total = #State.results
+    return true
 end
 
 local function unifiedWalk()
@@ -572,9 +719,11 @@ local function unifiedWalk()
     State.remotes = {events = {}, functions = {}, bindables = {}, bindableFuncs = {}}
     State.objects = {prompts = {}, clickDetectors = {}, humanoids = {}, spawns = {}, values = {}, players = {}, tools = {}}
     State.assets  = {sounds = {}, animations = {}}
+    State.scriptTypes = {Script = 0, LocalScript = 0, ModuleScript = 0, CoreScript = 0, Dynamic = 0}
     State.stats.instancesWalked = 0
     State.stats.containersFailed = 0
     State.stats.total = 0
+    State.stats.execDiscovered = 0
 
     local remoteHashes = {}
     local valueHashes = {}
@@ -607,21 +756,11 @@ local function unifiedWalk()
                         State.stats.instancesWalked = State.stats.instancesWalked + 1
                         local cls = inst.ClassName
 
-                        if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
+                        if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" or cls == "CoreScript" then
                             table.insert(stack, inst)
                             local okPath, path = pcall(inst.GetFullName, inst)
                             if okPath then
-                                local hash = quickHash(path .. "|" .. cls)
-                                if State.hashes[hash] then
-                                    State.stats.deduped = State.stats.deduped + 1
-                                else
-                                    State.hashes[hash] = true
-                                    table.insert(State.results, {
-                                        path = path, name = inst.Name, className = cls,
-                                        inst = inst, source = "", bytecode = "", size = 0, status = "PENDING"
-                                    })
-                                    State.stats.total = #State.results
-                                end
+                                addScriptEntry(path, inst.Name, cls, inst)
                             end
 
                         elseif cls == "RemoteEvent" then
@@ -767,6 +906,106 @@ local function unifiedWalk()
     State.stats.total = #State.results
 end
 
+-- ============== v18 NEW: EXECUTOR SCRIPT DISCOVERY ==============
+-- Catches scripts NOT in the instance tree: dynamically loaded,
+-- injected, required at runtime, loadstring'd, etc.
+
+local function discoverExecutorScripts()
+    if not CFG.useExecDiscovery then return end
+    local before = #State.results
+
+    -- getscripts() — returns ALL script instances including ones not in tree
+    if getscripts then
+        pcall(function()
+            local allScripts = getscripts()
+            if type(allScripts) == "table" then
+                for _, s in ipairs(allScripts) do
+                    if not State.scanning then break end
+                    if typeof(s) == "Instance" and (s:IsA("LocalScript") or s:IsA("Script") or s:IsA("ModuleScript") or s.ClassName == "CoreScript") then
+                        local okPath, path = pcall(s.GetFullName, s)
+                        if okPath then
+                            local cls = s.ClassName
+                            -- mark as Dynamic if it's not in the normal tree (no parent in game services)
+                            local inTree = false
+                            pcall(function()
+                                inTree = s:IsDescendantOf(game)
+                            end)
+                            if not inTree then
+                                path = "[DYNAMIC] " .. path
+                                cls = "Dynamic"
+                            end
+                            addScriptEntry(path, s.Name, cls, s)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    -- getloadedModules() — returns loaded ModuleScripts
+    if getloadedModules then
+        pcall(function()
+            local modules = getloadedModules()
+            if type(modules) == "table" then
+                for _, m in ipairs(modules) do
+                    if not State.scanning then break end
+                    if typeof(m) == "Instance" then
+                        local okPath, path = pcall(m.GetFullName, m)
+                        if okPath then
+                            local inTree = false
+                            pcall(function() inTree = m:IsDescendantOf(game) end)
+                            if not inTree then
+                                path = "[LOADED-MODULE] " .. path
+                            end
+                            addScriptEntry(path, m.Name, m.ClassName, m)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    -- getrunningScripts() — returns running script threads
+    if getrunningScripts then
+        pcall(function()
+            local running = getrunningScripts()
+            if type(running) == "table" then
+                for idx, r in ipairs(running) do
+                    if not State.scanning then break end
+                    -- running scripts may be thread objects or instances
+                    local name = "?"
+                    local path = "[RUNNING-" .. idx .. "]"
+                    pcall(function()
+                        if typeof(r) == "Instance" then
+                            name = r.Name
+                            local okP, p = pcall(r.GetFullName, r)
+                            if okP then path = "[RUNNING] " .. p end
+                            addScriptEntry(path, name, r.ClassName, r)
+                        elseif type(r) == "table" then
+                            name = r.Name or r.name or "[thread-" .. idx .. "]"
+                            path = "[RUNNING] " .. tostring(name)
+                            -- running thread without an instance — can't grab source easily
+                            table.insert(State.results, {
+                                path = path, name = name, className = "Dynamic",
+                                scriptType = "Dynamic",
+                                inst = nil, source = "", bytecode = "", size = 0,
+                                status = "RUNTIME-THREAD"
+                            })
+                            State.scriptTypes.Dynamic = State.scriptTypes.Dynamic + 1
+                            State.stats.total = #State.results
+                        end
+                    end)
+                end
+            end
+        end)
+    end
+
+    State.stats.execDiscovered = #State.results - before
+    if State.stats.execDiscovered > 0 then
+        print("[Phantom v18] executor discovery found " .. State.stats.execDiscovered .. " additional scripts")
+    end
+end
+
 -- ============== SOURCE GRAB + DECOMPILE ==============
 
 local function grabSources()
@@ -807,8 +1046,10 @@ local function grabSources()
                 State.stats.needDecomp = State.stats.needDecomp + 1
             end
         else
-            r.status = "GONE"
-            State.stats.failed = State.stats.failed + 1
+            if r.status ~= "RUNTIME-THREAD" then
+                r.status = "GONE"
+                State.stats.failed = State.stats.failed + 1
+            end
         end
 
         if (os.clock() - frameStart) >= budget then
@@ -869,16 +1110,20 @@ local function scanSecurity()
     local acPatterns = {
         "anticheat", "anti-cheat", "exploit", "detect", "flag", "tamper", "noclip",
         "speedhack", "kick", "crash", "rejoin", "ban", "teleport", "fly", "godmode",
-        "infinite jump", "walkspeed", "jumppower", "hipheight", "anticheat", "antiexploit",
+        "infinite jump", "walkspeed", "jumppower", "hipheight", "antiexploit",
         "gotchildren", "getchildren", "fireserver", "invokeserver", "characteradded",
+        "walkonwalls", "instantteleport", "server sided check", "clientcheck",
+        "aimbot", "esp", "wallhack", "silentaim", "triggerbot",
     }
     local bdPatterns = {
         "loadstring(game:httpget", "require(", "backdoor", "getfenv(", "setfenv(", "getgenv(",
         "loadstring(", "httpget(", "httpservice:jsondecode", "scripts serviced",
+        "setclipboard", "writefile", "readfile", "loadfile",
     }
     local webhookPatterns = {
         "discord.com/api/webhooks", "discordapp.com/api/webhooks", "webhook",
         "discord.com/api/v9/webhooks", "discord.com/api/v10/webhooks",
+        "discord.com/api/v11/webhooks", "discord.com/api/v12/webhooks",
     }
 
     for si, r in ipairs(State.results) do
@@ -1047,6 +1292,17 @@ local function analyzeFingerprint()
         table.insert(fp.risks, "BACKDOOR PATTERNS DETECTED — possible server script injection")
     end
 
+    -- v18 NEW: CoreScript count signal
+    if State.scriptTypes.CoreScript > 0 then
+        table.insert(fp.signals, State.scriptTypes.CoreScript .. " CoreScripts found (Roblox internal)")
+    end
+
+    -- v18 NEW: Dynamic script count signal
+    if State.scriptTypes.Dynamic > 0 then
+        table.insert(fp.signals, State.scriptTypes.Dynamic .. " dynamically-loaded scripts (not in instance tree)")
+        table.insert(fp.risks, "DYNAMIC SCRIPTS PRESENT — runtime-loaded code may bypass static analysis")
+    end
+
     local score = fp.serverAuthSignals - fp.clientAuthSignals
     if score >= 4 then
         fp.tier, fp.tierName, fp.confidence = "TIER 3", "server-auth + hardened", 85
@@ -1064,7 +1320,7 @@ local function analyzeFingerprint()
     return fp
 end
 
--- ============== EXPORT BUILDER (preserved from v16.3) ==============
+-- ============== EXPORT BUILDER (v18: no truncation, script types) ==============
 
 local function fmtNPC(n)
     local posStr = "?"
@@ -1085,7 +1341,7 @@ local function buildExport(fp, genre)
     local function add(t) buf[#buf + 1] = t end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v17.0 EXPORT")
+    add("  PHANTOM SCANNER v18.0 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(PlaceId))
@@ -1093,6 +1349,7 @@ local function buildExport(fp, genre)
     add("Executor: " .. executorInfo)
     add("UI Library: " .. usingLib)
     add("Instances Walked: " .. State.stats.instancesWalked)
+    add("Executor-Discovered Scripts: " .. State.stats.execDiscovered)
     add("")
 
     add("==================================================")
@@ -1123,6 +1380,13 @@ local function buildExport(fp, genre)
     add("  Players: " .. #State.objects.players .. " | NPCs: " .. #State.objects.humanoids)
     add("  Values: " .. #State.objects.values .. " | Items: " .. #State.objects.tools)
     add("  Prompts: " .. #State.objects.prompts .. " | Spawns: " .. #State.objects.spawns)
+    add("")
+    add("-- SCRIPT TYPES (v18) --")
+    add("  Script (server): " .. State.scriptTypes.Script)
+    add("  LocalScript (client): " .. State.scriptTypes.LocalScript)
+    add("  ModuleScript (shared): " .. State.scriptTypes.ModuleScript)
+    add("  CoreScript (Roblox internal): " .. State.scriptTypes.CoreScript)
+    add("  Dynamic (runtime-loaded): " .. State.scriptTypes.Dynamic)
     add("")
 
     add("========== SECURITY ==========")
@@ -1206,10 +1470,12 @@ local function buildExport(fp, genre)
 
     add("========== SCRIPT SOURCES ==========")
     add("Total: " .. State.stats.total .. " | SOURCE:" .. State.stats.source .. " BYTECODE:" .. State.stats.bytecode .. " FAILED:" .. State.stats.failed)
+    add("Types: Script=" .. State.scriptTypes.Script .. " LocalScript=" .. State.scriptTypes.LocalScript .. " ModuleScript=" .. State.scriptTypes.ModuleScript .. " CoreScript=" .. State.scriptTypes.CoreScript .. " Dynamic=" .. State.scriptTypes.Dynamic)
     add("")
+    -- v18: NO TRUNCATION — list every single script
     for i, r in ipairs(State.results) do
         add("--------------------------------------------------")
-        add("[" .. i .. "/" .. State.stats.total .. "] " .. r.className .. " | " .. r.path)
+        add("[" .. i .. "/" .. State.stats.total .. "] " .. r.className .. " (" .. (r.scriptType or "?") .. ") | " .. r.path)
         add("STATUS: " .. r.status .. " | SIZE: " .. r.size)
         add("--------------------------------------------------")
         if r.status == "SOURCE" and #r.source > 0 then
@@ -1229,21 +1495,25 @@ local function buildExport(fp, genre)
             add("-- decompile failed")
         elseif r.status == "GONE" then
             add("-- script destroyed")
+        elseif r.status == "RUNTIME-THREAD" then
+            add("-- runtime thread (no instance — source not grabbable via getsrc/decompile)")
         else
             add("-- no data")
         end
         add("")
-        if i % 20 == 0 then RunService.RenderStepped:Wait() end
+        if i % 20 == 0 then
+            RunService.RenderStepped:Wait()
+        end
     end
 
     add("==========================================")
-    add("  END OF EXPORT — PHANTOM v17.0")
+    add("  END OF EXPORT — PHANTOM v18.0")
     add("==========================================")
 
     return table.concat(buf, "\n")
 end
 
--- ============== REMOTE SPY (new in v17) ==============
+-- ============== REMOTE SPY ==============
 
 local Spy = {
     enabled = false,
@@ -1362,8 +1632,8 @@ end
 local function getScriptPathList()
     local list = {}
     for _, r in ipairs(State.results) do
-        local display = string.format("[%s] %s", r.status, r.path)
-        if #display > 80 then display = display:sub(1, 77) .. "..." end
+        local display = string.format("[%s][%s] %s", r.status, r.scriptType or "?", r.path)
+        if #display > 90 then display = display:sub(1, 87) .. "..." end
         table.insert(list, display)
     end
     return list
@@ -1371,8 +1641,8 @@ end
 
 local function findScriptByDisplay(display)
     for _, r in ipairs(State.results) do
-        local d = string.format("[%s] %s", r.status, r.path)
-        if #d > 80 then d = d:sub(1, 77) .. "..." end
+        local d = string.format("[%s][%s] %s", r.status, r.scriptType or "?", r.path)
+        if #d > 90 then d = d:sub(1, 87) .. "..." end
         if d == display then return r end
     end
     return nil
@@ -1463,8 +1733,11 @@ end
 
 local function stageWalkOnly()
     unifiedWalk()
+    if CFG.useExecDiscovery then
+        discoverExecutorScripts()
+    end
     State.lastScan = os.time()
-    print("[Phantom] walk complete: " .. State.stats.total .. " scripts, " .. (#State.remotes.events + #State.remotes.functions) .. " remotes")
+    print("[Phantom v18] walk complete: " .. State.stats.total .. " scripts, " .. (#State.remotes.events + #State.remotes.functions) .. " remotes, " .. State.stats.execDiscovered .. " exec-discovered")
 end
 
 local function stageGrabSources()
@@ -1473,7 +1746,7 @@ local function stageGrabSources()
         return
     end
     grabSources()
-    print("[Phantom] sources grabbed: " .. State.stats.source .. " src, " .. State.stats.bytecode .. " bc")
+    print("[Phantom v18] sources grabbed: " .. State.stats.source .. " src, " .. State.stats.bytecode .. " bc")
 end
 
 local function stageDecompileFailed()
@@ -1482,7 +1755,7 @@ local function stageDecompileFailed()
         return
     end
     decompileAllRemaining()
-    print("[Phantom] decompile retry done")
+    print("[Phantom v18] decompile retry done")
 end
 
 local function stageSecurity()
@@ -1491,7 +1764,7 @@ local function stageSecurity()
         return
     end
     scanSecurity()
-    print("[Phantom] security scan: " .. #State.acDetections .. " AC, " .. #State.bdDetections .. " backdoor, " .. #State.webhookHits .. " webhook")
+    print("[Phantom v18] security scan: " .. #State.acDetections .. " AC, " .. #State.bdDetections .. " backdoor, " .. #State.webhookHits .. " webhook")
 end
 
 local function stageAnalyze()
@@ -1499,7 +1772,7 @@ local function stageAnalyze()
     local fp = analyzeFingerprint()
     State.lastGenre = genre
     State.lastFingerprint = fp
-    print("[Phantom] analysis: " .. fp.tier .. " / " .. genre.name)
+    print("[Phantom v18] analysis: " .. fp.tier .. " / " .. genre.name)
 end
 
 local function stageExport()
@@ -1517,6 +1790,9 @@ end
 
 local function stageFullScan()
     unifiedWalk()
+    if CFG.useExecDiscovery then
+        discoverExecutorScripts()
+    end
     grabSources()
     decompileAllRemaining()
     scanSecurity()
@@ -1528,7 +1804,7 @@ end
 -- ============== UI BUILD ==============
 
 local Window = UI:MakeWindow({
-    Title = "Phantom Scanner v17",
+    Title = "Phantom Scanner v18",
     Author = "SMITH",
     Size = UDim2.fromOffset(570, 480),
 })
@@ -1545,23 +1821,23 @@ OverviewTab:AddParagraph({
     Description = "Place ID: " .. tostring(PlaceId) .. " | Executor: " .. executorInfo .. " | UI: " .. usingLib,
 })
 
-OverviewTab:AddSection({ Title = "Scan Stages", Description = "Run each stage independently or all at once" })
+OverviewTab:AddSection({ Title = "Scan Stages", Description = "Run each stage independently or all at once. v18 adds executor script discovery (getscripts/getloadedModules/getrunningScripts)." })
 
 OverviewTab:AddButton({
     Title = "Run Full Scan",
-    Description = "Walk all containers, grab sources, decompile failed, scan security, classify tier+genre, export to .txt in workspace root. One-shot everything.",
+    Description = "Walk ALL containers (incl CoreGui/CorePackages/Backpack), discover executor-hidden scripts, grab sources, decompile failed, scan security, classify tier+genre, export to .txt. One-shot everything.",
     Callback = function() runStage("Full scan", stageFullScan, "Full scan complete — check save path") end,
 })
 
 OverviewTab:AddButton({
-    Title = "Quick Walk (no source grab)",
-    Description = "Walk every container and inventory remotes, NPCs, players, values, items, prompts, spawns. Fast — no decompile, no source read. Use this to get a quick map of the game.",
-    Callback = function() runStage("Walk only", stageWalkOnly, "Walk complete — see Stats tab") end,
+    Title = "Deep Walk (all containers + executor discovery)",
+    Description = "Walks every container including CoreGui, CorePackages, RobloxReplicatedStorage, and player Backpack. Then runs getscripts()/getloadedModules()/getrunningScripts() to catch scripts NOT in the instance tree (dynamically loaded, injected, runtime-required). No source grab — fast inventory.",
+    Callback = function() runStage("Deep walk", stageWalkOnly, "Walk complete — see Stats tab") end,
 })
 
 OverviewTab:AddButton({
     Title = "Grab Sources Only",
-    Description = "Re-runs source extraction (getsrc / getscriptbytecode) on scripts already walked. Does NOT walk again — run this after Quick Walk if you want readable sources.",
+    Description = "Re-runs source extraction (getsrc / getscriptbytecode) on scripts already walked. Does NOT walk again — run this after Deep Walk if you want readable sources.",
     Callback = function() runStage("Grab sources", stageGrabSources, "Sources grabbed — see Scripts tab") end,
 })
 
@@ -1579,7 +1855,7 @@ OverviewTab:AddButton({
 
 OverviewTab:AddButton({
     Title = "Tier + Genre Detect",
-    Description = "Classifies the game into TIER 1/2/3 (client-auth / hybrid / server-auth) based on remote naming, source visibility, state-value count, AC pattern density, webhook presence. Also detects genre (tycoon/shooter/RP/etc) from remote + value names. Output appears in Stats tab.",
+    Description = "Classifies the game into TIER 1/2/3 based on remote naming, source visibility, state-value count, AC pattern density, webhook presence, dynamic script presence. Also detects genre. Output in Stats tab.",
     Callback = function() runStage("Analyze", stageAnalyze, "Analysis complete — see Stats tab") end,
 })
 
@@ -1587,7 +1863,7 @@ OverviewTab:AddSection({ Title = "Export" })
 
 OverviewTab:AddButton({
     Title = "Export to File",
-    Description = "Builds the full .txt export (preserves v16.3 format) and writes it to workspace root. Filename: <GameName>_<PlaceID>.txt. Uses writefile — if blocked, tries timestamped retry name, then short name.",
+    Description = "Builds the full .txt export (v18 format — includes script type breakdown, no script count cap) and writes to workspace root. Filename: <GameName>_<PlaceID>.txt.",
     Callback = function()
         if not State.lastExport then
             if #State.results == 0 then
@@ -1602,7 +1878,7 @@ OverviewTab:AddButton({
 
 OverviewTab:AddButton({
     Title = "Copy Export to Clipboard",
-    Description = "Builds the export text and copies it to clipboard instead of writing to file. Useful if writefile is blocked or you want to paste into a different tool.",
+    Description = "Builds the export text and copies to clipboard instead of writing to file.",
     Callback = function()
         if not State.lastExport then
             if #State.results == 0 then
@@ -1618,7 +1894,7 @@ OverviewTab:AddButton({
 
 OverviewTab:AddButton({
     Title = "Copy Save Path",
-    Description = "Copies the path of the last saved .txt file to clipboard. Only visible after a successful save.",
+    Description = "Copies the path of the last saved .txt file to clipboard.",
     Callback = function()
         if SAVED_PATH then
             copyText(SAVED_PATH)
@@ -1632,34 +1908,15 @@ OverviewTab:AddButton({
 local StatsTab = Window:MakeTab({
     Title = "Stats",
     Icon = "rbxassetid://4370306966",
-    Description = "Live scan counts and tier/genre result",
+    Description = "Live scan counts, script type breakdown, and tier/genre result",
 })
-
-local statsParagraph
-local function refreshStats()
-    local fp = State.lastFingerprint
-    local genre = State.lastGenre
-    local text = string.format(
-        "scripts: %d | src: %d | bc: %d | fail: %d\nremotes: %dE / %dF | npcs: %d | players: %d\nvalues: %d | items: %d | prompts: %d | spawns: %d",
-        State.stats.total, State.stats.source, State.stats.bytecode, State.stats.failed,
-        #State.remotes.events, #State.remotes.functions, #State.objects.humanoids, #State.objects.players,
-        #State.objects.values, #State.objects.tools, #State.objects.prompts, #State.objects.spawns
-    )
-    if fp and genre then
-        text = text .. string.format("\n\nTIER: %s — %s (%d%%)\nGENRE: %s (%d%%)",
-            fp.tier, fp.tierName, fp.confidence, genre.name, genre.confidence)
-    end
-    if SAVED_PATH then
-        text = text .. "\n\nsaved: " .. SAVED_PATH
-    end
-    return text
-end
 
 StatsTab:AddParagraph({
     Title = "Live counts",
-    Description = "Updates after each scan stage. Run a scan from Overview tab first.",
+    Description = "Updates after each scan stage. Shows script type breakdown (v18) and tier/genre.",
 })
 
+local statsParagraph
 statsParagraph = StatsTab:AddParagraph({
     Title = "No scan yet",
     Description = "",
@@ -1667,20 +1924,19 @@ statsParagraph = StatsTab:AddParagraph({
 
 StatsTab:AddButton({
     Title = "Refresh Stats",
-    Description = "Re-reads current State and updates the paragraph above. Use after running scan stages to see latest counts.",
+    Description = "Re-reads current State and updates the paragraph above.",
     Callback = function()
         if statsParagraph and statsParagraph.Set then
-            statsParagraph:Set({ Title = "Stats", Description = refreshStats() })
+            statsParagraph:Set({ Title = "Stats", Description = buildStatsLine() })
         end
     end,
 })
 
--- Auto-refresh stats paragraph periodically
 task.spawn(function()
     while true do
         task.wait(2)
         if statsParagraph and statsParagraph.Set then
-            pcall(function() statsParagraph:Set({ Title = "Stats", Description = refreshStats() }) end)
+            pcall(function() statsParagraph:Set({ Title = "Stats", Description = buildStatsLine() }) end)
         end
     end
 end)
@@ -1689,30 +1945,30 @@ end)
 local ScriptsTab = Window:MakeTab({
     Title = "Scripts",
     Icon = "rbxassetid://4370306966",
-    Description = "Browse walked scripts and copy their source",
+    Description = "Browse ALL scripts found (including CoreScript and Dynamic) and copy their source",
 })
 
 ScriptsTab:AddParagraph({
     Title = "Script browser",
-    Description = "Pick a script from the dropdown, then use Copy Source to send it to clipboard. Only works after a Walk + Grab Sources stage.",
+    Description = "v18 shows script type in the dropdown: [STATUS][TYPE] path. Types: Script (server), LocalScript (client), ModuleScript (shared), CoreScript (Roblox internal), Dynamic (runtime-loaded).",
 })
 
 local selectedScript = nil
 local scriptDropdown = ScriptsTab:AddDropdown({
     Title = "Script",
-    Description = "All scripts found during last walk. Format: [STATUS] path",
-    Values = {"(none — run Walk first)"},
-    Default = "(none — run Walk first)",
+    Description = "All scripts found during last walk + executor discovery.",
+    Values = {"(none — run Deep Walk first)"},
+    Default = "(none — run Deep Walk first)",
     Callback = function(v) selectedScript = v end,
 })
 
 ScriptsTab:AddButton({
     Title = "Refresh Script List",
-    Description = "Rebuilds the dropdown from current State. Run this after Walk or Grab Sources stages.",
+    Description = "Rebuilds the dropdown from current State. Run after Deep Walk or Grab Sources.",
     Callback = function()
         local list = getScriptPathList()
         if #list == 0 then
-            UI:Notify({ Title = "Empty", Content = "Run Walk first", Time = 2 })
+            UI:Notify({ Title = "Empty", Content = "Run Deep Walk first", Time = 2 })
             return
         end
         if scriptDropdown and scriptDropdown.Refresh then
@@ -1724,7 +1980,7 @@ ScriptsTab:AddButton({
 
 ScriptsTab:AddButton({
     Title = "Copy Source to Clipboard",
-    Description = "Copies the selected script's source code to clipboard. Only works if status is SOURCE. If BYTECODE, copies bytecode. If FAILED/GONE, copies nothing.",
+    Description = "Copies the selected script's source to clipboard. Only works if status is SOURCE. If BYTECODE, copies bytecode. If RUNTIME-THREAD, nothing to copy.",
     Callback = function()
         if not selectedScript then
             UI:Notify({ Title = "Pick one", Content = "Select a script first", Time = 2 })
@@ -1750,7 +2006,7 @@ ScriptsTab:AddButton({
 
 ScriptsTab:AddButton({
     Title = "Force Decompile Selected",
-    Description = "Re-runs the decompile function on the selected script, ignoring cached results. Useful if the first pass failed but you want to try again.",
+    Description = "Re-runs the decompile function on the selected script, ignoring cached results.",
     Callback = function()
         if not selectedScript then return end
         local entry = findScriptByDisplay(selectedScript)
@@ -1782,8 +2038,8 @@ local selectedRemote = nil
 local remoteDropdown = RemotesTab:AddDropdown({
     Title = "Remote",
     Description = "Pick a remote to copy its path",
-    Values = {"(none — run Walk first)"},
-    Default = "(none — run Walk first)",
+    Values = {"(none — run Deep Walk first)"},
+    Default = "(none — run Deep Walk first)",
     Callback = function(v) selectedRemote = v end,
 })
 
@@ -1793,7 +2049,7 @@ RemotesTab:AddButton({
     Callback = function()
         local list = getRemotePathList()
         if #list == 0 then
-            UI:Notify({ Title = "Empty", Content = "Run Walk first", Time = 2 })
+            UI:Notify({ Title = "Empty", Content = "Run Deep Walk first", Time = 2 })
             return
         end
         if remoteDropdown and remoteDropdown.Refresh then
@@ -1805,7 +2061,7 @@ RemotesTab:AddButton({
 
 RemotesTab:AddButton({
     Title = "Copy Selected Remote Path",
-    Description = "Copies the remote's full GetFullName path (without the [E]/[F] prefix) to clipboard. Useful when writing a script that needs to resolve this remote.",
+    Description = "Copies the remote's full path (without [E]/[F] prefix) to clipboard.",
     Callback = function()
         if not selectedRemote then return end
         local path = selectedRemote:gsub("^%[[EF]%] ", "")
@@ -1815,7 +2071,7 @@ RemotesTab:AddButton({
 
 RemotesTab:AddButton({
     Title = "Copy All Remotes",
-    Description = "Copies the full remote list (events then functions, one per line) to clipboard.",
+    Description = "Copies the full remote list to clipboard.",
     Callback = function()
         local list = getRemotePathList()
         copyText(table.concat(list, "\n"))
@@ -1826,7 +2082,7 @@ RemotesTab:AddSection({ Title = "Live Remote Spy", Description = "Hook __namecal
 
 RemotesTab:AddToggle({
     Title = "Enable Live Spy",
-    Description = "Installs a hookmetamethod hook on game.__namecall that logs every FireServer and InvokeServer call (with args) to the spy log. Hook stays installed until you toggle off or unload. Requires executor with hookmetamethod/getrawmetatable/setreadonly/getnamecallmethod.",
+    Description = "Installs a hookmetamethod hook on game.__namecall that logs every FireServer and InvokeServer call. Hook stays installed until toggled off or unloaded. Requires hookmetamethod/getrawmetatable/setreadonly/getnamecallmethod.",
     Default = false,
     Callback = function(v)
         if v then
@@ -1845,7 +2101,7 @@ RemotesTab:AddToggle({
 
 RemotesTab:AddButton({
     Title = "Copy Spy Log",
-    Description = "Copies the last 200 captured remote calls to clipboard. Format: [HH:MM:SS] remote.path.Method(args). Each arg truncated to 30 chars.",
+    Description = "Copies the last 200 captured remote calls to clipboard.",
     Callback = function()
         if #Spy.log == 0 then
             UI:Notify({ Title = "Empty", Content = "No calls captured yet", Time = 2 })
@@ -1857,7 +2113,7 @@ RemotesTab:AddButton({
 
 RemotesTab:AddButton({
     Title = "Clear Spy Log",
-    Description = "Empties the spy log buffer. Hook stays active if enabled.",
+    Description = "Empties the spy log buffer.",
     Callback = function()
         Spy.log = {}
         UI:Notify({ Title = "Cleared", Content = "Spy log reset", Time = 1 })
@@ -1866,7 +2122,7 @@ RemotesTab:AddButton({
 
 RemotesTab:AddButton({
     Title = "Print Spy Log to Console",
-    Description = "Dumps the spy log to F9 developer console for inspection. Useful if clipboard is blocked.",
+    Description = "Dumps the spy log to F9 developer console.",
     Callback = function()
         if #Spy.log == 0 then
             print("[Phantom Spy] no calls captured")
@@ -1893,7 +2149,7 @@ local selectedObject = nil
 
 local objectKindDropdown = ObjectsTab:AddDropdown({
     Title = "Object kind",
-    Description = "Which object list to browse. Each kind has its own format in the dropdown below.",
+    Description = "Which object list to browse.",
     Values = {"npcs", "players", "values", "tools", "prompts", "clicks", "spawns"},
     Default = "npcs",
     Callback = function(v) selectedObjectKind = v end,
@@ -1901,7 +2157,7 @@ local objectKindDropdown = ObjectsTab:AddDropdown({
 
 local objectListDropdown = ObjectsTab:AddDropdown({
     Title = "Items",
-    Description = "Refresh after picking a kind. Pick an item to copy its line.",
+    Description = "Refresh after picking a kind.",
     Values = {"(refresh first)"},
     Default = "(refresh first)",
     Callback = function(v) selectedObject = v end,
@@ -1909,7 +2165,7 @@ local objectListDropdown = ObjectsTab:AddDropdown({
 
 ObjectsTab:AddButton({
     Title = "Refresh Item List",
-    Description = "Rebuilds the items dropdown for the currently selected object kind.",
+    Description = "Rebuilds the items dropdown for the selected object kind.",
     Callback = function()
         local list = getObjectList(selectedObjectKind)
         if #list == 0 then
@@ -1934,7 +2190,7 @@ ObjectsTab:AddButton({
 
 ObjectsTab:AddButton({
     Title = "Copy All Items (Current Kind)",
-    Description = "Copies every item in the current kind's list to clipboard, one per line.",
+    Description = "Copies every item in the current kind's list to clipboard.",
     Callback = function()
         local list = getObjectList(selectedObjectKind)
         if #list == 0 then return end
@@ -1991,7 +2247,7 @@ SecurityTab:AddButton({
 
 SecurityTab:AddButton({
     Title = "Copy AC Report",
-    Description = "Copies all anti-cheat pattern hits (script path + line + pattern + line text) to clipboard. Capped at 100 entries.",
+    Description = "Copies all anti-cheat pattern hits to clipboard.",
     Callback = function()
         if #State.acDetections == 0 then
             UI:Notify({ Title = "Empty", Content = "No AC hits", Time = 2 })
@@ -2011,7 +2267,7 @@ SecurityTab:AddButton({
 
 SecurityTab:AddButton({
     Title = "Copy Backdoor Report",
-    Description = "Copies all backdoor pattern hits (loadstring/require/getfenv/setfenv/getgenv/loadstring/HttpGet/JSONDecode) to clipboard.",
+    Description = "Copies all backdoor pattern hits to clipboard.",
     Callback = function()
         if #State.bdDetections == 0 then
             UI:Notify({ Title = "Empty", Content = "No backdoor hits", Time = 2 })
@@ -2031,7 +2287,7 @@ SecurityTab:AddButton({
 
 SecurityTab:AddButton({
     Title = "Copy Webhook Report",
-    Description = "Copies all Discord webhook URL hits to clipboard. These are endpoints the game POSTs to — useful for OSINT.",
+    Description = "Copies all Discord webhook URL hits to clipboard.",
     Callback = function()
         if #State.webhookHits == 0 then
             UI:Notify({ Title = "Empty", Content = "No webhook hits", Time = 2 })
@@ -2053,72 +2309,86 @@ SecurityTab:AddButton({
 local SettingsTab = Window:MakeTab({
     Title = "Settings",
     Icon = "rbxassetid://4370306966",
-    Description = "Tune scan performance and output limits",
+    Description = "Tune scan performance, coverage, and output limits",
 })
 
 SettingsTab:AddParagraph({
     Title = "Performance",
-    Description = "Frame budget controls how often the scan yields to Roblox. Higher = faster scan but more frame drops.",
+    Description = "Frame budget controls how often the scan yields to Roblox.",
 })
 
 SettingsTab:AddSlider({
     Title = "Frame Budget (ms)",
-    Description = "Max milliseconds per frame before yielding. 8 = balanced. Higher (15-20) = faster scan, more lag. Lower (2-4) = slower scan, smoother gameplay.",
+    Description = "Max ms per frame before yielding. 8 = balanced. Higher = faster scan, more lag.",
     Min = 1, Max = 30, Default = 8,
     Callback = function(v) CFG.frameBudgetMS = v end,
 })
 
 SettingsTab:AddSlider({
     Title = "Max Instances",
-    Description = "Hard cap on instances walked. 1M is default; lower if game is huge and scan takes too long.",
-    Min = 10000, Max = 2000000, Default = 1000000,
+    Description = "Hard cap on instances walked. 5M default (v18 raised from 1M).",
+    Min = 10000, Max = 10000000, Default = 5000000,
     Callback = function(v) CFG.maxInstances = v end,
 })
 
 SettingsTab:AddSlider({
     Title = "Decompile Retries",
-    Description = "How many times to retry decompile on a script that returned empty. 2 is default; bump to 3-4 if executor warms up slow.",
+    Description = "How many times to retry decompile on empty result.",
     Min = 1, Max = 5, Default = 2,
     Callback = function(v) CFG.decompRetries = v end,
+})
+
+SettingsTab:AddSection({ Title = "v18 Coverage Options" })
+
+SettingsTab:AddToggle({
+    Title = "Scan CoreGui / CorePackages",
+    Description = "When ON, walks Roblox internal services (CoreGui, CorePackages) for CoreScripts. These are Roblox's own UI/system scripts — usually not game-relevant but included for completeness. ON by default.",
+    Default = true,
+    Callback = function(v) CFG.scanCoreGui = v end,
+})
+
+SettingsTab:AddToggle({
+    Title = "Scan Player Backpack",
+    Description = "When ON, walks the local player's Backpack for tool-embedded LocalScripts. Catches scripts inside equipped/stored tools. ON by default.",
+    Default = true,
+    Callback = function(v) CFG.scanBackpack = v end,
+})
+
+SettingsTab:AddToggle({
+    Title = "Use Executor Script Discovery",
+    Description = "When ON, uses getscripts()/getloadedModules()/getrunningScripts() to find scripts NOT in the instance tree — dynamically loaded, injected, runtime-required. Catches what the walk misses. ON by default. Requires executor support.",
+    Default = true,
+    Callback = function(v) CFG.useExecDiscovery = v end,
 })
 
 SettingsTab:AddSection({ Title = "Output limits" })
 
 SettingsTab:AddSlider({
-    Title = "Max Source Chars",
-    Description = "Per-script source size cap in export. 300k default. Larger = fuller source but bigger .txt file.",
-    Min = 10000, Max = 1000000, Default = 300000,
+    Title = "Max Source Chars (per script)",
+    Description = "Per-script source cap in export. 500k default (v18 raised from 300k).",
+    Min = 10000, Max = 2000000, Default = 500000,
     Callback = function(v) CFG.maxSourceChars = v end,
 })
 
 SettingsTab:AddSlider({
-    Title = "Max Bytecode Dump",
-    Description = "Per-script bytecode size cap in export. 20k default — bytecode is rarely useful past this size.",
-    Min = 1000, Max = 100000, Default = 20000,
+    Title = "Max Bytecode Dump (per script)",
+    Description = "Per-script bytecode cap. 50k default (v18 raised from 20k).",
+    Min = 1000, Max = 200000, Default = 50000,
     Callback = function(v) CFG.maxBytecodeDump = v end,
 })
 
 SettingsTab:AddToggle({
     Title = "Save Bytecode",
-    Description = "When ON, scripts that only yielded bytecode (no readable source) still get their bytecode dumped in the export. When OFF, only status line is written.",
+    Description = "When ON, scripts that only yielded bytecode still get it dumped.",
     Default = true,
     Callback = function(v) CFG.saveBytecode = v end,
-})
-
-SettingsTab:AddSection({ Title = "Scan behavior" })
-
-SettingsTab:AddToggle({
-    Title = "Skip Character Models",
-    Description = "When ON, the walk engine skips descending into player character models. Faster scan, misses any scripts hiding in characters.",
-    Default = false,
-    Callback = function(v) CFG.skipCharacters = v end,
 })
 
 SettingsTab:AddSection({ Title = "Unload" })
 
 SettingsTab:AddButton({
     Title = "Unload Scanner (Killswitch)",
-    Description = "Destroys the UI, disables the remote spy hook (restores original __namecall), clears all state. Use this when you want a clean teardown before re-running or leaving the game.",
+    Description = "Destroys UI, disables remote spy hook (restores original __namecall), clears all state. Clean teardown.",
     Callback = function()
         spyDisable()
         uninstallSpyHook()
@@ -2133,7 +2403,7 @@ SettingsTab:AddButton({
         State.requireMap = {}
         Spy.log = {}
         UI:Destroy()
-        print("[Phantom v17] unloaded — all state cleared, spy hook restored")
+        print("[Phantom v18] unloaded — all state cleared, spy hook restored")
     end,
 })
 
@@ -2141,9 +2411,10 @@ SettingsTab:AddButton({
 
 UI:Init()
 
-print("[Phantom v17.0] loaded — Game: " .. GameName)
-print("[Phantom v17.0] UI: " .. usingLib)
-print("[Phantom v17.0] Executor: " .. executorInfo)
-print("[Phantom v17.0] Save target: " .. EXPORT_FILENAME)
-print("[Phantom v17.0] Tabs: Overview / Stats / Scripts / Remotes / Objects / Security / Settings")
+print("[Phantom v18.0] loaded — Game: " .. GameName)
+print("[Phantom v18.0] UI: " .. usingLib)
+print("[Phantom v18.0] Executor: " .. executorInfo)
+print("[Phantom v18.0] Save target: " .. EXPORT_FILENAME)
+print("[Phantom v18.0] NEW: CoreGui/CorePackages/Backpack walk, executor script discovery, script type classification")
+print("[Phantom v18.0] Tabs: Overview / Stats / Scripts / Remotes / Objects / Security / Settings")
 print("BUILD OK")
