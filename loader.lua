@@ -1,6 +1,6 @@
 --!nocheck
 -- ==============================================================
---  PHANTOM SCANNER v18.0 — FULL GAME COVERAGE
+--  PHANTOM SCANNER v18.1 — FULL GAME COVERAGE + ANTI-FREEZE
 --  UI: Rayfield (primary) → WindUI → inline fallback
 --  New: CoreGui/CorePackages/Backpack walk, getscripts()/
 --       getloadedModules()/getrunningScripts() discovery,
@@ -552,6 +552,8 @@ local CFG = {
     scanCoreGui     = true,     -- v18: new — walk CoreGui/CorePackages
     scanBackpack    = true,     -- v18: new — walk player backpack tools
     useExecDiscovery = true,    -- v18: new — use getscripts/getloadedModules/getrunningScripts
+    yieldChunk       = 25,      -- v18.1: yield every N items (anti-freeze)
+    maxScripts      = 0,       -- v18.1: 0 = no limit, set N to cap script count
 }
 
 -- ============== STATE ==============
@@ -732,10 +734,13 @@ local function unifiedWalk()
     local budget = CFG.frameBudgetMS / 1000
     local frameStart = os.clock()
 
+    local yieldCounter = 0
     local function maybeYield()
-        if (os.clock() - frameStart) >= budget then
-            RunService.RenderStepped:Wait()
+        yieldCounter = yieldCounter + 1
+        if yieldCounter >= CFG.yieldChunk or (os.clock() - frameStart) >= budget then
+            task.wait()
             frameStart = os.clock()
+            yieldCounter = 0
         end
     end
 
@@ -900,7 +905,7 @@ local function unifiedWalk()
             State.stats.containersFailed = State.stats.containersFailed + 1
             warn("[Phantom] container walk failed: " .. tostring(err))
         end
-        RunService.RenderStepped:Wait()
+        task.wait()
     end
 
     State.stats.total = #State.results
@@ -919,8 +924,11 @@ local function discoverExecutorScripts()
         pcall(function()
             local allScripts = getscripts()
             if type(allScripts) == "table" then
+                local discCount = 0
                 for _, s in ipairs(allScripts) do
                     if not State.scanning then break end
+                    discCount = discCount + 1
+                    if discCount % 25 == 0 then task.wait() end
                     if typeof(s) == "Instance" and (s:IsA("LocalScript") or s:IsA("Script") or s:IsA("ModuleScript") or s.ClassName == "CoreScript") then
                         local okPath, path = pcall(s.GetFullName, s)
                         if okPath then
@@ -947,8 +955,11 @@ local function discoverExecutorScripts()
         pcall(function()
             local modules = getloadedModules()
             if type(modules) == "table" then
+                local modCount = 0
                 for _, m in ipairs(modules) do
                     if not State.scanning then break end
+                    modCount = modCount + 1
+                    if modCount % 25 == 0 then task.wait() end
                     if typeof(m) == "Instance" then
                         local okPath, path = pcall(m.GetFullName, m)
                         if okPath then
@@ -972,6 +983,7 @@ local function discoverExecutorScripts()
             if type(running) == "table" then
                 for idx, r in ipairs(running) do
                     if not State.scanning then break end
+                    if idx % 25 == 0 then task.wait() end
                     -- running scripts may be thread objects or instances
                     local name = "?"
                     local path = "[RUNNING-" .. idx .. "]"
@@ -1052,9 +1064,10 @@ local function grabSources()
             end
         end
 
-        if (os.clock() - frameStart) >= budget then
-            RunService.RenderStepped:Wait()
-            frameStart = os.clock()
+        -- v18.1: yield after EVERY script — getsrc/decompile can block 50-500ms each
+        task.wait()
+        if i % 50 == 0 then
+            UI:Notify({ Title = "Progress", Content = "sources: " .. i .. "/" .. #State.results, Time = 1 })
         end
     end
 end
@@ -1093,9 +1106,8 @@ local function decompileAllRemaining()
             r.status = "FAILED"
             State.stats.failed = State.stats.failed + 1
         end
-        for _ = 1, CFG.decompWait do
-            RunService.RenderStepped:Wait()
-        end
+        -- v18.1: yield after every decompile — decompile can block 100-500ms
+        task.wait()
     end
 end
 
@@ -1158,8 +1170,8 @@ local function scanSecurity()
                 end
             end
         end
-        if si % 40 == 0 then
-            RunService.RenderStepped:Wait()
+        if si % 25 == 0 then
+            task.wait()
         end
     end
 end
@@ -1341,7 +1353,7 @@ local function buildExport(fp, genre)
     local function add(t) buf[#buf + 1] = t end
 
     add("==========================================")
-    add("  PHANTOM SCANNER v18.0 EXPORT")
+    add("  PHANTOM SCANNER v18.1 EXPORT")
     add("==========================================")
     add("Game: " .. GameName)
     add("Place ID: " .. tostring(PlaceId))
@@ -1501,13 +1513,13 @@ local function buildExport(fp, genre)
             add("-- no data")
         end
         add("")
-        if i % 20 == 0 then
-            RunService.RenderStepped:Wait()
+        if i % 5 == 0 then
+            task.wait()
         end
     end
 
     add("==========================================")
-    add("  END OF EXPORT — PHANTOM v18.0")
+    add("  END OF EXPORT — PHANTOM v18.1")
     add("==========================================")
 
     return table.concat(buf, "\n")
@@ -1732,12 +1744,14 @@ local function runStage(name, fn, doneMsg)
 end
 
 local function stageWalkOnly()
+    UI:Notify({ Title = "Walking", Content = "Scanning containers + executor discovery...", Time = 2 })
     unifiedWalk()
     if CFG.useExecDiscovery then
+        UI:Notify({ Title = "Discovery", Content = "Running executor script discovery...", Time = 2 })
         discoverExecutorScripts()
     end
     State.lastScan = os.time()
-    print("[Phantom v18] walk complete: " .. State.stats.total .. " scripts, " .. (#State.remotes.events + #State.remotes.functions) .. " remotes, " .. State.stats.execDiscovered .. " exec-discovered")
+    print("[Phantom v18.1] walk complete: " .. State.stats.total .. " scripts, " .. (#State.remotes.events + #State.remotes.functions) .. " remotes, " .. State.stats.execDiscovered .. " exec-discovered")
 end
 
 local function stageGrabSources()
@@ -1789,14 +1803,21 @@ local function stageExport()
 end
 
 local function stageFullScan()
+    UI:Notify({ Title = "Full Scan", Content = "Stage 1/6: Deep walk...", Time = 2 })
     unifiedWalk()
     if CFG.useExecDiscovery then
+        UI:Notify({ Title = "Full Scan", Content = "Stage 1b: Executor discovery...", Time = 2 })
         discoverExecutorScripts()
     end
+    UI:Notify({ Title = "Full Scan", Content = "Stage 2/6: Grabbing sources (" .. #State.results .. " scripts)...", Time = 2 })
     grabSources()
+    UI:Notify({ Title = "Full Scan", Content = "Stage 3/6: Decompiling failed...", Time = 2 })
     decompileAllRemaining()
+    UI:Notify({ Title = "Full Scan", Content = "Stage 4/6: Security scan...", Time = 2 })
     scanSecurity()
+    UI:Notify({ Title = "Full Scan", Content = "Stage 5/6: Tier + genre analysis...", Time = 2 })
     stageAnalyze()
+    UI:Notify({ Title = "Full Scan", Content = "Stage 6/6: Building export...", Time = 2 })
     stageExport()
     State.lastScan = os.time()
 end
@@ -2411,10 +2432,10 @@ SettingsTab:AddButton({
 
 UI:Init()
 
-print("[Phantom v18.0] loaded — Game: " .. GameName)
-print("[Phantom v18.0] UI: " .. usingLib)
-print("[Phantom v18.0] Executor: " .. executorInfo)
-print("[Phantom v18.0] Save target: " .. EXPORT_FILENAME)
-print("[Phantom v18.0] NEW: CoreGui/CorePackages/Backpack walk, executor script discovery, script type classification")
-print("[Phantom v18.0] Tabs: Overview / Stats / Scripts / Remotes / Objects / Security / Settings")
+print("[Phantom v18.1] loaded — Game: " .. GameName)
+print("[Phantom v18.1] UI: " .. usingLib)
+print("[Phantom v18.1] Executor: " .. executorInfo)
+print("[Phantom v18.1] Save target: " .. EXPORT_FILENAME)
+print("[Phantom v18.1] NEW: Anti-freeze (yield every script), CoreGui/Backpack walk, executor discovery, script types")
+print("[Phantom v18.1] Tabs: Overview / Stats / Scripts / Remotes / Objects / Security / Settings")
 print("BUILD OK")
