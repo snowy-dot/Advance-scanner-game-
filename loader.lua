@@ -1,7 +1,7 @@
 --!nocheck
 -- ==============================================================
 --  PHANTOM SCANNER v18.1 — FULL GAME COVERAGE + ANTI-FREEZE
---  UI: Rayfield (primary) → WindUI → inline fallback
+--  UI: Rayfield (primary) → inline fallback
 --  New: CoreGui/CorePackages/Backpack walk, getscripts()/
 --       getloadedModules()/getrunningScripts() discovery,
 --       script type classification (Script/LocalScript/
@@ -93,15 +93,17 @@ local function attemptSave(content)
     return nil
 end
 
--- ============== UI LIB SHIM: Rayfield → WindUI → inline ==============
+-- ============== UI LIB: Rayfield ONLY → inline fallback ==============
+-- Kai's standing instruction: Rayfield only, no WindUI
 
 local UI
 local usingLib = "unknown"
 
--- NEW v18: Rayfield primary (Kai's standing preference)
 local rayfieldUrls = {
     "https://raw.githubusercontent.com/Dawid-scripts/Rayfield/main/source",
     "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
+    "https://raw.githubusercontent.com/EazyAD/Rayfield/main/source",
+    "https://pastebin.com/raw/BtmqPqQ0",
     "https://raw.githubusercontent.com/iRayfield/Rayfield/main/source",
 }
 for _, url in ipairs(rayfieldUrls) do
@@ -117,25 +119,7 @@ for _, url in ipairs(rayfieldUrls) do
     end
 end
 
--- WindUI secondary
-if not UI then
-    local windUrls = {
-        "https://raw.githubusercontent.com/Daslexia/WindUI/main/main.lua",
-        "https://raw.githubusercontent.com/Daslexia/WindUI-refactor/main/main.lua",
-    }
-    for _, url in ipairs(windUrls) do
-        local ok, src = pcall(function() return game:HttpGet(url) end)
-        if ok and src and #src > 1000 and (src:find("CreateWindow", 1, true) or src:find("WindUI", 1, true)) then
-            local ok2, lib = pcall(function() return loadstring(src)() end)
-            if ok2 and lib and lib.CreateWindow then
-                UI = lib
-                usingLib = "windui"
-                print("[Phantom UI] WindUI loaded from " .. url)
-                break
-            end
-        end
-    end
-end
+-- No WindUI — Kai said Rayfield only. Straight to inline if Rayfield fails.
 
 -- Normalize API across all three backends
 if usingLib == "rayfield" then
@@ -225,35 +209,9 @@ if usingLib == "rayfield" then
     end
     UI = Shim
 
-elseif usingLib == "windui" then
-    local WindUI = UI
-    local Shim = {}
-    function Shim:MakeWindow(opts)
-        local w = WindUI:CreateWindow({
-            Title = opts.Title,
-            Author = opts.Author or "SMITH",
-            Size = opts.Size or UDim2.fromOffset(570, 470),
-            Acrylic = true,
-            Theme = "Dark",
-            KeySystem = false,
-        })
-        function w:MakeTab(tOpts)
-            return WindUI:Tab({ Title = tOpts.Title, Icon = tOpts.Icon, Description = tOpts.Description })
-        end
-        return w
-    end
-    function Shim:Notify(nOpts)
-        WindUI:Notify({ Title = nOpts.Title, Content = nOpts.Content, Duration = nOpts.Time or 4 })
-    end
-    function Shim:Init() end
-    function Shim:Destroy()
-        pcall(function() WindUI:Destroy() end)
-    end
-    UI = Shim
-
 else
     -- Inline fallback UI (API-compatible)
-    warn("[Phantom UI] Rayfield + WindUI unreachable — building inline fallback")
+    warn("[Phantom UI] Rayfield unreachable — building inline fallback")
     usingLib = "inline"
     local UserInputService = game:GetService("UserInputService")
     local parentTarget
@@ -552,8 +510,10 @@ local CFG = {
     scanCoreGui     = true,     -- v18: new — walk CoreGui/CorePackages
     scanBackpack    = true,     -- v18: new — walk player backpack tools
     useExecDiscovery = true,    -- v18: new — use getscripts/getloadedModules/getrunningScripts
-    yieldChunk       = 25,      -- v18.1: yield every N items (anti-freeze)
+    yieldChunk       = 10,      -- v18.2: lowered from 25 to 10 (stronger anti-freeze)
     maxScripts      = 0,       -- v18.1: 0 = no limit, set N to cap script count
+    skipWorkspace   = false,   -- v18.2: skip Workspace descent (for massive games like CC2)
+    wsDepthLimit     = 5,       -- v18.2: default 5 — catches scripts in Workspace.Folder.Script but not car parts
 }
 
 -- ============== STATE ==============
@@ -598,7 +558,9 @@ local function getContainers()
         end)
     end
     -- standard services
-    tryAdd("Workspace")
+    if not CFG.skipWorkspace then
+        tryAdd("Workspace")
+    end
     tryAdd("ReplicatedStorage")
     tryAdd("ReplicatedFirst")
     tryAdd("StarterGui")
@@ -746,13 +708,22 @@ local function unifiedWalk()
 
     for _, container in ipairs(getContainers()) do
         if not State.scanning then break end
+        local isWorkspace = container == game:GetService("Workspace")
         local ok, err = pcall(function()
-            local stack = {container}
+            -- v18.2: depth-limited stack for Workspace (prevents descending into 50k+ car parts)
+            local stack = {{node = container, depth = 0}}
             while #stack > 0 do
                 if not State.scanning then return end
                 if State.stats.instancesWalked >= CFG.maxInstances then return end
 
-                local node = table.remove(stack)
+                local item = table.remove(stack)
+                local node = item.node
+                local depth = item.depth
+                -- v18.2: skip descending into Workspace if depth limit exceeded
+                if isWorkspace and CFG.wsDepthLimit > 0 and depth >= CFG.wsDepthLimit then
+                    maybeYield()
+                    continue
+                end
                 local gotKids, children = pcall(node.GetChildren, node)
                 if not gotKids then
                     maybeYield()
@@ -762,7 +733,7 @@ local function unifiedWalk()
                         local cls = inst.ClassName
 
                         if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" or cls == "CoreScript" then
-                            table.insert(stack, inst)
+                            table.insert(stack, {node = inst, depth = depth + 1})
                             local okPath, path = pcall(inst.GetFullName, inst)
                             if okPath then
                                 addScriptEntry(path, inst.Name, cls, inst)
@@ -821,7 +792,7 @@ local function unifiedWalk()
                                 pcall(function() tip = tostring(inst.ToolTip) end)
                                 table.insert(State.objects.tools, {path = p, name = inst.Name, tip = tip})
                             end
-                            table.insert(stack, inst)
+                            table.insert(stack, {node = inst, depth = depth + 1})
 
                         elseif cls == "IntValue" or cls == "NumberValue" or cls == "StringValue"
                             or cls == "BoolValue" or cls == "ObjectValue" then
@@ -890,9 +861,9 @@ local function unifiedWalk()
                                     end
                                 end
                             end
-                            table.insert(stack, inst)
+                            table.insert(stack, {node = inst, depth = depth + 1})
                         else
-                            table.insert(stack, inst)
+                            table.insert(stack, {node = inst, depth = depth + 1})
                         end
 
                         maybeYield()
@@ -1031,6 +1002,11 @@ local function grabSources()
 
     for i, r in ipairs(State.results) do
         if not State.scanning then break end
+        -- v18.2: respect maxScripts cap to prevent freeze on games with 1000+ scripts
+        if CFG.maxScripts > 0 and i > CFG.maxScripts then
+            UI:Notify({ Title = "Source cap", Content = "Stopped at " .. CFG.maxScripts .. " scripts (adjustable in Settings)", Time = 3 })
+            break
+        end
         local s = r.inst
         if s and s.Parent then
             local got = false
@@ -2377,9 +2353,39 @@ SettingsTab:AddToggle({
 
 SettingsTab:AddToggle({
     Title = "Use Executor Script Discovery",
-    Description = "When ON, uses getscripts()/getloadedModules()/getrunningScripts() to find scripts NOT in the instance tree — dynamically loaded, injected, runtime-required. Catches what the walk misses. ON by default. Requires executor support.",
+    Description = "When ON, uses getscripts()/getloadedModules()/getrunningScripts() to find scripts NOT in the instance tree. ON by default.",
     Default = true,
     Callback = function(v) CFG.useExecDiscovery = v end,
+})
+
+SettingsTab:AddSection({ Title = "v18.2 Anti-Freeze (Large Games)" })
+
+SettingsTab:AddToggle({
+    Title = "Skip Workspace Entirely",
+    Description = "When ON, does not walk Workspace at all. Use for games like Car Crushers 2 where Workspace has 50k+ parts and no scripts. Scripts in ReplicatedStorage/ServerScriptService/etc are still scanned.",
+    Default = false,
+    Callback = function(v) CFG.skipWorkspace = v end,
+})
+
+SettingsTab:AddSlider({
+    Title = "Workspace Depth Limit",
+    Description = "Max depth to descend into Workspace. 5 = catches Workspace.Folder.Script but skips car part nests. 0 = unlimited (will freeze on massive games).",
+    Min = 0, Max = 20, Default = 5,
+    Callback = function(v) CFG.wsDepthLimit = v end,
+})
+
+SettingsTab:AddSlider({
+    Title = "Yield Chunk Size (anti-freeze)",
+    Description = "Yield to Roblox every N items processed. 10 = very smooth (slower scan). 50 = faster but may stutter. Default 10.",
+    Min = 1, Max = 100, Default = 10,
+    Callback = function(v) CFG.yieldChunk = v end,
+})
+
+SettingsTab:AddSlider({
+    Title = "Max Scripts to Grab Source",
+    Description = "Cap on how many scripts to extract source from. 0 = no limit. Set to 200 if game has 1000+ scripts.",
+    Min = 0, Max = 5000, Default = 0,
+    Callback = function(v) CFG.maxScripts = v end,
 })
 
 SettingsTab:AddSection({ Title = "Output limits" })
